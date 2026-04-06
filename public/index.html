@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15分钟对冲机器人</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0a0e14;color:#e6edf3;min-height:100vh}
+
+#login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(8px)}
+.login-box{background:linear-gradient(145deg,#141a24,#0f1319);border:1px solid #1e2733;border-radius:16px;padding:36px 32px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.login-box h2{text-align:center;margin-bottom:6px;font-size:22px;font-weight:700;background:linear-gradient(135deg,#58a6ff,#3fb950);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.login-box .login-sub{text-align:center;font-size:13px;color:#6e7681;margin-bottom:24px}
+
+input{width:100%;padding:10px 14px;background:#0a0e14;border:1px solid #1e2733;border-radius:8px;color:#e6edf3;font-size:14px;margin-top:6px;transition:border-color .2s}
+input:focus{outline:none;border-color:#58a6ff;box-shadow:0 0 0 3px rgba(88,166,255,.15)}
+label{font-size:13px;color:#8b949e;display:block;margin-top:14px}
+button{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s}
+button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.btn-g{background:linear-gradient(135deg,#238636,#2ea043);color:#fff}
+.btn-r{background:linear-gradient(135deg,#da3633,#f85149);color:#fff}
+
+header{background:linear-gradient(180deg,#111820,#0d1218);border-bottom:1px solid #1e2733;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+header h1{font-size:17px;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:8px}
+header h1::before{content:'₿';font-size:20px;color:#f7931a}
+.hdr-right{display:flex;gap:10px;align-items:center}
+.badge{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:.5px;display:flex;align-items:center;gap:4px}
+.badge::before{content:'';width:6px;height:6px;border-radius:50%;display:inline-block}
+.badge-run{background:rgba(35,134,54,.2);color:#3fb950;border:1px solid rgba(35,134,54,.4)}.badge-run::before{background:#3fb950;box-shadow:0 0 6px #3fb950}
+.badge-stop{background:rgba(110,118,129,.15);color:#8b949e;border:1px solid rgba(110,118,129,.3)}.badge-stop::before{background:#6e7681}
+
+.wrap{padding:20px 24px;max-width:1200px;margin:auto}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px 18px}
+.card h3{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.full{grid-column:1/-1}
+
+.summary-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.stat-card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px;position:relative;overflow:hidden}
+.stat-card::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:2px 2px 0 0}
+.stat-card:nth-child(1)::after{background:linear-gradient(90deg,#3fb950,#238636)}
+.stat-card:nth-child(2)::after{background:linear-gradient(90deg,#58a6ff,#1f6feb)}
+.stat-card:nth-child(3)::after{background:linear-gradient(90deg,#d29922,#e3b341)}
+.stat-card:nth-child(4)::after{background:linear-gradient(90deg,#8b949e,#6e7681)}
+.stat-val{font-size:24px;font-weight:700;font-family:'SF Mono',Consolas,monospace;letter-spacing:-.5px}
+.stat-lbl{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+
+.timer-wrap{text-align:center;margin:8px 0 4px}
+.timer-big{font-size:36px;font-weight:700;font-family:'SF Mono',Consolas,monospace;letter-spacing:-1px}
+.timer-label{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px}
+.timer-bar{height:4px;background:#1e2733;border-radius:2px;overflow:hidden;margin-top:8px}
+.timer-fill{height:100%;border-radius:2px;transition:width .8s linear}
+.subgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.mini-stat{padding:10px 12px;background:#0a0e14;border:1px solid #1e2733;border-radius:10px}
+.mini-stat .lbl{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:.6px}
+.mini-stat .val{margin-top:5px;font-size:13px;font-family:'SF Mono',Consolas,monospace;font-weight:600;line-height:1.35}
+
+.row{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid #1e273320}
+.row .k{color:#8b949e} .row .v{font-family:'SF Mono',Consolas,monospace;font-weight:500}
+.tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
+.tag-g{background:rgba(35,134,54,.15);color:#3fb950;border:1px solid rgba(35,134,54,.3)}
+.tag-r{background:rgba(218,54,51,.1);color:#f85149;border:1px solid rgba(218,54,51,.2)}
+.tag-b{background:rgba(31,111,235,.15);color:#58a6ff;border:1px solid rgba(31,111,235,.3)}
+.tag-y{background:rgba(210,153,34,.15);color:#e3b341;border:1px solid rgba(210,153,34,.3)}
+.tag-p{background:rgba(137,87,229,.15);color:#bc8cff;border:1px solid rgba(137,87,229,.3)}
+
+table{width:100%;border-collapse:collapse;font-size:12px;font-family:'SF Mono',Consolas,monospace}
+th{text-align:left;color:#6e7681;font-size:11px;padding:6px 8px;border-bottom:1px solid #1e2733}
+td{padding:6px 8px;border-bottom:1px solid #1e273330}
+tr:hover{background:rgba(88,166,255,.04)}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-overlay">
+  <div class="login-box">
+    <h2>15分钟对冲机器人</h2>
+    <p class="login-sub">BTC 15min 双腿对冲策略</p>
+    <label>密码<input type="password" id="pwd" autocomplete="current-password"></label>
+    <div style="margin-top:20px;text-align:center">
+      <button class="btn-g" onclick="doLogin()" style="width:100%">登录</button>
+    </div>
+    <p id="login-err" style="color:#f85149;text-align:center;font-size:13px;margin-top:10px;display:none"></p>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="app" style="display:none">
+<header>
+  <h1>15分钟对冲机器人</h1>
+  <div class="hdr-right">
+    <span id="badge" class="badge badge-stop">已停止</span>
+    <button class="btn-g" onclick="downloadLogs()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#1f6feb,#58a6ff)">下载日志</button>
+    <button class="btn-g" onclick="downloadHistory()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#8957e5,#bc8cff)">下载历史</button>
+    <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
+    <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
+    <button class="btn-r" onclick="doLogout()" style="font-size:12px;padding:6px 12px">退出</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- Summary -->
+  <div class="summary-bar">
+    <div class="stat-card"><div class="stat-val" id="s-profit">$0.00</div><div class="stat-lbl">总盈亏</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-balance">$0.00</div><div class="stat-lbl">余额</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-roi">0.0%</div><div class="stat-lbl">ROI</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩</div></div>
+  </div>
+
+  <div class="grid">
+    <!-- Timer -->
+    <div class="card">
+      <h3>⏱ 回合计时器</h3>
+      <div class="timer-wrap">
+        <div class="timer-big" id="timer">--:--</div>
+        <div class="timer-label" id="market-q">等待市场...</div>
+      </div>
+      <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:#58a6ff"></div></div>
+      <div class="subgrid">
+        <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
+        <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
+        <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
+        <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
+      </div>
+    </div>
+
+    <!-- Hedge Status -->
+    <div class="card">
+      <h3>🔀 对冲状态</h3>
+      <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
+      <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+      <div class="row"><span class="k">纸面调参</span><span class="v" id="h-paper-tuning">--</span></div>
+      <div class="row"><span class="k">最近调参</span><span class="v" id="h-paper-adjust">--</span></div>
+      <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
+      <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
+      <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
+      <div class="row"><span class="k">砸盘检测</span><span class="v" id="h-dump">--</span></div>
+      <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
+      <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
+      <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
+      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>      <div class="row"><span class="k">CLOB 延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
+      <div class="row"><span class="k">CLOB 延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>    </div>
+
+    <!-- Wallet Config -->
+    <div class="card">
+      <h3>🔑 账户配置</h3>
+      <div style="margin-bottom:8px">
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">运行模式</label>
+        <select id="cfg-mode" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
+          <option value="paper">仿真盘 (真实行情, 不发单)</option>
+          <option value="live">实盘</option>
+        </select>
+      </div>
+      <div style="margin-bottom:8px">
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真测试模式</label>
+        <select id="cfg-paper-session-mode" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
+          <option value="persistent" selected>线上累计测试: 重启后继续沿用余额和累计结果</option>
+          <option value="session">单次临时测试: 只按本次输入余额启动</option>
+        </select>
+      </div>
+      <div style="margin-bottom:8px">
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真初始余额 (仅仿真盘)</label>
+        <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
+      </div>
+      <p style="font-size:11px;color:#6e7681;margin-top:6px">仿真盘不发真实订单也不需要私钥；线上累计测试会持续保存纸面余额、会话盈亏和累计历史，适合挂到线上慢慢跑。</p>
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真策略</label>
+        <select id="cfg-paper-profile" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
+          <option value="fixed" selected>fixed: 固定盈利样本参数</option>
+          <option value="adaptive">adaptive: 固定起点 + 动态放宽</option>
+        </select>
+      </div>
+      <div style="margin-bottom:8px">
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">私钥 (PRIVATE_KEY)</label>
+        <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
+      </div>
+      <div style="margin-bottom:8px">
+        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">资金地址 (FUNDER_ADDRESS)</label>
+        <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
+      </div>
+      <p style="font-size:11px;color:#6e7681;margin-top:6px">仿真盘不发真实订单也不需要私钥；实盘仍需填写私钥和资金地址。</p>
+    </div>
+
+    <!-- Parameters -->
+    <div class="card">
+      <h3>⚙ 参数</h3>
+      <div class="row"><span class="k">每腿预算</span><span class="v">余额25% (5~100份)</span></div>
+      <div class="row"><span class="k">双腿 sum 上限</span><span class="v">0.93 (渐进→0.96)</span></div>
+      <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
+      <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
+      <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
+      <div class="row"><span class="k">手续费</span><span class="v">2% (taker)</span></div>
+      <div class="row"><span class="k">止损</span><span class="v">入场价*75% 或 bid&lt;0.15</span></div>
+      <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
+      <div class="row"><span class="k">割肉</span><span class="v">≤30s+bid&lt;0.35</span></div>
+    </div>
+
+    <div class="card">
+      <h3>审计</h3>
+      <div class="row"><span class="k">历史笔数</span><span class="v" id="a-trades">--</span></div>
+      <div class="row"><span class="k">胜率</span><span class="v" id="a-winrate">--</span></div>
+      <div class="row"><span class="k">Profit Factor</span><span class="v" id="a-pf">--</span></div>
+      <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
+      <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
+      <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
+    </div>
+
+    <!-- History -->
+    <div class="card full">
+      <h3>交易历史</h3>
+      <div style="max-height:500px;overflow-y:auto">
+        <table>
+          <thead><tr><th>时间</th><th>结果</th><th>退出</th><th>方向</th><th>L1买入</th><th>L2买入</th><th>卖出价</th><th>份数</th><th>成本</th><th>盈亏</th><th>累计</th><th style="min-width:180px">理由</th></tr></thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const API = '';
+let ws = null;
+let auditTimer = null;
+
+function fmtSecs(totalSecs) {
+  const secs = Math.max(0, Math.floor(totalSecs || 0));
+  const hh = Math.floor(secs / 3600);
+  const mm = Math.floor((secs % 3600) / 60);
+  const ss = secs % 60;
+  if (hh > 0) return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+
+async function doLogin() {
+  const pwd = document.getElementById('pwd').value;
+  const errEl = document.getElementById('login-err');
+  try {
+    const r = await fetch(API + '/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pwd}), credentials:'include' });
+    const d = await r.json();
+    if (r.ok) { errEl.style.display='none'; document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; connectWS(); refreshAudit(); }
+    else { errEl.textContent=d.error||'登录失败'; errEl.style.display='block'; }
+  } catch(e) { errEl.textContent='网络错误'; errEl.style.display='block'; }
+}
+document.getElementById('pwd').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+async function doLogout() {
+  await fetch(API+'/api/logout',{method:'POST',credentials:'include'}).catch(()=>{});
+  if (auditTimer) { clearInterval(auditTimer); auditTimer = null; }
+  location.reload();
+}
+
+async function startBot() {
+  const mode = document.getElementById('cfg-mode').value;
+  const pk = document.getElementById('cfg-pk').value.trim();
+  const fa = document.getElementById('cfg-fa').value.trim();
+  const paperBalance = Number(document.getElementById('cfg-paper-balance').value || '100');
+  const paperProfile = document.getElementById('cfg-paper-profile').value;
+  const paperSessionMode = document.getElementById('cfg-paper-session-mode').value;
+  if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
+  if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
+  try {
+    const payload = mode === 'paper'
+      ? { mode, paperBalance, paperProfile, paperSessionMode }
+      : { mode, privateKey: pk, funderAddress: fa };
+    const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
+    const d = await r.json();
+    if (!r.ok) alert(d.error||'启动失败');
+    else refreshAudit();
+  } catch(e) { alert('网络错误'); }
+}
+
+async function downloadWithAuth(url, fallbackName) {
+  try {
+    const r = await fetch(API + url, { credentials:'include' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => null);
+      alert((d && d.error) || '下载失败');
+      return;
+    }
+    const blob = await r.blob();
+    const contentDisposition = r.headers.get('content-disposition') || '';
+    const matched = contentDisposition.match(/filename="([^"]+)"/i);
+    const filename = matched ? matched[1] : fallbackName;
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(href);
+  } catch(e) {
+    alert('网络错误');
+  }
+}
+
+function downloadLogs() {
+  downloadWithAuth('/api/download-logs', 'hedge15m-log.txt');
+}
+
+function downloadHistory() {
+  downloadWithAuth('/api/download-history', 'hedge15m-history.json');
+}
+
+async function stopBot() {
+  try {
+    await fetch(API+'/api/stop',{method:'POST',credentials:'include'});
+    refreshAudit();
+  } catch(e) { alert('网络错误'); }
+}
+
+async function refreshAudit() {
+  try {
+    const r = await fetch(API+'/api/audit',{credentials:'include'});
+    if (!r.ok) return;
+    const a = await r.json();
+    document.getElementById('a-trades').textContent = a.totalTrades || 0;
+    document.getElementById('a-winrate').textContent = (a.winRatePct ?? 0).toFixed(1) + '%';
+    document.getElementById('a-pf').textContent = a.profitFactor == null ? 'inf' : Number(a.profitFactor).toFixed(2);
+    const ddEl = document.getElementById('a-dd');
+    ddEl.textContent = '$' + Number(a.maxDrawdown || 0).toFixed(2);
+    ddEl.style.color = (a.maxDrawdown || 0) > 0 ? '#f85149' : '';
+    const estEl = document.getElementById('a-est');
+    estEl.textContent = (a.estimatedTradePct ?? 0).toFixed(1) + '%';
+    estEl.style.color = (a.estimatedTradePct || 0) > 20 ? '#f85149' : (a.estimatedTradePct || 0) > 0 ? '#e3b341' : '';
+    const warningEl = document.getElementById('a-warning');
+    warningEl.textContent = a.warnings && a.warnings.length ? a.warnings[0] : '无';
+    warningEl.title = a.warnings && a.warnings.length ? a.warnings.join('\n') : '';
+    warningEl.style.color = a.warnings && a.warnings.length ? '#f85149' : '#3fb950';
+    if (!auditTimer) {
+      auditTimer = setInterval(refreshAudit, 15000);
+    }
+  } catch {}
+}
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'state') render(msg.data);
+    } catch {}
+  };
+  ws.onclose = () => { setTimeout(connectWS, 3000); };
+  ws.onerror = () => { ws.close(); };
+}
+
+function render(s) {
+  // Badge
+  const badge = document.getElementById('badge');
+  if (s.botRunning) {
+    badge.className = 'badge badge-run'; badge.textContent = s.tradingMode === 'paper' ? '仿真盘' : '运行中';
+    document.getElementById('btn-start').style.display='none';
+    document.getElementById('btn-stop').style.display='';
+  } else {
+    badge.className = 'badge badge-stop'; badge.textContent = '已停止';
+    document.getElementById('btn-start').style.display='';
+    document.getElementById('btn-stop').style.display='none';
+  }
+
+  // Summary
+  const pEl = document.getElementById('s-profit');
+  pEl.textContent = (s.totalProfit>=0?'+':'')+('$'+s.totalProfit.toFixed(2));
+  pEl.style.color = s.totalProfit>=0?'#3fb950':'#f85149';
+  document.getElementById('s-balance').textContent = '$'+s.balance.toFixed(2);
+  document.getElementById('s-roi').textContent = s.sessionROI.toFixed(1)+'%';
+  document.getElementById('s-record').textContent = s.wins+'W / '+s.losses+'L';
+
+  // Timer
+  const secs = Math.max(0, Math.floor(s.secondsLeft));
+  const mm = String(Math.floor(secs/60)).padStart(2,'0');
+  const ss = String(secs%60).padStart(2,'0');
+  document.getElementById('timer').textContent = mm+':'+ss;
+  document.getElementById('market-q').textContent = s.currentMarket || '等待市场...';
+  const pct = Math.max(0, Math.min(100, secs/900*100));
+  const fill = document.getElementById('timer-fill');
+  fill.style.width = pct+'%';
+  fill.style.background = pct>50?'#58a6ff':pct>20?'#d29922':'#f85149';
+  document.getElementById('round-progress').textContent = Math.round(s.roundProgressPct || 0) + '% / 已过 ' + fmtSecs(s.roundElapsed || 0);
+  const nextRoundEl = document.getElementById('next-round');
+  nextRoundEl.textContent = s.nextRoundIn > 0 ? fmtSecs(s.nextRoundIn) + ' 后' : '--';
+  nextRoundEl.style.color = (s.nextRoundIn || 0) <= 120 && (s.nextRoundIn || 0) > 0 ? '#e3b341' : '';
+  const entryEl = document.getElementById('entry-window');
+  entryEl.textContent = s.canOpenNewPosition ? '开启中 / 还剩 ' + fmtSecs(s.entryWindowLeft || 0) : '已关闭';
+  entryEl.style.color = s.canOpenNewPosition ? '#3fb950' : '#f85149';
+  const decisionEl = document.getElementById('round-decision');
+  decisionEl.textContent = s.roundDecision || '--';
+  decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') || (s.roundDecision || '').startsWith('冷却中') ? '#f85149' : '#e6edf3';
+
+  // Hedge status
+  const stateMap = {off:'待命',watching:'监控中',leg1_filled:'Leg1已成交',leg2_filled:'双腿锁定',done:'完成'};
+  const stateEl = document.getElementById('h-state');
+  stateEl.textContent = s.status || stateMap[s.hedgeState] || s.hedgeState;
+  document.getElementById('h-mode').textContent = s.tradingMode === 'paper'
+    ? '仿真盘 / ' + (s.paperProfile || 'adaptive') + ' / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
+    : '实盘';
+  const tuningEl = document.getElementById('h-paper-tuning');
+  tuningEl.textContent = s.adaptiveTuningEnabled
+    ? 'sum ' + Number(s.adaptiveBaseSumTarget || 0).toFixed(2) + '→' + Number(s.adaptiveMaxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.adaptiveMaxEntryAsk || 0).toFixed(2)
+    : (s.tradingMode === 'paper' ? 'fixed sum ' + Number(s.adaptiveBaseSumTarget || 0).toFixed(2) + '→' + Number(s.adaptiveMaxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.adaptiveMaxEntryAsk || 0).toFixed(2) : '--');
+  tuningEl.style.color = s.adaptiveAdjustmentCount > 0 ? '#e3b341' : '';
+  const adjustEl = document.getElementById('h-paper-adjust');
+  adjustEl.textContent = s.adaptiveLastAdjustment || (s.tradingMode === 'paper' ? (s.adaptiveTuningEnabled ? '未触发' : 'fixed模式不动态调参') : '--');
+  adjustEl.style.color = s.adaptiveAdjustmentCount > 0 ? '#e3b341' : '';
+
+  document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
+  document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
+  document.getElementById('h-dn-ask').textContent = s.downAsk > 0 ? '$'+s.downAsk.toFixed(2) : '--';
+  document.getElementById('h-dump').textContent = s.dumpDetected || '无';
+
+  if (s.hedgeLeg1Price > 0) {
+    document.getElementById('h-leg1').innerHTML = '<span class="tag tag-b">'+s.hedgeLeg1Dir+' @$'+s.hedgeLeg1Price.toFixed(2)+'</span>';
+  } else {
+    document.getElementById('h-leg1').textContent = '--';
+  }
+  if (s.hedgeLeg2Price > 0) {
+    const l2dir = s.hedgeLeg1Dir === 'UP' ? 'DOWN' : 'UP';
+    document.getElementById('h-leg2').innerHTML = '<span class="tag tag-p">'+l2dir+' @$'+s.hedgeLeg2Price.toFixed(2)+'</span>';
+  } else {
+    document.getElementById('h-leg2').textContent = '--';
+  }
+  document.getElementById('h-cost').textContent = s.hedgeTotalCost > 0 ? '$'+s.hedgeTotalCost.toFixed(2) : '--';
+  const expEl = document.getElementById('h-expected');
+  if (s.expectedProfit !== 0) {
+    expEl.textContent = (s.expectedProfit>=0?'+':'')+('$'+s.expectedProfit.toFixed(2));
+    expEl.style.color = s.expectedProfit>=0?'#3fb950':'#f85149';
+  } else {
+    expEl.textContent = '--'; expEl.style.color = '';
+  }
+
+  // Latency
+  const lat50 = s.latencyP50 || 0;
+  const lat90 = s.latencyP90 || 0;
+  const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#3fb950' : ms < 150 ? '#e3b341' : '#f85149';
+  const latEl50 = document.getElementById('h-lat-p50');
+  latEl50.textContent = lat50 > 0 ? lat50+'ms' : '--';
+  latEl50.style.color = latColor(lat50);
+  const latEl90 = document.getElementById('h-lat-p90');
+  latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
+  latEl90.style.color = latColor(lat90);
+
+  // History
+  const tbody = document.getElementById('history-body');
+  const rows = (s.history||[]).slice().reverse().slice(0,50);
+  const exitLabels = {'settlement':'结算','take-profit':'止盈','stop-loss':'止损','force-exit':'割肉','gtc-fill':'GTC'};
+  tbody.innerHTML = rows.map(h => {
+    const cls = h.result==='WIN'?'tag-g':'tag-r';
+    const pf = h.profit>=0?'+$'+h.profit.toFixed(2):'-$'+Math.abs(h.profit).toFixed(2);
+    const exit = exitLabels[h.exitType]||h.exitType||'-';
+    const l1fill = h.leg1FillPrice>0?'$'+h.leg1FillPrice.toFixed(2):'$'+(h.leg1Price||0).toFixed(2);
+    const l2fill = h.leg2FillPrice>0?'$'+h.leg2FillPrice.toFixed(2):(h.leg2Price>0?'$'+h.leg2Price.toFixed(2):'-');
+    const sell = h.sellPrice>0?'$'+h.sellPrice.toFixed(2):(h.exitType==='settlement'?'$1.00':'-');
+    const shares = h.sellShares>0?h.sellShares.toFixed(0):(h.leg1Shares>0?h.leg1Shares.toFixed(0):'-');
+    const estMark = h.estimated ? '<span title="含估算数据" style="color:#d29922;cursor:help"> ⚠</span>' : '';
+    const reasonText = h.exitReason || '-';
+    const breakdown = h.profitBreakdown ? ' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"' : '';
+    return '<tr><td>'+h.time+'</td>'
+      +'<td><span class="tag '+cls+'">'+h.result+'</span>'+estMark+'</td>'
+      +'<td><span class="tag tag-b">'+exit+'</span></td>'
+      +'<td>'+h.leg1Dir+'</td>'
+      +'<td>'+l1fill+(h.leg1Shares>0?' <small style="color:#6e7681">×'+h.leg1Shares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+l2fill+(h.leg2Shares>0?' <small style="color:#6e7681">×'+h.leg2Shares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+sell+(h.sellShares>0?' <small style="color:#6e7681">×'+h.sellShares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+shares+'</td>'
+      +'<td>$'+(h.totalCost||0).toFixed(2)+'</td>'
+      +'<td style="color:'+(h.profit>=0?'#3fb950':'#f85149')+'"'+breakdown+'>'+pf+'</td>'
+      +'<td style="color:'+(h.cumProfit>=0?'#3fb950':'#f85149')+'">$'+(h.cumProfit||0).toFixed(2)+'</td>'
+      +'<td style="font-size:11px;color:#8b949e;max-width:220px;white-space:normal;line-height:1.3">'+reasonText+'</td>'
+      +'</tr>';
+  }).join('');
+}
+
+// Auto-login check
+(async function() {
+  try {
+    const r = await fetch(API+'/api/status',{credentials:'include'});
+    if (r.ok) { document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; connectWS(); refreshAudit(); }
+  } catch {}
+})();
+</script>
+</body>
+</html>

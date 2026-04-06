@@ -1,0 +1,249 @@
+import express from "express";
+import { createServer, IncomingMessage } from "http";
+import { WebSocketServer, WebSocket } from "ws";
+import * as crypto from "crypto";
+import * as path from "path";
+import { Duplex } from "stream";
+import { Config, ServerConfig, updateConfig } from "./config";
+import { loadAuditReport } from "./audit";
+import { Hedge15mEngine } from "./bot";
+import { getLogFilePath } from "./instancePaths";
+import { logger } from "./logger";
+import * as fs from "fs";
+
+const app = express();
+const server = createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+app.set("trust proxy", 1);
+app.use(express.json());
+
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:");
+  next();
+});
+
+app.use(express.static(path.join(__dirname, "../public")));
+
+// --- Session ---
+const SESSION_MAX_AGE = 86_400_000;
+const MAX_SESSIONS = 10000;
+const sessions = new Map<string, number>();
+
+// --- Brute-force protection ---
+const loginAttempts = new Map<string, { count: number; unlockedAt: number; firstAttemptAt: number }>();
+const MAX_LOGIN_ATTEMPTS = 10;
+const LOGIN_LOCKOUT_MS = 5 * 60 * 1000;
+
+function checkLoginRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (rec && now < rec.unlockedAt) return false;
+  return true;
+}
+
+function recordLoginFailure(ip: string): void {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec) {
+    loginAttempts.set(ip, { count: 1, unlockedAt: 0, firstAttemptAt: now });
+  } else if (rec.unlockedAt > 0 && now >= rec.unlockedAt) {
+    loginAttempts.set(ip, { count: 1, unlockedAt: 0, firstAttemptAt: now });
+  } else {
+    rec.count++;
+    if (rec.count >= MAX_LOGIN_ATTEMPTS) rec.unlockedAt = now + LOGIN_LOCKOUT_MS;
+  }
+}
+
+function clearLoginRecord(ip: string): void {
+  loginAttempts.delete(ip);
+}
+
+function pruneExpiredSessions(): void {
+  const now = Date.now();
+  for (const [token, expiry] of sessions) {
+    if (now > expiry) sessions.delete(token);
+  }
+}
+
+function pruneLoginAttempts(): void {
+  const now = Date.now();
+  for (const [ip, rec] of loginAttempts) {
+    if (rec.unlockedAt > 0 && now >= rec.unlockedAt) {
+      loginAttempts.delete(ip);
+    } else if (rec.unlockedAt === 0 && now - rec.firstAttemptAt > LOGIN_LOCKOUT_MS) {
+      loginAttempts.delete(ip);
+    }
+  }
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const c: Record<string, string> = {};
+  if (!header) return c;
+  for (const pair of header.split(";")) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) c[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+  }
+  return c;
+}
+
+function auth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const token = parseCookies(req.headers.cookie).session;
+  const expiry = sessions.get(token);
+  if (!token || expiry === undefined || Date.now() > expiry) {
+    res.status(401).json({ error: "未授权" });
+    return;
+  }
+  next();
+}
+
+// --- Bot ---
+const bot = new Hedge15mEngine();
+
+// --- Routes ---
+
+app.post("/api/login", (req, res) => {
+  const ip = (req.ip || req.socket.remoteAddress || "unknown");
+  if (!checkLoginRateLimit(ip)) {
+    res.status(429).json({ error: "登录尝试过多，请5分钟后重试" });
+    return;
+  }
+  pruneLoginAttempts();
+  const { password } = req.body;
+  if (password === ServerConfig.ADMIN_PASSWORD) {
+    clearLoginRecord(ip);
+    const token = crypto.randomBytes(32).toString("hex");
+    pruneExpiredSessions();
+    pruneLoginAttempts();
+    if (sessions.size >= MAX_SESSIONS) {
+      res.status(503).json({ error: "会话数已满，请稍后重试" });
+      return;
+    }
+    sessions.set(token, Date.now() + SESSION_MAX_AGE);
+    const isSecure = req.protocol === "https" || req.get("x-forwarded-proto") === "https";
+    res.cookie("session", token, { httpOnly: true, sameSite: "strict", secure: isSecure, maxAge: SESSION_MAX_AGE });
+    res.json({ ok: true });
+  } else {
+    recordLoginFailure(ip);
+    res.status(401).json({ error: "密码错误" });
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  sessions.delete(parseCookies(req.headers.cookie).session);
+  res.clearCookie("session");
+  res.json({ ok: true });
+});
+
+app.get("/api/status", auth, (_req, res) => {
+  res.json(bot.getState());
+});
+
+app.get("/api/audit", auth, (_req, res) => {
+  res.json(loadAuditReport(bot.getHistoryFilePath()));
+});
+
+app.post("/api/start", auth, async (req, res) => {
+  if (bot.running) {
+    res.status(400).json({ error: "机器人已在运行" });
+    return;
+  }
+  const { privateKey, funderAddress, mode, paperBalance, paperProfile, paperSessionMode } = req.body;
+  const tradingMode = mode === "paper" ? "paper" : "live";
+  if (privateKey) updateConfig({ PRIVATE_KEY: privateKey });
+  if (funderAddress) updateConfig({ FUNDER_ADDRESS: funderAddress });
+
+  if (tradingMode === "live" && (!Config.PRIVATE_KEY || !Config.FUNDER_ADDRESS)) {
+    res.status(400).json({ error: "缺少私钥或资金地址" });
+    return;
+  }
+  try {
+    await bot.start({
+      mode: tradingMode,
+      paperBalance: Number(paperBalance) > 0 ? Number(paperBalance) : undefined,
+      paperProfile: paperProfile === "adaptive" ? "adaptive" : "fixed",
+      paperSessionMode: paperSessionMode === "persistent" ? "persistent" : "session",
+    });
+    res.json({
+      ok: true,
+      balance: bot.getState().balance,
+      mode: tradingMode,
+      paperProfile: bot.getState().paperProfile,
+      paperSessionMode: bot.getState().paperSessionMode,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/stop", auth, (_req, res) => {
+  bot.stop();
+  res.json({ ok: true });
+});
+
+app.get("/api/download-logs", auth, (_req, res) => {
+  const logPath = getLogFilePath();
+  if (!fs.existsSync(logPath)) {
+    res.status(404).json({ error: "日志文件未找到" });
+    return;
+  }
+  const raw = fs.readFileSync(logPath, "utf-8");
+  const lines = raw.split("\n");
+  const tail = lines.slice(-1000).join("\n");
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(logPath)}"`);
+  res.send(tail);
+});
+
+app.get("/api/download-history", auth, (_req, res) => {
+  const historyPath = bot.getHistoryFilePath();
+  if (!fs.existsSync(historyPath)) {
+    res.status(404).json({ error: "历史文件未找到" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(historyPath)}"`);
+  res.send(fs.readFileSync(historyPath, "utf8"));
+});
+
+app.get("/api/healthz", (_req, res) => {
+  res.json({ ok: true, running: bot.running });
+});
+
+// --- WebSocket ---
+
+server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  const token = parseCookies(req.headers.cookie).session;
+  const expiry = sessions.get(token);
+  if (!token || expiry === undefined || Date.now() > expiry) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
+});
+
+// Push state every 1s
+setInterval(() => {
+  if (wss.clients.size === 0) return;
+  const msg = JSON.stringify({ type: "state", data: bot.getState() });
+  wss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}, 1000);
+
+// --- Start ---
+
+export function startServer(): void {
+  const port = ServerConfig.PORT;
+  server.listen(port, () => {
+    console.log(`15分钟对冲机器人面板: http://localhost:${port}`);
+    logger.info(`Server started on port ${port}`);
+  });
+}

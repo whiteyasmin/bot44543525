@@ -1,0 +1,114 @@
+import { Config } from "./config";
+import { logger } from "./logger";
+
+const PING_INTERVAL_MS = 10_000; // 每10s ping一次 CLOB
+const PING_TIMEOUT_MS  = 5_000;
+const HISTORY_SIZE     = 20;     // 保留最近20个样本(ping + 真实下单调用混合)
+
+const samples: number[] = [];
+
+function addSample(ms: number): void {
+  if (ms <= 0 || ms > 8_000) return; // 过滤异常值
+  samples.push(ms);
+  while (samples.length > HISTORY_SIZE) samples.shift();
+}
+
+async function doPing(): Promise<void> {
+  const t0 = Date.now();
+  try {
+    // HEAD request: 只测 TCP+TLS+TTFB, 不传输 body
+    const r = await fetch(`${Config.CLOB_HOST}/`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    // 即便返回 404 也算有效延迟测量
+    void r;
+    const ms = Date.now() - t0;
+    addSample(ms);
+    logger.info(`CLOB ping: ${ms}ms (P50=${getP50Ms()}ms P90=${getP90Ms()}ms)`);
+  } catch {
+    // 超时或网络中断 — 不记样本, 下次再测
+  }
+}
+
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startLatencyMonitor(): void {
+  if (pingTimer) return;
+  doPing(); // 立即取第一个样本
+  pingTimer = setInterval(doPing, PING_INTERVAL_MS);
+}
+
+export function stopLatencyMonitor(): void {
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+}
+
+/** 由交易循环调用: 记录一次真实的订单簿请求延迟 */
+export function recordLatency(ms: number): void {
+  addSample(ms);
+}
+
+/** P50 延迟 (中位数), 无样本时返回保守默认值 */
+export function getP50Ms(): number {
+  if (samples.length === 0) return 150;
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) * 0.5)];
+}
+
+/** P90 延迟, 无样本时返回保守默认值 */
+export function getP90Ms(): number {
+  if (samples.length === 0) return 250;
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) * 0.9)];
+}
+
+/**
+ * 根据当前 P90 延迟动态生成各项操作参数。
+ * 延迟越低 → 参数越激进 (检测更快, 确认等待更短)。
+ * 使用 P90 而非 P50 作为基准, 防止偶发尖刺导致误判。
+ */
+export function getDynamicParams(): {
+  dumpBaselineMs:     number; // 砸盘基准快照最低年龄 (ms)
+  dumpWindowMs:       number; // 砸盘快照保留窗口 (ms)
+  fillCheckMs:        number; // 下单后等待成交确认 (ms)
+  watchPollMs:        number; // watching 状态轮询间隔 (ms)
+  idlePollMs:         number; // leg1_filled/done 状态轮询间隔 (ms)
+  orderbookTimeoutMs: number; // 订单簿请求超时上限 (ms)
+  p50: number;
+  p90: number;
+} {
+  const p50 = getP50Ms();
+  const p90 = getP90Ms();
+
+  // 以 P90 (不超过500ms) 作为插值变量, 保守但能反映真实网络条件
+  const lat = Math.max(20, Math.min(500, p90));
+
+  /**
+   * 线性插值: lat=loLat 时返回 loVal, lat=hiLat 时返回 hiVal
+   * lat < loLat → 取最激进值 (loVal)
+   * lat > hiLat → 取最保守值 (hiVal)
+   */
+  const lerp = (loLat: number, hiLat: number, loVal: number, hiVal: number): number => {
+    if (lat <= loLat) return loVal;
+    if (lat >= hiLat) return hiVal;
+    return Math.round(loVal + (hiVal - loVal) * ((lat - loLat) / (hiLat - loLat)));
+  };
+
+  return {
+    // 砸盘基准年龄: 延迟低时可用更新鲜的参考点, 快速响应行情
+    dumpBaselineMs:     lerp(30, 300,  800, 2500),
+    // 快照缓冲窗口: 延迟低时用更窄窗口, 减少噪音
+    dumpWindowMs:       lerp(30, 300, 2000, 5000),
+    // 成交确认等待: 低延迟回报更快
+    fillCheckMs:        lerp(30, 300,  120,  700),
+    // watching 轮询间隔: 低延迟下轮询更密
+    watchPollMs:        lerp(30, 300,  120,  400),
+    // leg1/done 轮询间隔
+    idlePollMs:         lerp(30, 300,  400, 1200),
+    // 订单簿请求超时: 低延迟连接不需要那么长的超时
+    orderbookTimeoutMs: lerp(30, 300, 1000, 4000),
+    p50,
+    p90,
+  };
+}
