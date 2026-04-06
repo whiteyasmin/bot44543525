@@ -153,7 +153,7 @@ app.post("/api/start", auth, async (req, res) => {
     res.status(400).json({ error: "机器人已在运行" });
     return;
   }
-  const { privateKey, funderAddress, mode, paperBalance, paperProfile, paperSessionMode } = req.body;
+  const { privateKey, funderAddress, mode, paperBalance, paperSessionMode } = req.body;
   const tradingMode = mode === "paper" ? "paper" : "live";
   if (privateKey) updateConfig({ PRIVATE_KEY: privateKey });
   if (funderAddress) updateConfig({ FUNDER_ADDRESS: funderAddress });
@@ -166,14 +166,12 @@ app.post("/api/start", auth, async (req, res) => {
     await bot.start({
       mode: tradingMode,
       paperBalance: Number(paperBalance) > 0 ? Number(paperBalance) : undefined,
-      paperProfile: paperProfile === "adaptive" ? "adaptive" : "fixed",
       paperSessionMode: paperSessionMode === "persistent" ? "persistent" : "session",
     });
     res.json({
       ok: true,
       balance: bot.getState().balance,
       mode: tradingMode,
-      paperProfile: bot.getState().paperProfile,
       paperSessionMode: bot.getState().paperSessionMode,
     });
   } catch (e: any) {

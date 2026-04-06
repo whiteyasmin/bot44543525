@@ -13,54 +13,48 @@ import { loadPaperTuning } from "./paperTuning";
 import { clearPaperRuntimeState, loadPaperRuntimeState, savePaperRuntimeState } from "./paperRuntimeState";
 import { Trader } from "./trader";
 
-// ── 15分钟对冲机器人固定参数 (延迟相关参数由 getDynamicParams() 提供) ──
-const LEG_BUDGET_PCT  = 0.25;     // 每条腿最多用余额的25%, Leg2需要足够预算
-const MIN_SHARES      = 5;        // 最少5份, 低于此不开仓
+// ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
+const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
 const MAX_SHARES      = 100;      // 单腿上限100份
 const SUM_TARGET      = 0.93;     // Leg1 + Leg2 fillPrice ≤ 此值买入Leg2 (利润≈5.1%含手续费)
-const DUMP_THRESHOLD  = 0.10;     // ask 跌幅 ≥10% 触发Leg1 (旧15%太慢, 很多机会错过)
+const DUMP_THRESHOLD  = 0.10;     // ask 跌幅 ≥10% 触发Leg1
 const ENTRY_WINDOW_S  = 420;      // 开局7分钟内监控砸盘, 配合MIN_ENTRY_SECS=480
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
 const MAX_SUM_TARGET  = 0.96;     // 渐进最高放宽到此, 保留~2%利润缓冲
-const MIN_ENTRY_SECS  = 480;      // 剩余 <8分钟不开新仓 (旧600s太保守, 只有5分钟窗口)
-const LEG1_STOP_LOSS  = 0.75;     // Leg1 bid跌至入场价*75%时止损 (旧0.65太松, 亏25%才触发)
+const MIN_ENTRY_SECS  = 480;      // 剩余 <8分钟不开新仓
+const LEG1_STOP_LOSS  = 0.82;     // Leg1 bid跌至入场价*82%时止损 (统一用adaptive更紧的止损)
 const LEG1_STOP_ABS   = 0.15;     // Leg1 bid绝对下限, 低于此无论入场价都止损
-const MAX_ENTRY_ASK   = 0.50;     // Leg1 入场价上限, 降低确保对冲空间充足(sum≤约1.00)
-const PAPER_SUM_TARGET = 0.98;    // 仅仿真盘观察: 参考前序日志, 先覆盖最常见的1.01附近机会
+const MAX_ENTRY_ASK   = 0.50;     // Leg1 入场价上限 (实盘)
+const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功对冲概率极低
+const PAPER_SUM_TARGET = 0.98;    // 仿真盘sum target
 const PAPER_MAX_SUM_TARGET = 1.01;
 const PAPER_MAX_ENTRY_ASK = 0.59;
-const PAPER_HARD_MAX_SUM_TARGET = 1.04; // adaptive 仅放宽 sum，超过这里已明显偏离原套利假设
+const PAPER_HARD_MAX_SUM_TARGET = 1.04;
 const PAPER_SUM_ADJUST_STEP = 0.01;
 const PAPER_SKIP_ADJUST_TRIGGER = 2;
-const PAPER_FIXED_MIN_LOCKED_PROFIT = 1.00; // fixed 至少锁定 $1，否则利润过薄
-const PAPER_FIXED_MIN_LOCKED_ROI = 0.015;  // fixed 至少锁定 1.5% ROI
-const PAPER_ADAPTIVE_MIN_LOCKED_PROFIT = 0.50;
-const PAPER_ADAPTIVE_MIN_LOCKED_ROI = 0.005;
-const PAPER_FIXED_ENTRY_SUM_BUFFER = 0.015; // fixed 只允许略高于 base target 的入场, 避免靠极限放宽才可能对冲
-const PAPER_ADAPTIVE_ENTRY_SUM_BUFFER = 0.02; // adaptive 可略松, 但仍要求预留基础对冲空间
-const ADAPTIVE_DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许 adaptive 多拿一点对冲空间
-const ADAPTIVE_DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
-const ADAPTIVE_DIRECTIONAL_MOVE_PCT = 0.0008; // 价格相对开盘移动不足 0.08% 时视为无明显方向
-const ADAPTIVE_BASE_BUDGET_PCT = 0.18; // adaptive 默认轻仓，优先控制回撤
-const ADAPTIVE_THIN_EDGE_BUDGET_PCT = 0.12; // 对冲空间偏薄时进一步缩仓
-const ADAPTIVE_HIGH_ASK_BUDGET_PCT = 0.10; // 高价入场只允许极小仓位
-const ADAPTIVE_STOP_LOSS = 0.82; // adaptive 比 fixed 更早止损，减少裸腿大亏
-const LEG1_HEDGE_TIMEOUT_SECS = 30;        // 剩余 15-30s 仍未对冲成功时优先退出裸仓
+const PAPER_MIN_LOCKED_PROFIT = 0.50;     // 至少锁定 $0.50
+const PAPER_MIN_LOCKED_ROI = 0.005;       // 至少锁定 0.5% ROI
+const PAPER_ENTRY_SUM_BUFFER = 0.02;      // 入场时预留对冲空间buffer
+const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点对冲空间
+const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
+const DIRECTIONAL_MOVE_PCT = 0.0008;      // 价格相对开盘移动不足 0.08% 时视为无明显方向
+const BASE_BUDGET_PCT = 0.18;             // 默认轻仓，优先控制回撤
+const THIN_EDGE_BUDGET_PCT = 0.12;        // 对冲空间偏薄时进一步缩仓
+const HIGH_ASK_BUDGET_PCT = 0.10;         // 高价入场只允许极小仓位
+const LEG1_HEDGE_TIMEOUT_SECS = 30;
 const LEG1_HEDGE_TIMEOUT_MIN_SECS = 15;
 const LEG1_HEDGE_TIMEOUT_SUM_BUFFER = 0.03;
-const ADAPTIVE_EARLY_EXIT_AFTER_MS = 90_000;
-const ADAPTIVE_EARLY_EXIT_SUM_BUFFER = 0.06;
-const BALANCE_ESTIMATE_MIN_PCT = 0.70; // 无orderId时至少观察到70%应付金额才承认为估算成交
-const BALANCE_ESTIMATE_MAX_PCT = 1.15; // 余额变化超出订单金额过多说明有其他噪音, 不用于估算
+const EARLY_EXIT_AFTER_MS = 90_000;
+const EARLY_EXIT_SUM_BUFFER = 0.06;
+const BALANCE_ESTIMATE_MIN_PCT = 0.70;
+const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 
-export type PaperStrategyProfile = "adaptive" | "fixed";
 export type PaperSessionMode = "session" | "persistent";
 
 export interface Hedge15mState {
   botRunning: boolean;
   tradingMode: "live" | "paper";
-  paperProfile: PaperStrategyProfile;
   paperSessionMode: PaperSessionMode;
   status: string;
   roundPhase: string;
@@ -89,12 +83,12 @@ export interface Hedge15mState {
   hedgeTotalCost: number;
   expectedProfit: number;
   dumpDetected: string;
-  adaptiveTuningEnabled: boolean;
-  adaptiveBaseSumTarget: number;
-  adaptiveMaxSumTarget: number;
-  adaptiveMaxEntryAsk: number;
-  adaptiveAdjustmentCount: number;
-  adaptiveLastAdjustment: string;
+  tuningEnabled: boolean;
+  baseSumTarget: number;
+  maxSumTarget: number;
+  maxEntryAsk: number;
+  adjustmentCount: number;
+  lastAdjustment: string;
   sessionROI: number;
   latencyP50: number;
   latencyP90: number;
@@ -103,7 +97,6 @@ export interface Hedge15mState {
 export interface Hedge15mStartOptions {
   mode?: "live" | "paper";
   paperBalance?: number;
-  paperProfile?: PaperStrategyProfile;
   paperSessionMode?: PaperSessionMode;
 }
 
@@ -149,7 +142,6 @@ export class Hedge15mEngine {
   private servicesStarted = false;
   private trader: Trader | null = null;
   private tradingMode: "live" | "paper" = "live";
-  private paperProfile: PaperStrategyProfile = "fixed";
   private paperSessionMode: PaperSessionMode = "session";
   private historyFile = HISTORY_FILE;
 
@@ -204,10 +196,8 @@ export class Hedge15mEngine {
   private adaptiveSumSkipRounds = 0;
   private adaptiveRoundRejectedBySum = false;
   private adaptiveRoundRejectedByEntryAsk = false;
-  private fixedMinLockedProfit = PAPER_FIXED_MIN_LOCKED_PROFIT;
-  private fixedMinLockedRoi = PAPER_FIXED_MIN_LOCKED_ROI;
-  private adaptiveMinLockedProfit = PAPER_ADAPTIVE_MIN_LOCKED_PROFIT;
-  private adaptiveMinLockedRoi = PAPER_ADAPTIVE_MIN_LOCKED_ROI;
+  private minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
+  private minLockedRoi = PAPER_MIN_LOCKED_ROI;
   private loopRunId = 0;
 
   // Dump detection: rolling ask snapshots
@@ -222,10 +212,8 @@ export class Hedge15mEngine {
     this.adaptiveSumSkipRounds = 0;
     this.adaptiveRoundRejectedBySum = false;
     this.adaptiveRoundRejectedByEntryAsk = false;
-    this.fixedMinLockedProfit = PAPER_FIXED_MIN_LOCKED_PROFIT;
-    this.fixedMinLockedRoi = PAPER_FIXED_MIN_LOCKED_ROI;
-    this.adaptiveMinLockedProfit = PAPER_ADAPTIVE_MIN_LOCKED_PROFIT;
-    this.adaptiveMinLockedRoi = PAPER_ADAPTIVE_MIN_LOCKED_ROI;
+    this.minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
+    this.minLockedRoi = PAPER_MIN_LOCKED_ROI;
 
     const tuning = loadPaperTuning();
     if (typeof tuning.baseSumTarget === "number") {
@@ -235,20 +223,13 @@ export class Hedge15mEngine {
       this.adaptiveMaxSumTarget = Math.max(this.adaptiveBaseSumTarget, Math.min(PAPER_HARD_MAX_SUM_TARGET, tuning.maxSumTarget));
     }
     if (typeof tuning.maxEntryAsk === "number") {
-      const maxEntryAskCap = this.paperProfile === "fixed" ? 0.55 : 0.57;
-      this.adaptiveMaxEntryAsk = Math.max(0.4, Math.min(maxEntryAskCap, tuning.maxEntryAsk));
-    }
-    if (typeof tuning.fixedMinLockedProfit === "number") {
-      this.fixedMinLockedProfit = Math.max(0.25, Math.min(5, tuning.fixedMinLockedProfit));
-    }
-    if (typeof tuning.fixedMinLockedRoi === "number") {
-      this.fixedMinLockedRoi = Math.max(0.0025, Math.min(0.1, tuning.fixedMinLockedRoi));
+      this.adaptiveMaxEntryAsk = Math.max(0.4, Math.min(0.57, tuning.maxEntryAsk));
     }
     if (typeof tuning.adaptiveMinLockedProfit === "number") {
-      this.adaptiveMinLockedProfit = Math.max(0.1, Math.min(3, tuning.adaptiveMinLockedProfit));
+      this.minLockedProfit = Math.max(0.1, Math.min(3, tuning.adaptiveMinLockedProfit));
     }
     if (typeof tuning.adaptiveMinLockedRoi === "number") {
-      this.adaptiveMinLockedRoi = Math.max(0.001, Math.min(0.05, tuning.adaptiveMinLockedRoi));
+      this.minLockedRoi = Math.max(0.001, Math.min(0.05, tuning.adaptiveMinLockedRoi));
     }
   }
 
@@ -258,7 +239,7 @@ export class Hedge15mEngine {
   }
 
   private noteAdaptivePaperSkip(reason: "sum" | "entry-ask"): void {
-    if (this.tradingMode !== "paper" || this.paperProfile !== "adaptive") return;
+    if (this.tradingMode !== "paper") return;
     if (reason === "sum") {
       this.adaptiveRoundRejectedBySum = true;
       return;
@@ -267,7 +248,7 @@ export class Hedge15mEngine {
   }
 
   private finalizeAdaptivePaperRound(): void {
-    if (this.tradingMode !== "paper" || this.paperProfile !== "adaptive") return;
+    if (this.tradingMode !== "paper") return;
 
     if (this.adaptiveRoundRejectedBySum) {
       this.adaptiveSumSkipRounds += 1;
@@ -311,14 +292,6 @@ export class Hedge15mEngine {
     this.clearAdaptiveRoundSkipCounts();
   }
 
-  private shouldRequireFixedProfitGate(): boolean {
-    return this.tradingMode === "paper" && this.paperProfile === "fixed";
-  }
-
-  private shouldRequireAdaptiveProfitGate(): boolean {
-    return this.tradingMode === "paper" && this.paperProfile === "adaptive";
-  }
-
   private isActiveRun(runId: number): boolean {
     return this.running && this.loopRunId === runId;
   }
@@ -326,7 +299,7 @@ export class Hedge15mEngine {
   private getPaperEntryQualityMaxSum(maxSumTarget: number): number {
     if (this.tradingMode !== "paper") return maxSumTarget;
     const base = this.getBaseSumTarget();
-    const buffer = this.paperProfile === "fixed" ? PAPER_FIXED_ENTRY_SUM_BUFFER : PAPER_ADAPTIVE_ENTRY_SUM_BUFFER;
+    const buffer = PAPER_ENTRY_SUM_BUFFER;
     return Math.min(maxSumTarget, base + buffer);
   }
 
@@ -336,7 +309,7 @@ export class Hedge15mEngine {
 
     const referencePrice = isChainlinkFresh() && getChainlinkPrice() > 0 ? getChainlinkPrice() : btcNow;
     const deltaPct = (referencePrice - this.roundStartBtcPrice) / this.roundStartBtcPrice;
-    if (Math.abs(deltaPct) < ADAPTIVE_DIRECTIONAL_MOVE_PCT) return "flat";
+    if (Math.abs(deltaPct) < DIRECTIONAL_MOVE_PCT) return "flat";
 
     if (isChainlinkFresh() && getChainlinkPrice() > 0) {
       return getChainlinkDirection() === "down" ? "down" : "up";
@@ -346,20 +319,18 @@ export class Hedge15mEngine {
   }
 
   private getAdaptiveLegBudgetPct(askPrice: number, oppCurrentAsk: number, preferredMaxSum: number): number {
-    if (!this.shouldRequireAdaptiveProfitGate()) return LEG_BUDGET_PCT;
-
-    let budgetPct = ADAPTIVE_BASE_BUDGET_PCT;
+    let budgetPct = BASE_BUDGET_PCT;
     if (askPrice >= 0.40) {
-      budgetPct = Math.min(budgetPct, ADAPTIVE_HIGH_ASK_BUDGET_PCT);
+      budgetPct = Math.min(budgetPct, HIGH_ASK_BUDGET_PCT);
     }
     if (oppCurrentAsk > 0 && askPrice + oppCurrentAsk >= preferredMaxSum - 0.005) {
-      budgetPct = Math.min(budgetPct, ADAPTIVE_THIN_EDGE_BUDGET_PCT);
+      budgetPct = Math.min(budgetPct, THIN_EDGE_BUDGET_PCT);
     }
     return budgetPct;
   }
 
   private getLeg1StopLossThreshold(): number {
-    return this.shouldRequireAdaptiveProfitGate() ? ADAPTIVE_STOP_LOSS : LEG1_STOP_LOSS;
+    return LEG1_STOP_LOSS;
   }
 
   private getBaseSumTarget(): number {
@@ -428,7 +399,6 @@ export class Hedge15mEngine {
     return {
       botRunning: this.running,
       tradingMode: this.tradingMode,
-      paperProfile: this.paperProfile,
       paperSessionMode: this.paperSessionMode,
       status: this.status,
       roundPhase: this.getRoundPhase(),
@@ -457,12 +427,12 @@ export class Hedge15mEngine {
       hedgeTotalCost: this.totalCost,
       expectedProfit: this.expectedProfit,
       dumpDetected: this.dumpDetected,
-      adaptiveTuningEnabled: this.tradingMode === "paper" && this.paperProfile === "adaptive",
-      adaptiveBaseSumTarget: this.getBaseSumTarget(),
-      adaptiveMaxSumTarget: this.getMaxSumTarget(),
-      adaptiveMaxEntryAsk: this.getMaxEntryAsk(),
-      adaptiveAdjustmentCount: this.adaptiveAdjustmentCount,
-      adaptiveLastAdjustment: this.adaptiveLastAdjustment,
+      tuningEnabled: this.tradingMode === "paper",
+      baseSumTarget: this.getBaseSumTarget(),
+      maxSumTarget: this.getMaxSumTarget(),
+      maxEntryAsk: this.getMaxEntryAsk(),
+      adjustmentCount: this.adaptiveAdjustmentCount,
+      lastAdjustment: this.adaptiveLastAdjustment,
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
@@ -498,7 +468,6 @@ export class Hedge15mEngine {
         balance: this.balance,
         initialBankroll: this.initialBankroll,
         sessionProfit: this.sessionProfit,
-        paperProfile: this.paperProfile,
         updatedAt: new Date().toISOString(),
       });
     } catch (e: any) {
@@ -531,7 +500,6 @@ export class Hedge15mEngine {
   async start(options: Hedge15mStartOptions = {}): Promise<void> {
     if (this.running) throw new Error("Hedge15m already running");
     this.tradingMode = options.mode || "live";
-    this.paperProfile = options.paperProfile === "adaptive" ? "adaptive" : "fixed";
     this.paperSessionMode = options.paperSessionMode === "persistent" ? "persistent" : "session";
     this.historyFile = this.tradingMode === "paper" ? PAPER_HISTORY_FILE : HISTORY_FILE;
     this.resetAdaptivePaperTuning();
@@ -916,16 +884,15 @@ export class Hedge15mEngine {
               if (
                 !this.pendingSellOrderId &&
                 this.hedgeState === "leg1_filled" &&
-                this.shouldRequireAdaptiveProfitGate() &&
                 this.leg1FilledAt > 0 &&
-                Date.now() - this.leg1FilledAt >= ADAPTIVE_EARLY_EXIT_AFTER_MS &&
+                Date.now() - this.leg1FilledAt >= EARLY_EXIT_AFTER_MS &&
                 oppAsk != null &&
                 oppAsk > 0
               ) {
                 const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
                 const adaptiveSum = fillPrice + oppAsk;
-                if (adaptiveSum > this.getMaxSumTarget() + ADAPTIVE_EARLY_EXIT_SUM_BUFFER) {
-                  logger.info(`HEDGE15M ADAPTIVE EARLY EXIT: held naked ${(Date.now() - this.leg1FilledAt) / 1000}s, sum=${adaptiveSum.toFixed(2)} still too high`);
+                if (adaptiveSum > this.getMaxSumTarget() + EARLY_EXIT_SUM_BUFFER) {
+                  logger.info(`HEDGE15M EARLY EXIT: held naked ${(Date.now() - this.leg1FilledAt) / 1000}s, sum=${adaptiveSum.toFixed(2)} still too high`);
                   await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
                 }
               }
@@ -1031,16 +998,27 @@ export class Hedge15mEngine {
       return;
     }
 
+    // ── 入场价下限: 太低的入场价几乎无法完成对冲, 历史全亏 ──
+    if (askPrice < MIN_ENTRY_ASK) {
+      logger.warn(`Hedge15m Leg1 skipped: ask=${askPrice.toFixed(2)} < MIN_ENTRY_ASK=${MIN_ENTRY_ASK}, hedge success rate too low`);
+      return;
+    }
+
+    // ── Leg2可行性预检: 如果对面ask太高, Leg2不可能买到, 不要买Leg1做裸腿赌博 ──
+    if (oppCurrentAsk > 0 && (askPrice + oppCurrentAsk) > this.getMaxSumTarget() + 0.03) {
+      logger.warn(`Hedge15m Leg1 skipped: Leg2 infeasible, sum=${(askPrice + oppCurrentAsk).toFixed(2)} >> maxTarget=${this.getMaxSumTarget().toFixed(2)}`);
+      return;
+    }
+
     let entryQualityMaxSum = this.getPaperEntryQualityMaxSum(maxSumTarget);
-    if (this.shouldRequireAdaptiveProfitGate()) {
-      const directionalBias = this.getRoundDirectionalBias();
-      if (directionalBias !== "flat" && dir !== directionalBias) {
-        logger.warn(`Hedge15m Leg1 skipped: ${dir.toUpperCase()} entry against ${directionalBias.toUpperCase()} round bias`);
-        return;
-      }
-      if (directionalBias === dir && askPrice <= ADAPTIVE_DIRECTIONAL_ENTRY_ASK_CAP) {
-        entryQualityMaxSum = Math.min(maxSumTarget, entryQualityMaxSum + ADAPTIVE_DIRECTIONAL_ENTRY_SUM_BONUS);
-      }
+    // directional bias filter
+    const directionalBias = this.getRoundDirectionalBias();
+    if (directionalBias !== "flat" && dir !== directionalBias) {
+      logger.warn(`Hedge15m Leg1 skipped: ${dir.toUpperCase()} entry against ${directionalBias.toUpperCase()} round bias`);
+      return;
+    }
+    if (directionalBias === dir && askPrice <= DIRECTIONAL_ENTRY_ASK_CAP) {
+      entryQualityMaxSum = Math.min(maxSumTarget, entryQualityMaxSum + DIRECTIONAL_ENTRY_SUM_BONUS);
     }
 
     if (oppCurrentAsk > 0 && (askPrice + oppCurrentAsk) > entryQualityMaxSum) {
@@ -1194,30 +1172,17 @@ export class Hedge15mEngine {
       return;
     }
 
-    if (this.shouldRequireFixedProfitGate()) {
+    // ── Profit gate: 锁利过薄不做Leg2 ──
+    {
       const projectedLockedCost = sharesToBuy * fillPrice * (1 + TAKER_FEE) + sharesToBuy * actualAsk * (1 + TAKER_FEE);
       const projectedLockedProfit = sharesToBuy - projectedLockedCost;
       const projectedLockedRoi = projectedLockedCost > 0 ? projectedLockedProfit / projectedLockedCost : 0;
       if (
-        projectedLockedProfit < this.fixedMinLockedProfit ||
-        projectedLockedRoi < this.fixedMinLockedRoi
+        projectedLockedProfit < this.minLockedProfit ||
+        projectedLockedRoi < this.minLockedRoi
       ) {
         this.status = `Leg2跳过: 锁利过薄 +$${projectedLockedProfit.toFixed(2)} (${(projectedLockedRoi * 100).toFixed(2)}%)`;
-        logger.warn(`Hedge15m Leg2 skipped: projected locked profit $${projectedLockedProfit.toFixed(2)} / ROI ${(projectedLockedRoi * 100).toFixed(2)}% below fixed floor $${this.fixedMinLockedProfit.toFixed(2)} / ${(this.fixedMinLockedRoi * 100).toFixed(2)}%`);
-        return;
-      }
-    }
-
-    if (this.shouldRequireAdaptiveProfitGate()) {
-      const projectedLockedCost = sharesToBuy * fillPrice * (1 + TAKER_FEE) + sharesToBuy * actualAsk * (1 + TAKER_FEE);
-      const projectedLockedProfit = sharesToBuy - projectedLockedCost;
-      const projectedLockedRoi = projectedLockedCost > 0 ? projectedLockedProfit / projectedLockedCost : 0;
-      if (
-        projectedLockedProfit < this.adaptiveMinLockedProfit ||
-        projectedLockedRoi < this.adaptiveMinLockedRoi
-      ) {
-        this.status = `Leg2跳过: adaptive 锁利过薄 +$${projectedLockedProfit.toFixed(2)} (${(projectedLockedRoi * 100).toFixed(2)}%)`;
-        logger.warn(`Hedge15m Leg2 skipped: adaptive locked profit $${projectedLockedProfit.toFixed(2)} / ROI ${(projectedLockedRoi * 100).toFixed(2)}% below floor $${this.adaptiveMinLockedProfit.toFixed(2)} / ${(this.adaptiveMinLockedRoi * 100).toFixed(2)}%`);
+        logger.warn(`Hedge15m Leg2 skipped: locked profit $${projectedLockedProfit.toFixed(2)} / ROI ${(projectedLockedRoi * 100).toFixed(2)}% below floor $${this.minLockedProfit.toFixed(2)} / ${(this.minLockedRoi * 100).toFixed(2)}%`);
         return;
       }
     }

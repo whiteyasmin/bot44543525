@@ -6,7 +6,6 @@ export interface PaperRuntimeState {
   balance: number;
   initialBankroll: number;
   sessionProfit: number;
-  paperProfile?: "adaptive" | "fixed";
   updatedAt: string;
 }
 
@@ -21,7 +20,6 @@ export function loadPaperRuntimeState(): PaperRuntimeState | null {
       balance: Number(raw.balance) || 0,
       initialBankroll: Number(raw.initialBankroll) || 0,
       sessionProfit: Number(raw.sessionProfit) || 0,
-      paperProfile: raw.paperProfile === "adaptive" ? "adaptive" : "fixed",
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
     };
   } catch {

@@ -7,12 +7,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "npx tsx src/index.ts",
-    "dev:fixed": "npx cross-env PORT=3001 INSTANCE_ID=fixed tsx src/index.ts",
-    "dev:adaptive": "npx cross-env PORT=3002 INSTANCE_ID=adaptive tsx src/index.ts",
     "audit": "npx tsx src/auditHistory.ts",
     "simulate": "npx tsx src/simulate.ts",
-    "observe:adaptive": "npx cross-env PAPER_PROFILE=adaptive tsx src/observeAdaptive.ts",
-    "observe:fixed": "npx cross-env PAPER_PROFILE=fixed tsx src/observeAdaptive.ts",
+    "observe": "npx tsx src/observeAdaptive.ts",
     "observe:compare": "npx tsx src/observeCompare.ts",
     "optimize:dual": "npx tsx src/autoOptimizeDual.ts"
   },

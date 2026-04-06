@@ -165,12 +165,6 @@ tr:hover{background:rgba(88,166,255,.04)}
         <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
       </div>
       <p style="font-size:11px;color:#6e7681;margin-top:6px">仿真盘不发真实订单也不需要私钥；线上累计测试会持续保存纸面余额、会话盈亏和累计历史，适合挂到线上慢慢跑。</p>
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真策略</label>
-        <select id="cfg-paper-profile" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
-          <option value="fixed" selected>fixed: 固定盈利样本参数</option>
-          <option value="adaptive">adaptive: 固定起点 + 动态放宽</option>
-        </select>
-      </div>
       <div style="margin-bottom:8px">
         <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">私钥 (PRIVATE_KEY)</label>
         <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
@@ -257,13 +251,12 @@ async function startBot() {
   const pk = document.getElementById('cfg-pk').value.trim();
   const fa = document.getElementById('cfg-fa').value.trim();
   const paperBalance = Number(document.getElementById('cfg-paper-balance').value || '100');
-  const paperProfile = document.getElementById('cfg-paper-profile').value;
   const paperSessionMode = document.getElementById('cfg-paper-session-mode').value;
   if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
   if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
   try {
     const payload = mode === 'paper'
-      ? { mode, paperBalance, paperProfile, paperSessionMode }
+      ? { mode, paperBalance, paperSessionMode }
       : { mode, privateKey: pk, funderAddress: fa };
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
@@ -396,16 +389,16 @@ function render(s) {
   const stateEl = document.getElementById('h-state');
   stateEl.textContent = s.status || stateMap[s.hedgeState] || s.hedgeState;
   document.getElementById('h-mode').textContent = s.tradingMode === 'paper'
-    ? '仿真盘 / ' + (s.paperProfile || 'adaptive') + ' / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
+    ? '仿真盘 / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
     : '实盘';
   const tuningEl = document.getElementById('h-paper-tuning');
-  tuningEl.textContent = s.adaptiveTuningEnabled
-    ? 'sum ' + Number(s.adaptiveBaseSumTarget || 0).toFixed(2) + '→' + Number(s.adaptiveMaxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.adaptiveMaxEntryAsk || 0).toFixed(2)
-    : (s.tradingMode === 'paper' ? 'fixed sum ' + Number(s.adaptiveBaseSumTarget || 0).toFixed(2) + '→' + Number(s.adaptiveMaxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.adaptiveMaxEntryAsk || 0).toFixed(2) : '--');
-  tuningEl.style.color = s.adaptiveAdjustmentCount > 0 ? '#e3b341' : '';
+  tuningEl.textContent = s.tuningEnabled
+    ? 'sum ' + Number(s.baseSumTarget || 0).toFixed(2) + '→' + Number(s.maxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.maxEntryAsk || 0).toFixed(2)
+    : '--';
+  tuningEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
   const adjustEl = document.getElementById('h-paper-adjust');
-  adjustEl.textContent = s.adaptiveLastAdjustment || (s.tradingMode === 'paper' ? (s.adaptiveTuningEnabled ? '未触发' : 'fixed模式不动态调参') : '--');
-  adjustEl.style.color = s.adaptiveAdjustmentCount > 0 ? '#e3b341' : '';
+  adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '--') : '--');
+  adjustEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
 
   document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
   document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
