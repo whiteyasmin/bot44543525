@@ -1615,6 +1615,7 @@ export class Hedge15mEngine {
     this.totalProfit += profit;
     this.sessionProfit += profit;
     this.balance += returnVal;
+    this.trader?.creditSettlement(returnVal);
 
     const dirSource = isChainlinkFresh() ? "CL" : "BTC";
     const winLeg = this.leg1Dir === actualDir ? 'Leg1' : (this.leg2Shares > 0 ? 'Leg2' : '无');

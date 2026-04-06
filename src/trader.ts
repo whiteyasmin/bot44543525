@@ -327,6 +327,13 @@ export class Trader {
     }
   }
 
+  /** 仿真盘结算：将赢得的份额回款加到paperBalance */
+  creditSettlement(amount: number): void {
+    if (this.mode === "paper" && amount > 0) {
+      this.paperBalance += amount;
+    }
+  }
+
   async getBalance(): Promise<number> {
     if (this.mode === "paper") {
       return this.paperBalance;
