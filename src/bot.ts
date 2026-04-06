@@ -194,6 +194,7 @@ export class Hedge15mEngine {
   private adaptiveAdjustmentCount = 0;
   private adaptiveLastAdjustment = "";
   private adaptiveSumSkipRounds = 0;
+  private adaptiveSumOkRounds = 0;
   private adaptiveRoundRejectedBySum = false;
   private adaptiveRoundRejectedByEntryAsk = false;
   private minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
@@ -210,6 +211,7 @@ export class Hedge15mEngine {
     this.adaptiveAdjustmentCount = 0;
     this.adaptiveLastAdjustment = "";
     this.adaptiveSumSkipRounds = 0;
+    this.adaptiveSumOkRounds = 0;
     this.adaptiveRoundRejectedBySum = false;
     this.adaptiveRoundRejectedByEntryAsk = false;
     this.minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
@@ -252,12 +254,18 @@ export class Hedge15mEngine {
 
     if (this.adaptiveRoundRejectedBySum) {
       this.adaptiveSumSkipRounds += 1;
+      this.adaptiveSumOkRounds = 0;
       if (this.adaptiveSumSkipRounds >= PAPER_SKIP_ADJUST_TRIGGER) {
         this.adaptiveSumSkipRounds = 0;
         this.adjustAdaptivePaperTuning();
       }
     } else {
       this.adaptiveSumSkipRounds = 0;
+      this.adaptiveSumOkRounds += 1;
+      if (this.adaptiveSumOkRounds >= PAPER_SKIP_ADJUST_TRIGGER) {
+        this.adaptiveSumOkRounds = 0;
+        this.decayAdaptivePaperTuning();
+      }
     }
 
     if (this.adaptiveRoundRejectedByEntryAsk && !this.adaptiveRoundRejectedBySum) {
@@ -284,6 +292,24 @@ export class Hedge15mEngine {
     this.adaptiveAdjustmentCount += 1;
     this.adaptiveLastAdjustment = `${timeStr()} 连续${PAPER_SKIP_ADJUST_TRIGGER}轮 sum 过高: ${changes.join(", ")}`;
     logger.warn(`PAPER AUTO-TUNE #${this.adaptiveAdjustmentCount}: ${this.adaptiveLastAdjustment}`);
+  }
+
+  private decayAdaptivePaperTuning(): void {
+    if (this.adaptiveBaseSumTarget <= PAPER_SUM_TARGET && this.adaptiveMaxSumTarget <= PAPER_MAX_SUM_TARGET) return;
+    const changes: string[] = [];
+    if (this.adaptiveBaseSumTarget > PAPER_SUM_TARGET) {
+      this.adaptiveBaseSumTarget = Math.max(PAPER_SUM_TARGET, this.adaptiveBaseSumTarget - PAPER_SUM_ADJUST_STEP);
+      changes.push(`baseSum→${this.adaptiveBaseSumTarget.toFixed(2)}`);
+    }
+    if (this.adaptiveMaxSumTarget > PAPER_MAX_SUM_TARGET) {
+      this.adaptiveMaxSumTarget = Math.max(PAPER_MAX_SUM_TARGET, this.adaptiveMaxSumTarget - PAPER_SUM_ADJUST_STEP);
+      if (this.adaptiveMaxSumTarget < this.adaptiveBaseSumTarget) this.adaptiveMaxSumTarget = this.adaptiveBaseSumTarget;
+      changes.push(`maxSum→${this.adaptiveMaxSumTarget.toFixed(2)}`);
+    }
+    if (changes.length === 0) return;
+    this.adaptiveAdjustmentCount += 1;
+    this.adaptiveLastAdjustment = `${timeStr()} 连续${PAPER_SKIP_ADJUST_TRIGGER}轮正常入场, 收紧: ${changes.join(", ")}`;
+    logger.info(`PAPER AUTO-TUNE #${this.adaptiveAdjustmentCount}: ${this.adaptiveLastAdjustment}`);
   }
 
   private onLeg1Opened(): void {
