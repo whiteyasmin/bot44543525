@@ -39,9 +39,11 @@ const PAPER_MIN_LOCKED_ROI = 0.02;        // 至少锁定 2% ROI (主要门槛)
 const PAPER_ENTRY_SUM_BUFFER = 0.02;      // 入场时预留对冲空间buffer
 const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点对冲空间
 const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
-const DIRECTIONAL_MOVE_PCT = 0.0015;      // 价格相对开盘移动不足 0.15% 时视为无明显方向
-const MOMENTUM_WINDOW_SEC = 30;            // 短期动量窗口 30秒
-const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 30s内反方向移动超过 0.10% 则拒绝dump
+const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
+const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
+const MOMENTUM_CONTRA_PCT = 0.0006;        // BTC 60s内反方向移动超过 0.06% 则拒绝dump
+const TREND_WINDOW_SEC = 180;              // 中期趋势窗口 180秒
+const TREND_CONTRA_PCT = 0.0015;           // BTC 180s内单边超过 0.15% 则视为真实趋势
 const BASE_BUDGET_PCT = 0.18;             // 默认轻仓，优先控制回撤
 const THIN_EDGE_BUDGET_PCT = 0.12;        // 对冲空间偏薄时进一步缩仓
 const HIGH_ASK_BUDGET_PCT = 0.10;         // 高价入场只允许极小仓位
@@ -336,15 +338,24 @@ export class Hedge15mEngine {
     const btcNow = getBtcPrice();
     if (this.roundStartBtcPrice <= 0 || btcNow <= 0) return "flat";
 
-    const referencePrice = isChainlinkFresh() && getChainlinkPrice() > 0 ? getChainlinkPrice() : btcNow;
-    const deltaPct = (referencePrice - this.roundStartBtcPrice) / this.roundStartBtcPrice;
-    if (Math.abs(deltaPct) < DIRECTIONAL_MOVE_PCT) return "flat";
+    const roundDeltaPct = (btcNow - this.roundStartBtcPrice) / this.roundStartBtcPrice;
+    const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+    const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
 
-    if (isChainlinkFresh() && getChainlinkPrice() > 0) {
-      return getChainlinkDirection() === "down" ? "down" : "up";
+    if (
+      trendMomentum <= -TREND_CONTRA_PCT ||
+      (roundDeltaPct <= -DIRECTIONAL_MOVE_PCT && shortMomentum <= -(MOMENTUM_CONTRA_PCT * 0.5))
+    ) {
+      return "down";
+    }
+    if (
+      trendMomentum >= TREND_CONTRA_PCT ||
+      (roundDeltaPct >= DIRECTIONAL_MOVE_PCT && shortMomentum >= (MOMENTUM_CONTRA_PCT * 0.5))
+    ) {
+      return "up";
     }
 
-    return deltaPct >= 0 ? "up" : "down";
+    return "flat";
   }
 
   private getAdaptiveLegBudgetPct(askPrice: number, oppCurrentAsk: number, preferredMaxSum: number): number {
@@ -794,18 +805,19 @@ export class Hedge15mEngine {
               // ── 短期动量确认: BTC现货方向与dump方向矛盾时拒绝 ──
               // UP dump(UP变便宜) → 市场认为BTC跌 → 如果BTC30s内实际在涨, 这是假dump
               // DOWN dump(DN变便宜) → 市场认为BTC涨 → 如果BTC30s内实际在跌, 这是假dump
-              const momentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+              const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+              const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
               let upContra = false;
               let dnContra = false;
-              if (upValid && momentum < -MOMENTUM_CONTRA_PCT) {
-                // UP dumped but BTC is actually dropping → UP should drop → real move, not opportunity
+              if (upValid && (shortMomentum < -MOMENTUM_CONTRA_PCT || trendMomentum < -TREND_CONTRA_PCT)) {
+                // UP dumped but BTC keeps trending down → UP下跌更像真实定价，不是错价
                 upContra = true;
-                logger.warn(`HEDGE15M MOMENTUM REJECT: UP dump but BTC dropping ${(momentum*100).toFixed(3)}% in ${MOMENTUM_WINDOW_SEC}s`);
+                logger.warn(`HEDGE15M MOMENTUM REJECT: UP dump but BTC dropping short=${(shortMomentum*100).toFixed(3)}%/${MOMENTUM_WINDOW_SEC}s trend=${(trendMomentum*100).toFixed(3)}%/${TREND_WINDOW_SEC}s`);
               }
-              if (dnValid && momentum > MOMENTUM_CONTRA_PCT) {
-                // DOWN dumped but BTC is actually rising → DOWN should drop → real move, not opportunity
+              if (dnValid && (shortMomentum > MOMENTUM_CONTRA_PCT || trendMomentum > TREND_CONTRA_PCT)) {
+                // DOWN dumped but BTC keeps trending up → DOWN下跌更像真实定价，不是错价
                 dnContra = true;
-                logger.warn(`HEDGE15M MOMENTUM REJECT: DN dump but BTC rising +${(momentum*100).toFixed(3)}% in ${MOMENTUM_WINDOW_SEC}s`);
+                logger.warn(`HEDGE15M MOMENTUM REJECT: DN dump but BTC rising short=+${(shortMomentum*100).toFixed(3)}%/${MOMENTUM_WINDOW_SEC}s trend=+${(trendMomentum*100).toFixed(3)}%/${TREND_WINDOW_SEC}s`);
               }
               const upFinal = upValid && !upContra;
               const dnFinal = dnValid && !dnContra;
@@ -813,20 +825,20 @@ export class Hedge15mEngine {
               if (upFinal && dnFinal) {
                 // 两边都砸但不是同步(已过双面filter), 选跌幅大的
                 if (upDrop >= dnDrop) {
-                  this.dumpDetected = `UP ask ${oldest.upAsk.toFixed(2)}→${this.upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) > DN -${(dnDrop*100).toFixed(1)}% [BTC ${(momentum*100).toFixed(3)}%]`;
+                  this.dumpDetected = `UP ask ${oldest.upAsk.toFixed(2)}→${this.upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) > DN -${(dnDrop*100).toFixed(1)}% [BTC${MOMENTUM_WINDOW_SEC} ${(shortMomentum*100).toFixed(3)}% BTC${TREND_WINDOW_SEC} ${(trendMomentum*100).toFixed(3)}%]`;
                   logger.info(`HEDGE15M DUMP (选UP): ${this.dumpDetected}`);
                   await this.buyLeg1(trader, rnd, "up", this.upAsk, rnd.upToken, rnd.downToken);
                 } else {
-                  this.dumpDetected = `DOWN ask ${oldest.downAsk.toFixed(2)}→${this.downAsk.toFixed(2)} (-${(dnDrop * 100).toFixed(1)}%) > UP -${(upDrop*100).toFixed(1)}% [BTC ${(momentum*100).toFixed(3)}%]`;
+                  this.dumpDetected = `DOWN ask ${oldest.downAsk.toFixed(2)}→${this.downAsk.toFixed(2)} (-${(dnDrop * 100).toFixed(1)}%) > UP -${(upDrop*100).toFixed(1)}% [BTC${MOMENTUM_WINDOW_SEC} ${(shortMomentum*100).toFixed(3)}% BTC${TREND_WINDOW_SEC} ${(trendMomentum*100).toFixed(3)}%]`;
                   logger.info(`HEDGE15M DUMP (选DN): ${this.dumpDetected}`);
                   await this.buyLeg1(trader, rnd, "down", this.downAsk, rnd.downToken, rnd.upToken);
                 }
               } else if (upFinal) {
-                this.dumpDetected = `UP ask ${oldest.upAsk.toFixed(2)}→${this.upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) [BTC ${(momentum*100).toFixed(3)}%]`;
+                this.dumpDetected = `UP ask ${oldest.upAsk.toFixed(2)}→${this.upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) [BTC${MOMENTUM_WINDOW_SEC} ${(shortMomentum*100).toFixed(3)}% BTC${TREND_WINDOW_SEC} ${(trendMomentum*100).toFixed(3)}%]`;
                 logger.info(`HEDGE15M DUMP: ${this.dumpDetected}`);
                 await this.buyLeg1(trader, rnd, "up", this.upAsk, rnd.upToken, rnd.downToken);
               } else if (dnFinal) {
-                this.dumpDetected = `DOWN ask ${oldest.downAsk.toFixed(2)}→${this.downAsk.toFixed(2)} (-${(dnDrop * 100).toFixed(1)}%) [BTC ${(momentum*100).toFixed(3)}%]`;
+                this.dumpDetected = `DOWN ask ${oldest.downAsk.toFixed(2)}→${this.downAsk.toFixed(2)} (-${(dnDrop * 100).toFixed(1)}%) [BTC${MOMENTUM_WINDOW_SEC} ${(shortMomentum*100).toFixed(3)}% BTC${TREND_WINDOW_SEC} ${(trendMomentum*100).toFixed(3)}%]`;
                 logger.info(`HEDGE15M DUMP: ${this.dumpDetected}`);
                 await this.buyLeg1(trader, rnd, "down", this.downAsk, rnd.downToken, rnd.upToken);
               }
