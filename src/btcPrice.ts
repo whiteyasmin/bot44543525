@@ -363,3 +363,13 @@ export function getChainlinkDirection(): string {
   }
   return chainlinkPrice >= roundStartChainlinkPrice ? "up" : "down";
 }
+
+/** 返回最近 N 秒内 BTC 价格变化百分比 (正=涨, 负=跌) */
+export function getRecentMomentum(windowSec = 30): number {
+  if (recentPrices.length < 2) return 0;
+  const cutoff = Date.now() - windowSec * 1000;
+  const old = recentPrices.find(p => p.t >= cutoff);
+  if (!old || old.p <= 0) return 0;
+  const latest = recentPrices[recentPrices.length - 1];
+  return (latest.p - old.p) / old.p;
+}
