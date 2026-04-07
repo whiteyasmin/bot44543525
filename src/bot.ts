@@ -10,7 +10,6 @@ import {
   getRecentMomentum,
 } from "./btcPrice";
 import { HISTORY_FILE, PAPER_HISTORY_FILE } from "./audit";
-import { loadPaperTuning } from "./paperTuning";
 import { clearPaperRuntimeState, loadPaperRuntimeState, savePaperRuntimeState } from "./paperRuntimeState";
 import { Trader } from "./trader";
 
@@ -29,14 +28,15 @@ const LEG1_STOP_ABS   = 0.15;     // Leg1 bid绝对下限, 低于此无论入场
 const MAX_ENTRY_ASK   = 0.50;     // Leg1 入场价上限 (实盘)
 const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功对冲概率极低
 const PAPER_SUM_TARGET = 0.95;    // 仿真盘sum target (回测最优)
-const PAPER_MAX_SUM_TARGET = 0.98;
+const PAPER_MAX_SUM_TARGET = 0.97;
 const PAPER_MAX_ENTRY_ASK = 0.59;
-const PAPER_HARD_MAX_SUM_TARGET = 1.04;
+const PAPER_HARD_MAX_SUM_TARGET = 0.99;
 const PAPER_SUM_ADJUST_STEP = 0.01;
 const PAPER_SKIP_ADJUST_TRIGGER = 2;
+const PAPER_DYNAMIC_TUNING_ENABLED = false;
 const PAPER_MIN_LOCKED_PROFIT = 0.02;     // 至少锁定 $0.02 (不再是主要门槛)
 const PAPER_MIN_LOCKED_ROI = 0.02;        // 至少锁定 2% ROI (主要门槛)
-const PAPER_ENTRY_SUM_BUFFER = 0.02;      // 入场时预留对冲空间buffer
+const PAPER_ENTRY_SUM_BUFFER = 0.01;      // 入场时预留对冲空间buffer
 const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点对冲空间
 const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
@@ -214,30 +214,13 @@ export class Hedge15mEngine {
     this.adaptiveMaxSumTarget = PAPER_MAX_SUM_TARGET;
     this.adaptiveMaxEntryAsk = PAPER_MAX_ENTRY_ASK;
     this.adaptiveAdjustmentCount = 0;
-    this.adaptiveLastAdjustment = "";
+    this.adaptiveLastAdjustment = PAPER_DYNAMIC_TUNING_ENABLED ? "" : "动态调参已关闭，使用固定严格参数";
     this.adaptiveSumSkipRounds = 0;
     this.adaptiveSumOkRounds = 0;
     this.adaptiveRoundRejectedBySum = false;
     this.adaptiveRoundRejectedByEntryAsk = false;
     this.minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
     this.minLockedRoi = PAPER_MIN_LOCKED_ROI;
-
-    const tuning = loadPaperTuning();
-    if (typeof tuning.baseSumTarget === "number") {
-      this.adaptiveBaseSumTarget = Math.max(0.9, Math.min(PAPER_HARD_MAX_SUM_TARGET, tuning.baseSumTarget));
-    }
-    if (typeof tuning.maxSumTarget === "number") {
-      this.adaptiveMaxSumTarget = Math.max(this.adaptiveBaseSumTarget, Math.min(PAPER_HARD_MAX_SUM_TARGET, tuning.maxSumTarget));
-    }
-    if (typeof tuning.maxEntryAsk === "number") {
-      this.adaptiveMaxEntryAsk = Math.max(0.4, Math.min(0.57, tuning.maxEntryAsk));
-    }
-    if (typeof tuning.adaptiveMinLockedProfit === "number") {
-      this.minLockedProfit = Math.max(0.1, Math.min(3, tuning.adaptiveMinLockedProfit));
-    }
-    if (typeof tuning.adaptiveMinLockedRoi === "number") {
-      this.minLockedRoi = Math.max(0.001, Math.min(0.05, tuning.adaptiveMinLockedRoi));
-    }
   }
 
   private clearAdaptiveRoundSkipCounts(): void {
@@ -246,7 +229,7 @@ export class Hedge15mEngine {
   }
 
   private noteAdaptivePaperSkip(reason: "sum" | "entry-ask"): void {
-    if (this.tradingMode !== "paper") return;
+    if (this.tradingMode !== "paper" || !PAPER_DYNAMIC_TUNING_ENABLED) return;
     if (reason === "sum") {
       this.adaptiveRoundRejectedBySum = true;
       return;
@@ -255,7 +238,7 @@ export class Hedge15mEngine {
   }
 
   private finalizeAdaptivePaperRound(): void {
-    if (this.tradingMode !== "paper") return;
+    if (this.tradingMode !== "paper" || !PAPER_DYNAMIC_TUNING_ENABLED) return;
 
     if (this.adaptiveRoundRejectedBySum) {
       this.adaptiveSumSkipRounds += 1;
@@ -280,13 +263,9 @@ export class Hedge15mEngine {
   }
 
   private adjustAdaptivePaperTuning(): void {
+    if (!PAPER_DYNAMIC_TUNING_ENABLED) return;
     const changes: string[] = [];
-    const nextBase = Math.min(PAPER_HARD_MAX_SUM_TARGET, this.adaptiveBaseSumTarget + PAPER_SUM_ADJUST_STEP);
     const nextMax = Math.min(PAPER_HARD_MAX_SUM_TARGET, this.adaptiveMaxSumTarget + PAPER_SUM_ADJUST_STEP);
-    if (nextBase > this.adaptiveBaseSumTarget) {
-      this.adaptiveBaseSumTarget = nextBase;
-      changes.push(`baseSum→${nextBase.toFixed(2)}`);
-    }
     if (nextMax > this.adaptiveMaxSumTarget) {
       this.adaptiveMaxSumTarget = Math.max(nextMax, this.adaptiveBaseSumTarget);
       changes.push(`maxSum→${this.adaptiveMaxSumTarget.toFixed(2)}`);
@@ -300,12 +279,9 @@ export class Hedge15mEngine {
   }
 
   private decayAdaptivePaperTuning(): void {
+    if (!PAPER_DYNAMIC_TUNING_ENABLED) return;
     if (this.adaptiveBaseSumTarget <= PAPER_SUM_TARGET && this.adaptiveMaxSumTarget <= PAPER_MAX_SUM_TARGET) return;
     const changes: string[] = [];
-    if (this.adaptiveBaseSumTarget > PAPER_SUM_TARGET) {
-      this.adaptiveBaseSumTarget = Math.max(PAPER_SUM_TARGET, this.adaptiveBaseSumTarget - PAPER_SUM_ADJUST_STEP);
-      changes.push(`baseSum→${this.adaptiveBaseSumTarget.toFixed(2)}`);
-    }
     if (this.adaptiveMaxSumTarget > PAPER_MAX_SUM_TARGET) {
       this.adaptiveMaxSumTarget = Math.max(PAPER_MAX_SUM_TARGET, this.adaptiveMaxSumTarget - PAPER_SUM_ADJUST_STEP);
       if (this.adaptiveMaxSumTarget < this.adaptiveBaseSumTarget) this.adaptiveMaxSumTarget = this.adaptiveBaseSumTarget;
@@ -315,6 +291,19 @@ export class Hedge15mEngine {
     this.adaptiveAdjustmentCount += 1;
     this.adaptiveLastAdjustment = `${timeStr()} 连续${PAPER_SKIP_ADJUST_TRIGGER}轮正常入场, 收紧: ${changes.join(", ")}`;
     logger.info(`PAPER AUTO-TUNE #${this.adaptiveAdjustmentCount}: ${this.adaptiveLastAdjustment}`);
+  }
+
+  private tightenAdaptivePaperAfterLoss(): void {
+    if (this.tradingMode !== "paper" || !PAPER_DYNAMIC_TUNING_ENABLED) return;
+    const changes: string[] = [];
+    if (this.adaptiveMaxSumTarget > PAPER_MAX_SUM_TARGET) {
+      this.adaptiveMaxSumTarget = Math.max(PAPER_MAX_SUM_TARGET, this.adaptiveMaxSumTarget - PAPER_SUM_ADJUST_STEP);
+      if (this.adaptiveMaxSumTarget < this.adaptiveBaseSumTarget) this.adaptiveMaxSumTarget = this.adaptiveBaseSumTarget;
+      changes.push(`maxSum→${this.adaptiveMaxSumTarget.toFixed(2)}`);
+    }
+    if (changes.length === 0) return;
+    this.adaptiveLastAdjustment = `${timeStr()} 亏损后收紧: ${changes.join(", ")}`;
+    logger.warn(`PAPER AUTO-TUNE TIGHTEN: ${this.adaptiveLastAdjustment}`);
   }
 
   private onLeg1Opened(): void {
@@ -467,7 +456,7 @@ export class Hedge15mEngine {
       hedgeTotalCost: this.totalCost,
       expectedProfit: this.expectedProfit,
       dumpDetected: this.dumpDetected,
-      tuningEnabled: this.tradingMode === "paper",
+      tuningEnabled: this.tradingMode === "paper" && PAPER_DYNAMIC_TUNING_ENABLED,
       baseSumTarget: this.getBaseSumTarget(),
       maxSumTarget: this.getMaxSumTarget(),
       maxEntryAsk: this.getMaxEntryAsk(),
@@ -1366,7 +1355,7 @@ export class Hedge15mEngine {
       const profit = recovered - soldCost;
       const result = profit >= 0 ? "WIN" : "LOSS";
       if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
-      else { this.losses++; this.consecutiveLosses++; }
+      else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
       this.totalProfit += profit;
       this.sessionProfit += profit;
       this.balance += recovered;
@@ -1426,7 +1415,7 @@ export class Hedge15mEngine {
               const profit = recovered - soldCost;
               const result = profit >= 0 ? "WIN" : "LOSS";
               if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
-              else { this.losses++; this.consecutiveLosses++; }
+              else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
               this.totalProfit += profit;
               this.sessionProfit += profit;
               this.balance += recovered;
@@ -1575,7 +1564,7 @@ export class Hedge15mEngine {
       const result = profit >= 0 ? "WIN" : "LOSS";
 
       if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
-      else { this.losses++; this.consecutiveLosses++; }
+      else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
       this.totalProfit += profit;
       this.sessionProfit += profit;
       this.balance += recovered;
@@ -1671,7 +1660,7 @@ export class Hedge15mEngine {
     const result = profit >= 0 ? "WIN" : "LOSS";
 
     if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
-    else { this.losses++; this.consecutiveLosses++; }
+    else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
     this.totalProfit += profit;
     this.sessionProfit += profit;
     this.balance += returnVal;
