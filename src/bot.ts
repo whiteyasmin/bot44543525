@@ -122,10 +122,13 @@ export interface Hedge15mState {
   latencyP90: number;
   latencyPingP50: number;
   latencyPingP90: number;
+  latencyPingCount: number;
   latencyHttpP50: number;
   latencyHttpP90: number;
+  latencyHttpCount: number;
   latencyCacheP50: number;
   latencyCacheP90: number;
+  latencyCacheCount: number;
   diagnostics: {
     marketWsConnected: boolean;
     userWsConnected: boolean;
@@ -596,10 +599,13 @@ export class Hedge15mEngine {
       latencyP90: dp.p90,
       latencyPingP50: latency.pingP50,
       latencyPingP90: latency.pingP90,
+      latencyPingCount: latency.pingCount,
       latencyHttpP50: latency.httpP50,
       latencyHttpP90: latency.httpP90,
+      latencyHttpCount: latency.httpCount,
       latencyCacheP50: latency.cacheP50,
       latencyCacheP90: latency.cacheP90,
+      latencyCacheCount: latency.cacheCount,
       diagnostics: {
         ...traderDiag,
         execSignalToSubmitP50: exec.signalToSubmit.p50,

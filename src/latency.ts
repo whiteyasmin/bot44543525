@@ -1,7 +1,7 @@
 import { Config } from "./config";
 import { logger } from "./logger";
 
-const PING_INTERVAL_MS = 10_000; // 每10s ping一次 CLOB
+const PING_INTERVAL_MS = 3_000; // 每3s ping一次 CLOB，面板反馈更及时
 const PING_TIMEOUT_MS  = 5_000;
 const HISTORY_SIZE     = 20;
 
@@ -60,7 +60,11 @@ export function stopLatencyMonitor(): void {
 
 /** 由交易循环调用: 记录一次真实的订单簿请求延迟 */
 export function recordLatency(ms: number, source: "http" | "cache" = "http"): void {
-  addSample(source === "cache" ? cacheSamples : httpSamples, ms);
+  if (source === "cache") {
+    addSample(cacheSamples, ms);
+    return;
+  }
+  addSample(httpSamples, ms);
 }
 
 export function getLatencySnapshot(): {

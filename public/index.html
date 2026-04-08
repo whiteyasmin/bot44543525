@@ -472,13 +472,13 @@ function render(s) {
   latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
   latEl90.style.color = latColor(lat90);
   const pingEl = document.getElementById('h-lat-ping');
-  pingEl.textContent = s.latencyPingP50 > 0 ? s.latencyPingP50 + 'ms / P90 ' + (s.latencyPingP90 || 0) + 'ms' : '--';
+  pingEl.textContent = s.latencyPingP50 > 0 ? s.latencyPingP50 + 'ms / P90 ' + (s.latencyPingP90 || 0) + 'ms / ' + (s.latencyPingCount || 0) + '样本' : '--';
   pingEl.style.color = latColor(s.latencyPingP50 || 0);
   const httpEl = document.getElementById('h-lat-http');
-  httpEl.textContent = s.latencyHttpP50 > 0 ? s.latencyHttpP50 + 'ms / P90 ' + (s.latencyHttpP90 || 0) + 'ms' : '--';
+  httpEl.textContent = s.latencyHttpP50 > 0 ? s.latencyHttpP50 + 'ms / P90 ' + (s.latencyHttpP90 || 0) + 'ms / ' + (s.latencyHttpCount || 0) + '样本' : ((s.latencyHttpCount || 0) > 0 ? '-- / ' + (s.latencyHttpCount || 0) + '样本' : '--');
   httpEl.style.color = latColor(s.latencyHttpP50 || 0);
   const cacheEl = document.getElementById('h-lat-cache');
-  cacheEl.textContent = s.latencyCacheP50 > 0 ? s.latencyCacheP50 + 'ms / P90 ' + (s.latencyCacheP90 || 0) + 'ms' : '--';
+  cacheEl.textContent = s.latencyCacheP50 > 0 ? s.latencyCacheP50 + 'ms / P90 ' + (s.latencyCacheP90 || 0) + 'ms / ' + (s.latencyCacheCount || 0) + '样本' : ((s.latencyCacheCount || 0) > 0 ? '-- / ' + (s.latencyCacheCount || 0) + '样本' : '--');
   cacheEl.style.color = s.latencyCacheP50 > 0 ? '#58a6ff' : '';
 
   const diagnostics = s.diagnostics || {};
