@@ -5,25 +5,35 @@ const PING_INTERVAL_MS = 3_000; // 每3s ping一次 CLOB，面板反馈更及时
 const PING_TIMEOUT_MS  = 5_000;
 const HISTORY_SIZE     = 20;
 
-const pingSamples: number[] = [];
-const httpSamples: number[] = [];
-const cacheSamples: number[] = [];
+type LatencyBucket = {
+  samples: number[];
+  lastMs: number;
+  lastAt: number;
+};
 
-function addSample(bucket: number[], ms: number): void {
+const pingSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
+const httpSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
+const cacheSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
+
+function addSample(bucket: LatencyBucket, ms: number): void {
   if (ms <= 0 || ms > 8_000) return; // 过滤异常值
-  bucket.push(ms);
-  while (bucket.length > HISTORY_SIZE) bucket.shift();
+  bucket.samples.push(ms);
+  bucket.lastMs = ms;
+  bucket.lastAt = Date.now();
+  while (bucket.samples.length > HISTORY_SIZE) bucket.samples.shift();
 }
 
-function summarize(bucket: number[], fallbackP50: number, fallbackP90: number): { p50: number; p90: number; count: number } {
-  if (bucket.length === 0) {
-    return { p50: fallbackP50, p90: fallbackP90, count: 0 };
+function summarize(bucket: LatencyBucket, fallbackP50: number, fallbackP90: number): { p50: number; p90: number; count: number; lastMs: number; lastAt: number } {
+  if (bucket.samples.length === 0) {
+    return { p50: fallbackP50, p90: fallbackP90, count: 0, lastMs: 0, lastAt: 0 };
   }
-  const sorted = [...bucket].sort((a, b) => a - b);
+  const sorted = [...bucket.samples].sort((a, b) => a - b);
   return {
     p50: sorted[Math.floor((sorted.length - 1) * 0.5)],
     p90: sorted[Math.floor((sorted.length - 1) * 0.9)],
-    count: bucket.length,
+    count: bucket.samples.length,
+    lastMs: bucket.lastMs,
+    lastAt: bucket.lastAt,
   };
 }
 
@@ -70,6 +80,7 @@ export function recordLatency(ms: number, source: "http" | "cache" = "http"): vo
 export function getLatencySnapshot(): {
   networkP50: number;
   networkP90: number;
+  networkSource: "ping" | "http";
   pingP50: number;
   pingP90: number;
   httpP50: number;
@@ -79,6 +90,12 @@ export function getLatencySnapshot(): {
   pingCount: number;
   httpCount: number;
   cacheCount: number;
+  pingLastMs: number;
+  pingLastAt: number;
+  httpLastMs: number;
+  httpLastAt: number;
+  cacheLastMs: number;
+  cacheLastAt: number;
 } {
   const ping = summarize(pingSamples, 150, 250);
   const http = summarize(httpSamples, 150, 250);
@@ -87,6 +104,7 @@ export function getLatencySnapshot(): {
   return {
     networkP50: networkSource.p50,
     networkP90: networkSource.p90,
+    networkSource: http.count > 0 ? "http" : "ping",
     pingP50: ping.p50,
     pingP90: ping.p90,
     httpP50: http.count > 0 ? http.p50 : 0,
@@ -96,6 +114,12 @@ export function getLatencySnapshot(): {
     pingCount: ping.count,
     httpCount: http.count,
     cacheCount: cache.count,
+    pingLastMs: ping.lastMs,
+    pingLastAt: ping.lastAt,
+    httpLastMs: http.lastMs,
+    httpLastAt: http.lastAt,
+    cacheLastMs: cache.lastMs,
+    cacheLastAt: cache.lastAt,
   };
 }
 

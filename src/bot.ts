@@ -121,15 +121,22 @@ export interface Hedge15mState {
   sessionROI: number;
   latencyP50: number;
   latencyP90: number;
+  latencyNetworkSource: string;
   latencyPingP50: number;
   latencyPingP90: number;
   latencyPingCount: number;
+  latencyPingLastMs: number;
+  latencyPingLastAt: number;
   latencyHttpP50: number;
   latencyHttpP90: number;
   latencyHttpCount: number;
+  latencyHttpLastMs: number;
+  latencyHttpLastAt: number;
   latencyCacheP50: number;
   latencyCacheP90: number;
   latencyCacheCount: number;
+  latencyCacheLastMs: number;
+  latencyCacheLastAt: number;
   diagnostics: {
     marketWsConnected: boolean;
     userWsConnected: boolean;
@@ -660,15 +667,22 @@ export class Hedge15mEngine {
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
+      latencyNetworkSource: latency.networkSource,
       latencyPingP50: latency.pingP50,
       latencyPingP90: latency.pingP90,
       latencyPingCount: latency.pingCount,
+      latencyPingLastMs: latency.pingLastMs,
+      latencyPingLastAt: latency.pingLastAt,
       latencyHttpP50: latency.httpP50,
       latencyHttpP90: latency.httpP90,
       latencyHttpCount: latency.httpCount,
+      latencyHttpLastMs: latency.httpLastMs,
+      latencyHttpLastAt: latency.httpLastAt,
       latencyCacheP50: latency.cacheP50,
       latencyCacheP90: latency.cacheP90,
       latencyCacheCount: latency.cacheCount,
+      latencyCacheLastMs: latency.cacheLastMs,
+      latencyCacheLastAt: latency.cacheLastAt,
       diagnostics: {
         ...traderDiag,
         execSignalToSubmitP50: exec.signalToSubmit.p50,

@@ -94,6 +94,7 @@ tr:hover{background:rgba(88,166,255,.04)}
     <span id="badge" class="badge badge-stop">已停止</span>
     <button class="btn-g" onclick="downloadLogs()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#1f6feb,#58a6ff)">下载日志</button>
     <button class="btn-g" onclick="downloadHistory()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#8957e5,#bc8cff)">下载历史</button>
+    <button class="btn-g" onclick="downloadDecisionAudit()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#d29922,#e3b341)">下载决策审计</button>
     <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
     <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
     <button class="btn-r" onclick="doLogout()" style="font-size:12px;padding:6px 12px">退出</button>
@@ -146,6 +147,7 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
       <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
       <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
+      <div class="row"><span class="k">最近网络样本</span><span class="v" id="h-lat-live">--</span></div>
       <div class="row"><span class="k">CLOB Ping</span><span class="v" id="h-lat-ping">--</span></div>
       <div class="row"><span class="k">HTTP订单簿</span><span class="v" id="h-lat-http">--</span></div>
       <div class="row"><span class="k">本地缓存命中</span><span class="v" id="h-lat-cache">--</span></div>
@@ -322,6 +324,10 @@ function downloadHistory() {
   downloadWithAuth('/api/download-history', 'hedge15m-history.json');
 }
 
+function downloadDecisionAudit() {
+  downloadWithAuth('/api/download-decision-audit', 'hedge15m-decisions.jsonl');
+}
+
 async function stopBot() {
   try {
     await fetch(API+'/api/stop',{method:'POST',credentials:'include'});
@@ -367,6 +373,19 @@ function connectWS() {
 }
 
 function render(s) {
+  const now = Date.now();
+  const fmtLatencyAge = (at) => {
+    if (!at) return '--';
+    const age = Math.max(0, now - at);
+    if (age < 1000) return age + 'ms前';
+    return (age / 1000).toFixed(age < 10_000 ? 1 : 0) + 's前';
+  };
+  const fmtLatencyDetail = (label, p50, p90, count, lastMs, lastAt) => {
+    if (!count) return '--';
+    const lastPart = lastMs > 0 ? '最近 ' + lastMs + 'ms / ' + fmtLatencyAge(lastAt) : '最近 --';
+    return 'P50 ' + p50 + 'ms / P90 ' + p90 + 'ms / ' + lastPart + ' / ' + count + '样本';
+  };
+
   // Badge
   const badge = document.getElementById('badge');
   if (s.botRunning) {
@@ -466,19 +485,24 @@ function render(s) {
   const lat90 = s.latencyP90 || 0;
   const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#3fb950' : ms < 150 ? '#e3b341' : '#f85149';
   const latEl50 = document.getElementById('h-lat-p50');
-  latEl50.textContent = lat50 > 0 ? lat50+'ms' : '--';
+  latEl50.textContent = lat50 > 0 ? lat50 + 'ms (' + ((s.latencyNetworkSource || 'ping').toUpperCase()) + ')' : '--';
   latEl50.style.color = latColor(lat50);
   const latEl90 = document.getElementById('h-lat-p90');
   latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
   latEl90.style.color = latColor(lat90);
+  const liveEl = document.getElementById('h-lat-live');
+  const networkLastMs = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastMs || 0) : (s.latencyPingLastMs || 0);
+  const networkLastAt = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastAt || 0) : (s.latencyPingLastAt || 0);
+  liveEl.textContent = networkLastMs > 0 ? networkLastMs + 'ms / ' + fmtLatencyAge(networkLastAt) : '--';
+  liveEl.style.color = latColor(networkLastMs || lat50);
   const pingEl = document.getElementById('h-lat-ping');
-  pingEl.textContent = s.latencyPingP50 > 0 ? s.latencyPingP50 + 'ms / P90 ' + (s.latencyPingP90 || 0) + 'ms / ' + (s.latencyPingCount || 0) + '样本' : '--';
+  pingEl.textContent = fmtLatencyDetail('Ping', s.latencyPingP50 || 0, s.latencyPingP90 || 0, s.latencyPingCount || 0, s.latencyPingLastMs || 0, s.latencyPingLastAt || 0);
   pingEl.style.color = latColor(s.latencyPingP50 || 0);
   const httpEl = document.getElementById('h-lat-http');
-  httpEl.textContent = s.latencyHttpP50 > 0 ? s.latencyHttpP50 + 'ms / P90 ' + (s.latencyHttpP90 || 0) + 'ms / ' + (s.latencyHttpCount || 0) + '样本' : ((s.latencyHttpCount || 0) > 0 ? '-- / ' + (s.latencyHttpCount || 0) + '样本' : '--');
+  httpEl.textContent = fmtLatencyDetail('HTTP', s.latencyHttpP50 || 0, s.latencyHttpP90 || 0, s.latencyHttpCount || 0, s.latencyHttpLastMs || 0, s.latencyHttpLastAt || 0);
   httpEl.style.color = latColor(s.latencyHttpP50 || 0);
   const cacheEl = document.getElementById('h-lat-cache');
-  cacheEl.textContent = s.latencyCacheP50 > 0 ? s.latencyCacheP50 + 'ms / P90 ' + (s.latencyCacheP90 || 0) + 'ms / ' + (s.latencyCacheCount || 0) + '样本' : ((s.latencyCacheCount || 0) > 0 ? '-- / ' + (s.latencyCacheCount || 0) + '样本' : '--');
+  cacheEl.textContent = fmtLatencyDetail('CACHE', s.latencyCacheP50 || 0, s.latencyCacheP90 || 0, s.latencyCacheCount || 0, s.latencyCacheLastMs || 0, s.latencyCacheLastAt || 0);
   cacheEl.style.color = s.latencyCacheP50 > 0 ? '#58a6ff' : '';
 
   const diagnostics = s.diagnostics || {};
