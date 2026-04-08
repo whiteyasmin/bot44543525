@@ -65,7 +65,11 @@ const TREND_CONFIRM_TRIGGER = 4;           // 连续4次确认后才视为持续
 const TREND_MAX_ENTRY_ASK = 0.68;          // 趋势追价上限
 const TREND_BUDGET_PCT = 0.08;             // 趋势单更轻仓
 const TREND_TAKE_PROFIT_BID = 0.90;        // 趋势单高胜率先落袋
-const TREND_STOP_LOSS_BID = 0.42;          // 趋势失败快速退出
+const TREND_STOP_LOSS_BID = 0.42;          // 趋势失败快速退出(绝对底线)
+const TREND_RELATIVE_STOP_LOSS = 0.75;     // 趋势单相对止损: bid < 入场价*75%
+const TREND_TRAILING_PULLBACK = 0.15;      // 趋势单移动止盈: 从峰值回撤15%就卖
+const TREND_TRAILING_MIN_BID = 0.55;       // 移动止盈最低触发bid
+const TREND_DEADZONE_EXIT_BID = 0.50;      // 60-180s死区 bid<0.50 退出
 const STRATEGY_POLICY = "mispricing-first" as const;
 const BASE_BUDGET_PCT = 0.18;             // 默认轻仓，优先控制回撤
 const THIN_EDGE_BUDGET_PCT = 0.12;        // 对冲空间偏薄时进一步缩仓
@@ -203,6 +207,7 @@ export interface HedgeHistoryEntry {
   sellOrderId?: string;     // 卖出订单ID
   estimated?: boolean;      // 是否含估算数据 (无orderId时通过余额推断)
   profitBreakdown?: string; // 盈亏计算明细: "回收$X - 成本$Y = 盈亏$Z"
+  strategyMode?: string;    // "mispricing" | "trend"
 }
 
 function sleep(ms: number): Promise<void> {
@@ -331,6 +336,7 @@ export class Hedge15mEngine {
   private currentTrendBias: "up" | "down" | "flat" = "flat";
   private trendSignalStreak = 0;
   private trendSignalDir: "up" | "down" | "flat" = "flat";
+  private trendPeakBid = 0;                  // 趋势单持仓期间最高bid
   private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
 
@@ -930,6 +936,7 @@ export class Hedge15mEngine {
     this.leg1ThinEdgeDelayLoggedAt = 0;
     this.leg1Estimated = false;
     this.leg2Estimated = false;
+    this.trendPeakBid = 0;
     this.leg1EntryInFlight = false;
     this.leg1AttemptedThisRound = false;
     this.resetRoundRejectStats();
@@ -1610,20 +1617,52 @@ export class Hedge15mEngine {
     if (this.hedgeState !== "leg1_filled") return;
     if (leg1Bid == null || leg1Bid <= 0) return;
 
-    this.status = `趋势持仓中: ${this.leg1Dir.toUpperCase()} bid=${leg1Bid.toFixed(2)} ${secs.toFixed(0)}s left`;
+    // 更新峰值bid
+    if (leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
+    const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
 
+    this.status = `趋势持仓中: ${this.leg1Dir.toUpperCase()} bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} ${secs.toFixed(0)}s left`;
+
+    // ① 固定止盈: bid ≥ 0.90 且剩余 >180s
     if (leg1Bid >= TREND_TAKE_PROFIT_BID && secs > 180) {
       logger.info(`HEDGE15M TREND TAKE-PROFIT: bid=${leg1Bid.toFixed(2)} >= ${TREND_TAKE_PROFIT_BID.toFixed(2)}`);
       await this.emergencySellLeg1(trader, "止盈", leg1Bid);
       return;
     }
 
+    // ② 移动止盈: 峰值回撤15% 且 bid ≥ 0.55 且剩余 >60s
+    if (
+      this.trendPeakBid >= TREND_TRAILING_MIN_BID &&
+      leg1Bid <= this.trendPeakBid * (1 - TREND_TRAILING_PULLBACK) &&
+      secs > 60
+    ) {
+      logger.info(`HEDGE15M TREND TRAILING-STOP: bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} pullback=${((1 - leg1Bid / this.trendPeakBid) * 100).toFixed(1)}%`);
+      await this.emergencySellLeg1(trader, "止盈", leg1Bid);
+      return;
+    }
+
+    // ③ 相对止损: bid < 入场价*75%
+    if (leg1Bid < entryPrice * TREND_RELATIVE_STOP_LOSS && secs > 60) {
+      logger.info(`HEDGE15M TREND RELATIVE-SL: bid=${leg1Bid.toFixed(2)} < entry=${entryPrice.toFixed(2)}*${TREND_RELATIVE_STOP_LOSS}=${(entryPrice * TREND_RELATIVE_STOP_LOSS).toFixed(2)}`);
+      await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
+      return;
+    }
+
+    // ④ 绝对止损: bid ≤ 0.42 (无论入场价多少)
     if (leg1Bid <= TREND_STOP_LOSS_BID && secs > 60) {
       logger.info(`HEDGE15M TREND STOP-LOSS: bid=${leg1Bid.toFixed(2)} <= ${TREND_STOP_LOSS_BID.toFixed(2)}`);
       await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
       return;
     }
 
+    // ⑤ 死区填补: 60-180s 且 bid < 0.50
+    if (secs <= 180 && secs > 45 && leg1Bid < TREND_DEADZONE_EXIT_BID) {
+      logger.info(`HEDGE15M TREND DEADZONE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < ${TREND_DEADZONE_EXIT_BID}`);
+      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
+      return;
+    }
+
+    // ⑥ 超时割肉: ≤45s 且 bid < 0.55
     if (secs <= 45 && leg1Bid < 0.55) {
       logger.info(`HEDGE15M TREND LATE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < 0.55`);
       await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
@@ -1844,6 +1883,7 @@ export class Hedge15mEngine {
         orderId: this.leg1OrderId,
         sellOrderId: this.pendingSellOrderId.slice(0, 12),
         estimated: gtcDetails.avgPrice <= 0,
+        strategyMode: this.activeStrategyMode,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
@@ -1911,6 +1951,7 @@ export class Hedge15mEngine {
                 orderId: this.leg1OrderId,
                 sellOrderId: sellId.slice(0, 12),
                 estimated: isEstimated,
+                strategyMode: this.activeStrategyMode,
               });
               if (this.history.length > 200) this.history.shift();
               this.saveHistory();
@@ -2086,6 +2127,7 @@ export class Hedge15mEngine {
         orderId: this.leg1OrderId,
         sellOrderId: orderId.slice(0, 12),
         estimated: isEstimated,
+        strategyMode: this.activeStrategyMode,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
@@ -2188,6 +2230,7 @@ export class Hedge15mEngine {
       leg2FillPrice: this.leg2FillPrice,
       orderId: this.leg1OrderId,
       estimated: this.leg1Estimated || this.leg2Estimated,
+      strategyMode: this.activeStrategyMode,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();
