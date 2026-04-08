@@ -238,14 +238,14 @@ server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   });
 });
 
-// Push state every 1s
+// Push state at a higher cadence so panel timers and latency ages feel near-real-time.
 setInterval(() => {
   if (wss.clients.size === 0) return;
   const msg = JSON.stringify({ type: "state", data: bot.getState() });
   wss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
-}, 1000);
+}, 250);
 
 // --- Start ---
 

@@ -4,6 +4,7 @@ import { logger } from "./logger";
 const PING_INTERVAL_MS = 3_000; // 每3s ping一次 CLOB，面板反馈更及时
 const PING_TIMEOUT_MS  = 5_000;
 const HISTORY_SIZE     = 20;
+const HTTP_FRESH_MS    = 10_000;
 
 type LatencyBucket = {
   samples: number[];
@@ -100,11 +101,12 @@ export function getLatencySnapshot(): {
   const ping = summarize(pingSamples, 150, 250);
   const http = summarize(httpSamples, 150, 250);
   const cache = summarize(cacheSamples, 0, 0);
-  const networkSource = http.count > 0 ? http : ping;
+  const useFreshHttp = http.count > 0 && http.lastAt > 0 && (Date.now() - http.lastAt) <= HTTP_FRESH_MS;
+  const networkSource = useFreshHttp ? http : ping;
   return {
     networkP50: networkSource.p50,
     networkP90: networkSource.p90,
-    networkSource: http.count > 0 ? "http" : "ping",
+    networkSource: useFreshHttp ? "http" : "ping",
     pingP50: ping.p50,
     pingP90: ping.p90,
     httpP50: http.count > 0 ? http.p50 : 0,
