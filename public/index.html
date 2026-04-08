@@ -56,8 +56,10 @@ header h1::before{content:'₿';font-size:20px;color:#f7931a}
 .mini-stat .lbl{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:.6px}
 .mini-stat .val{margin-top:5px;font-size:13px;font-family:'SF Mono',Consolas,monospace;font-weight:600;line-height:1.35}
 
-.row{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid #1e273320}
-.row .k{color:#8b949e} .row .v{font-family:'SF Mono',Consolas,monospace;font-weight:500}
+.row{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:5px 0;font-size:13px;border-bottom:1px solid #1e273320}
+.row .k{color:#8b949e;flex:0 0 112px}
+.row .v{font-family:'SF Mono',Consolas,monospace;font-weight:500;flex:1 1 auto;text-align:right;word-break:break-word;line-height:1.35}
+.muted{color:#6e7681}
 .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
 .tag-g{background:rgba(35,134,54,.15);color:#3fb950;border:1px solid rgba(35,134,54,.3)}
 .tag-r{background:rgba(218,54,51,.1);color:#f85149;border:1px solid rgba(218,54,51,.2)}
@@ -374,16 +376,49 @@ function connectWS() {
 
 function render(s) {
   const now = Date.now();
+  const escapeHtml = (value) => String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
   const fmtLatencyAge = (at) => {
     if (!at) return '--';
     const age = Math.max(0, now - at);
     if (age < 1000) return age + 'ms前';
     return (age / 1000).toFixed(age < 10_000 ? 1 : 0) + 's前';
   };
-  const fmtLatencyDetail = (label, p50, p90, count, lastMs, lastAt) => {
+  const fmtLatencyDetail = (p50, p90, count, lastMs, lastAt, staleAfterMs = 10000) => {
     if (!count) return '--';
-    const lastPart = lastMs > 0 ? '最近 ' + lastMs + 'ms / ' + fmtLatencyAge(lastAt) : '最近 --';
-    return 'P50 ' + p50 + 'ms / P90 ' + p90 + 'ms / ' + lastPart + ' / ' + count + '样本';
+    const ageMs = lastAt ? Math.max(0, now - lastAt) : 0;
+    const freshness = lastAt && ageMs > staleAfterMs ? '陈旧 ' + fmtLatencyAge(lastAt) : fmtLatencyAge(lastAt);
+    const lastPart = lastMs > 0 ? '最近 ' + lastMs + 'ms' : '最近 --';
+    return lastPart + ' · P50 ' + p50 + 'ms · P90 ' + p90 + 'ms · ' + freshness + ' · ' + count + '样本';
+  };
+  const fmtSkipStatus = (status) => {
+    if (!status || !status.startsWith('跳过:')) return status;
+    const remainingMatch = status.match(/剩余(\d+)s/);
+    const limitMatch = status.match(/<\s*(\d+)s/);
+    if (remainingMatch && limitMatch) {
+      return '本轮跳过 · 剩余 ' + remainingMatch[1] + 's，入场门槛 ' + limitMatch[1] + 's';
+    }
+    return status;
+  };
+  const fmtWsStatus = (connected, ageMs, disconnects, reconnects) => {
+    if (connected) return { text: '在线 · 延迟 ' + (ageMs || 0) + 'ms', color: (ageMs || 0) < 1000 ? '#3fb950' : '#e3b341' };
+    if ((disconnects || 0) === 0 && (reconnects || 0) === 0) return { text: '未接通', color: '#8b949e' };
+    return { text: '断开', color: '#f85149' };
+  };
+  const fmtBookSource = (source, fallbackActive) => {
+    if (source === 'ws') return fallbackActive ? 'WS主路 / 回退待命' : 'WS主路';
+    if (source === 'http') return 'HTTP回退中';
+    return '--';
+  };
+  const fmtIssueCount = (staleCount, crossedCount) => {
+    const stale = staleCount || 0;
+    const crossed = crossedCount || 0;
+    if (!stale && !crossed) return '正常';
+    return '陈旧 ' + stale + ' / 交叉 ' + crossed;
   };
 
   // Badge
@@ -430,18 +465,21 @@ function render(s) {
   // Hedge status
   const stateMap = {off:'待命',watching:'监控中',leg1_filled:'Leg1已成交',leg2_filled:'双腿锁定',done:'完成'};
   const stateEl = document.getElementById('h-state');
-  stateEl.textContent = s.status || stateMap[s.hedgeState] || s.hedgeState;
+  const renderedStatus = fmtSkipStatus(s.status || stateMap[s.hedgeState] || s.hedgeState);
+  stateEl.textContent = renderedStatus;
+  stateEl.title = s.status || stateMap[s.hedgeState] || s.hedgeState || '';
+  stateEl.style.color = (s.status || '').startsWith('跳过:') ? '#e3b341' : '';
   document.getElementById('h-mode').textContent = s.tradingMode === 'paper'
     ? '仿真盘 / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
     : '实盘';
   const tuningEl = document.getElementById('h-paper-tuning');
   tuningEl.textContent = s.tuningEnabled
     ? 'sum ' + Number(s.baseSumTarget || 0).toFixed(2) + '→' + Number(s.maxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.maxEntryAsk || 0).toFixed(2)
-    : '--';
+    : '固定参数';
   tuningEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
   const adjustEl = document.getElementById('h-paper-adjust');
-  adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '--') : '--');
-  adjustEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
+  adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '动态调参关闭') : '--');
+  adjustEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '#8b949e';
   const strategyEl = document.getElementById('h-strategy-mode');
   const strategyModeMap = {none:'待机',mispricing:'错价',trend:'趋势'};
   strategyEl.textContent = strategyModeMap[s.activeStrategyMode] || s.activeStrategyMode || '--';
@@ -458,7 +496,7 @@ function render(s) {
   document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
   document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
   document.getElementById('h-dn-ask').textContent = s.downAsk > 0 ? '$'+s.downAsk.toFixed(2) : '--';
-  document.getElementById('h-dump').textContent = s.dumpDetected || '无';
+  document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
 
   if (s.hedgeLeg1Price > 0) {
     document.getElementById('h-leg1').innerHTML = '<span class="tag tag-b">'+s.hedgeLeg1Dir+' @$'+s.hedgeLeg1Price.toFixed(2)+'</span>';
@@ -485,7 +523,7 @@ function render(s) {
   const lat90 = s.latencyP90 || 0;
   const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#3fb950' : ms < 150 ? '#e3b341' : '#f85149';
   const latEl50 = document.getElementById('h-lat-p50');
-  latEl50.textContent = lat50 > 0 ? lat50 + 'ms (' + ((s.latencyNetworkSource || 'ping').toUpperCase()) + ')' : '--';
+  latEl50.textContent = lat50 > 0 ? lat50 + 'ms · ' + ((s.latencyNetworkSource || 'ping').toUpperCase()) : '--';
   latEl50.style.color = latColor(lat50);
   const latEl90 = document.getElementById('h-lat-p90');
   latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
@@ -493,30 +531,33 @@ function render(s) {
   const liveEl = document.getElementById('h-lat-live');
   const networkLastMs = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastMs || 0) : (s.latencyPingLastMs || 0);
   const networkLastAt = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastAt || 0) : (s.latencyPingLastAt || 0);
-  liveEl.textContent = networkLastMs > 0 ? networkLastMs + 'ms / ' + fmtLatencyAge(networkLastAt) : '--';
+  liveEl.textContent = networkLastMs > 0 ? networkLastMs + 'ms · ' + fmtLatencyAge(networkLastAt) : '--';
   liveEl.style.color = latColor(networkLastMs || lat50);
   const pingEl = document.getElementById('h-lat-ping');
-  pingEl.textContent = fmtLatencyDetail('Ping', s.latencyPingP50 || 0, s.latencyPingP90 || 0, s.latencyPingCount || 0, s.latencyPingLastMs || 0, s.latencyPingLastAt || 0);
+  pingEl.textContent = fmtLatencyDetail(s.latencyPingP50 || 0, s.latencyPingP90 || 0, s.latencyPingCount || 0, s.latencyPingLastMs || 0, s.latencyPingLastAt || 0, 7000);
   pingEl.style.color = latColor(s.latencyPingP50 || 0);
   const httpEl = document.getElementById('h-lat-http');
-  httpEl.textContent = fmtLatencyDetail('HTTP', s.latencyHttpP50 || 0, s.latencyHttpP90 || 0, s.latencyHttpCount || 0, s.latencyHttpLastMs || 0, s.latencyHttpLastAt || 0);
-  httpEl.style.color = latColor(s.latencyHttpP50 || 0);
+  const httpAgeMs = s.latencyHttpLastAt ? Math.max(0, now - s.latencyHttpLastAt) : 0;
+  httpEl.textContent = fmtLatencyDetail(s.latencyHttpP50 || 0, s.latencyHttpP90 || 0, s.latencyHttpCount || 0, s.latencyHttpLastMs || 0, s.latencyHttpLastAt || 0, 10000);
+  httpEl.style.color = httpAgeMs > 10000 ? '#8b949e' : latColor(s.latencyHttpP50 || 0);
   const cacheEl = document.getElementById('h-lat-cache');
-  cacheEl.textContent = fmtLatencyDetail('CACHE', s.latencyCacheP50 || 0, s.latencyCacheP90 || 0, s.latencyCacheCount || 0, s.latencyCacheLastMs || 0, s.latencyCacheLastAt || 0);
+  cacheEl.textContent = fmtLatencyDetail(s.latencyCacheP50 || 0, s.latencyCacheP90 || 0, s.latencyCacheCount || 0, s.latencyCacheLastMs || 0, s.latencyCacheLastAt || 0, 2000);
   cacheEl.style.color = s.latencyCacheP50 > 0 ? '#58a6ff' : '';
 
   const diagnostics = s.diagnostics || {};
   const marketWsEl = document.getElementById('h-market-ws');
-  marketWsEl.textContent = diagnostics.marketWsConnected ? '在线 / ' + (diagnostics.marketWsAgeMs || 0) + 'ms' : '离线';
-  marketWsEl.style.color = diagnostics.marketWsConnected ? ((diagnostics.marketWsAgeMs || 0) < 1000 ? '#3fb950' : '#e3b341') : '#f85149';
+  const marketWs = fmtWsStatus(diagnostics.marketWsConnected, diagnostics.marketWsAgeMs, diagnostics.marketWsDisconnects, diagnostics.marketWsReconnects);
+  marketWsEl.textContent = marketWs.text;
+  marketWsEl.style.color = marketWs.color;
   const userWsEl = document.getElementById('h-user-ws');
-  userWsEl.textContent = diagnostics.userWsConnected ? '在线 / ' + (diagnostics.userWsAgeMs || 0) + 'ms' : '离线';
-  userWsEl.style.color = diagnostics.userWsConnected ? '#3fb950' : '#f85149';
+  const userWs = fmtWsStatus(diagnostics.userWsConnected, diagnostics.userWsAgeMs, diagnostics.userWsDisconnects, diagnostics.userWsReconnects);
+  userWsEl.textContent = userWs.text;
+  userWsEl.style.color = userWs.color;
   const bookSourceEl = document.getElementById('h-book-source');
-  bookSourceEl.textContent = diagnostics.orderbookSource === 'ws' ? 'WS' : diagnostics.orderbookSource === 'http' ? 'HTTP回退' : '--';
+  bookSourceEl.textContent = fmtBookSource(diagnostics.orderbookSource, diagnostics.fallbackActive);
   bookSourceEl.style.color = diagnostics.orderbookSource === 'ws' ? '#3fb950' : diagnostics.orderbookSource === 'http' ? '#e3b341' : '';
   const localBookEl = document.getElementById('h-local-book');
-  localBookEl.textContent = (diagnostics.localBookReady ? '就绪 ' : '未就绪 ') + (diagnostics.localBookTokenCount || 0) + '/' + (diagnostics.trackedTokenCount || 0);
+  localBookEl.textContent = (diagnostics.localBookReady ? '就绪' : '未就绪') + ' · ' + (diagnostics.localBookTokenCount || 0) + '/' + (diagnostics.trackedTokenCount || 0);
   localBookEl.style.color = diagnostics.localBookReady && !(diagnostics.localBookStaleCount || 0) && !(diagnostics.localBookCrossedCount || 0) ? '#3fb950' : '#e3b341';
   const execS2SEl = document.getElementById('h-exec-s2s');
   execS2SEl.textContent = diagnostics.execSignalToSubmitP50 > 0 ? diagnostics.execSignalToSubmitP50 + 'ms' : '--';
@@ -540,18 +581,16 @@ function render(s) {
   execGtcEl.textContent = diagnostics.execGtcWaitToFillP50 > 0 ? diagnostics.execGtcWaitToFillP50 + 'ms' : '--';
   execGtcEl.style.color = latColor(diagnostics.execGtcWaitToFillP50 || 0);
   const marketWsStatsEl = document.getElementById('h-market-ws-stats');
-  marketWsStatsEl.textContent = (diagnostics.marketWsDisconnects || 0) + ' / ' + (diagnostics.marketWsReconnects || 0);
-  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#e3b341' : '#3fb950';
+  marketWsStatsEl.textContent = '断流 ' + (diagnostics.marketWsDisconnects || 0) + ' · 重连 ' + (diagnostics.marketWsReconnects || 0);
+  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#e3b341' : '#8b949e';
   const userWsStatsEl = document.getElementById('h-user-ws-stats');
-  userWsStatsEl.textContent = (diagnostics.userWsDisconnects || 0) + ' / ' + (diagnostics.userWsReconnects || 0);
-  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#e3b341' : '#3fb950';
+  userWsStatsEl.textContent = '断流 ' + (diagnostics.userWsDisconnects || 0) + ' · 重连 ' + (diagnostics.userWsReconnects || 0);
+  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#e3b341' : '#8b949e';
   const fallbackStatsEl = document.getElementById('h-fallback-stats');
-  fallbackStatsEl.textContent = (diagnostics.fallbackTransitions || 0) > 0
-    ? (diagnostics.fallbackTransitions || 0) + ' 次 / ' + (diagnostics.localBookMaxDepth || 0) + '档'
-    : '0 次 / ' + (diagnostics.localBookMaxDepth || 0) + '档';
-  fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#e3b341' : '#3fb950';
+  fallbackStatsEl.textContent = '回退 ' + (diagnostics.fallbackTransitions || 0) + ' 次 · 深度 ' + (diagnostics.localBookMaxDepth || 0) + ' 档';
+  fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#e3b341' : '#8b949e';
   const localBookIssuesEl = document.getElementById('h-local-book-issues');
-  localBookIssuesEl.textContent = (diagnostics.localBookStaleCount || 0) + ' / ' + (diagnostics.localBookCrossedCount || 0);
+  localBookIssuesEl.textContent = fmtIssueCount(diagnostics.localBookStaleCount, diagnostics.localBookCrossedCount);
   localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#e3b341' : '#3fb950';
 
   // History
