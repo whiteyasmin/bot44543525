@@ -73,6 +73,10 @@ const HIGH_ASK_BUDGET_PCT = 0.10;         // 高价入场只允许极小仓位
 const LEG1_HEDGE_TIMEOUT_SECS = 30;
 const LEG1_HEDGE_TIMEOUT_MIN_SECS = 15;
 const LEG1_HEDGE_TIMEOUT_SUM_BUFFER = 0.03;
+const THIN_EDGE_HEDGE_TIMEOUT_MS = 15_000;
+const THIN_EDGE_HEDGE_SUM_BUFFER = 0.01;
+const THIN_EDGE_PROFIT_GRACE_MS = 4_000;
+const THIN_EDGE_DESIRED_LOCKED_PROFIT = 0.35;
 const EARLY_EXIT_AFTER_MS = 90_000;
 const EARLY_EXIT_SUM_BUFFER = 0.06;
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -299,6 +303,11 @@ export class Hedge15mEngine {
   private leg1OrderId = "";          // Leg1 订单ID
   private leg2OrderId = "";          // Leg2 订单ID
   private leg1FilledAt = 0;
+  private leg1ThinEdgeEntry = false;
+  private leg1ThinEdgeObservedSum = 0;
+  private leg1ThinEdgePreferredSum = 0;
+  private leg1ThinEdgeHardMaxSum = 0;
+  private leg1ThinEdgeDelayLoggedAt = 0;
   private leg1Estimated = false;       // Leg1 成交是否为估算值
   private leg2Estimated = false;       // Leg2 成交是否为估算值
   private leg1EntryInFlight = false;
@@ -588,6 +597,22 @@ export class Hedge15mEngine {
     if (secs <= 60) return near60;
     if (secs <= 120) return near120;
     return base;
+  }
+
+  private getProjectedLockedProfit(shares: number, fillPrice: number, oppAsk: number): number {
+    return shares - (shares * fillPrice * (1 + TAKER_FEE) + shares * oppAsk * (1 + TAKER_FEE));
+  }
+
+  private shouldDelayThinEdgeLeg2(oppAsk: number, sumTarget: number): boolean {
+    if (!this.leg1ThinEdgeEntry || this.leg1FilledAt <= 0 || this.leg1Shares <= 0) return false;
+    const heldMs = Date.now() - this.leg1FilledAt;
+    if (heldMs < 0 || heldMs > THIN_EDGE_PROFIT_GRACE_MS) return false;
+    const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+    const currentSum = fillPrice + oppAsk;
+    if (currentSum > sumTarget) return false;
+    const projectedLockedProfit = this.getProjectedLockedProfit(this.leg1Shares, fillPrice, oppAsk);
+    if (projectedLockedProfit >= THIN_EDGE_DESIRED_LOCKED_PROFIT) return false;
+    return true;
   }
 
   private getRoundPhase(): string {
@@ -910,6 +935,11 @@ export class Hedge15mEngine {
     this.leg1OrderId = "";
     this.leg2OrderId = "";
     this.leg1FilledAt = 0;
+    this.leg1ThinEdgeEntry = false;
+    this.leg1ThinEdgeObservedSum = 0;
+    this.leg1ThinEdgePreferredSum = 0;
+    this.leg1ThinEdgeHardMaxSum = 0;
+    this.leg1ThinEdgeDelayLoggedAt = 0;
     this.leg1Estimated = false;
     this.leg2Estimated = false;
     this.leg1EntryInFlight = false;
@@ -1196,8 +1226,35 @@ export class Hedge15mEngine {
                   this.status = `等Leg2: L1=${this.leg1Dir.toUpperCase()}@${fillPrice.toFixed(2)} 对面ask=${oppAsk.toFixed(2)} sum=${sum.toFixed(2)} target≤${target.toFixed(2)} ${secs<=60?'⏰':''}`;
 
                   if (sum <= target) {
-                    await this.buyLeg2(trader, oppAsk, target);
+                    if (this.shouldDelayThinEdgeLeg2(oppAsk, target)) {
+                      const projectedLockedProfit = this.getProjectedLockedProfit(this.leg1Shares, fillPrice, oppAsk);
+                      this.status = `薄利优化: sum=${sum.toFixed(2)} 已可对冲, 先等更优Leg2 (+$${projectedLockedProfit.toFixed(2)})`;
+                      if (Date.now() - this.leg1ThinEdgeDelayLoggedAt >= 1000) {
+                        logger.info(`HEDGE15M THIN EDGE PROFIT WAIT: sum=${sum.toFixed(2)} target=${target.toFixed(2)} projected+$${projectedLockedProfit.toFixed(2)} < desired+$${THIN_EDGE_DESIRED_LOCKED_PROFIT.toFixed(2)}, hold briefly for better Leg2`);
+                        this.leg1ThinEdgeDelayLoggedAt = Date.now();
+                      }
+                    } else {
+                      await this.buyLeg2(trader, oppAsk, target);
+                    }
                   }
+                }
+              }
+
+              if (
+                !this.pendingSellOrderId &&
+                this.hedgeState === "leg1_filled" &&
+                this.leg1ThinEdgeEntry &&
+                this.leg1FilledAt > 0 &&
+                Date.now() - this.leg1FilledAt >= THIN_EDGE_HEDGE_TIMEOUT_MS &&
+                oppAsk != null &&
+                oppAsk > 0
+              ) {
+                const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+                const thinEdgeSum = fillPrice + oppAsk;
+                const fastExitTarget = Math.min(this.leg1ThinEdgeHardMaxSum || this.getMaxSumTarget(), (this.leg1ThinEdgePreferredSum || this.getBaseSumTarget()) + THIN_EDGE_HEDGE_SUM_BUFFER);
+                if (thinEdgeSum > fastExitTarget) {
+                  logger.info(`HEDGE15M THIN EDGE TIMEOUT: held naked ${((Date.now() - this.leg1FilledAt) / 1000).toFixed(1)}s, sum=${thinEdgeSum.toFixed(2)} > fastTarget=${fastExitTarget.toFixed(2)}, exit Leg1`);
+                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
                 }
               }
 
@@ -1354,12 +1411,28 @@ export class Hedge15mEngine {
     }
 
     const budgetPct = this.getAdaptiveLegBudgetPct(askPrice, oppCurrentAsk, entryQualityMaxSum, maxSumTarget);
+    const thinEdgeEntry = observedEntrySum > entryQualityMaxSum;
     if (observedEntrySum > entryQualityMaxSum) {
       logger.info(
         `HEDGE15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
       );
     }
-    await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, budgetPct, "mispricing", Date.now());
+    await this.openLeg1Position(
+      trader,
+      dir,
+      askPrice,
+      buyToken,
+      oppToken,
+      budgetPct,
+      "mispricing",
+      Date.now(),
+      {
+        thinEdgeEntry,
+        observedEntrySum,
+        preferredSum: entryQualityMaxSum,
+        hardMaxSum: maxSumTarget,
+      },
+    );
   }
 
   private async buyTrendLeg(
@@ -1399,6 +1472,12 @@ export class Hedge15mEngine {
     budgetPct: number,
     strategyMode: "mispricing" | "trend",
     signalDetectedAt = Date.now(),
+    edgeEntry?: {
+      thinEdgeEntry: boolean;
+      observedEntrySum: number;
+      preferredSum: number;
+      hardMaxSum: number;
+    },
   ): Promise<void> {
     const budget = this.balance * budgetPct;
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
@@ -1505,6 +1584,11 @@ export class Hedge15mEngine {
       this.leg1FillPrice = realFillPrice;
       this.leg1OrderId = orderId ? orderId.slice(0, 12) : "";
       this.leg1FilledAt = Date.now();
+      this.leg1ThinEdgeEntry = Boolean(edgeEntry?.thinEdgeEntry);
+      this.leg1ThinEdgeObservedSum = edgeEntry?.observedEntrySum || 0;
+      this.leg1ThinEdgePreferredSum = edgeEntry?.preferredSum || 0;
+      this.leg1ThinEdgeHardMaxSum = edgeEntry?.hardMaxSum || 0;
+      this.leg1ThinEdgeDelayLoggedAt = 0;
       this.leg1Shares = filledShares;
       this.leg1Token = buyToken;
       this.leg2Token = oppToken;
@@ -1522,6 +1606,10 @@ export class Hedge15mEngine {
         fillPrice: realFillPrice,
         filledShares,
         orderId: orderId.slice(0, 12),
+        thinEdgeEntry: this.leg1ThinEdgeEntry,
+        observedEntrySum: this.leg1ThinEdgeObservedSum,
+        preferredSum: this.leg1ThinEdgePreferredSum,
+        hardMaxSum: this.leg1ThinEdgeHardMaxSum,
       });
     } finally {
       this.leg1EntryInFlight = false;
