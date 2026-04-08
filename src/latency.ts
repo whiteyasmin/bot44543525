@@ -97,15 +97,15 @@ export function getDynamicParams(): {
 
   return {
     // 砸盘基准年龄: 延迟低时可用更新鲜的参考点, 快速响应行情
-    dumpBaselineMs:     lerp(30, 300,  800, 2500),
+    dumpBaselineMs:     lerp(30, 300,  300, 1200),
     // 快照缓冲窗口: 延迟低时用更窄窗口, 减少噪音
-    dumpWindowMs:       lerp(30, 300, 2000, 5000),
+    dumpWindowMs:       lerp(30, 300,  800, 2500),
     // 成交确认等待: 低延迟回报更快
     fillCheckMs:        lerp(30, 300,  120,  700),
     // watching 轮询间隔: 低延迟下轮询更密
-    watchPollMs:        lerp(30, 300,  120,  400),
+    watchPollMs:        lerp(30, 300,   40,  120),
     // leg1/done 轮询间隔
-    idlePollMs:         lerp(30, 300,  400, 1200),
+    idlePollMs:         lerp(30, 300,  150,  500),
     // 订单簿请求超时: 低延迟连接不需要那么长的超时
     orderbookTimeoutMs: lerp(30, 300, 1000, 4000),
     p50,

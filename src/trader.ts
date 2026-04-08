@@ -1,9 +1,22 @@
-import { ClobClient, Side, OrderType } from "@polymarket/clob-client";
+import { ClobClient, Side, OrderType, type ApiKeyCreds } from "@polymarket/clob-client";
 import { Wallet } from "@ethersproject/wallet";
+import { WebSocket, type RawData } from "ws";
 import { Config } from "./config";
+import { getP50Ms } from "./latency";
 import { logger } from "./logger";
 
 const PAPER_TAKER_FEE = 0.02;
+const ORDERBOOK_CACHE_TTL_MS = 250;
+const ORDERBOOK_POLL_MS = 50;
+const ORDERBOOK_FAST_POLL_MS = 25;
+const ORDERBOOK_FAST_CACHE_TTL_MS = 90;
+const ORDERBOOK_UPDATE_WAIT_MS = 1000;
+const ORDERBOOK_WS_ENDPOINT = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+const USER_WS_ENDPOINT = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
+const WS_PING_MS = 10_000;
+const ORDER_FAST_RETRY_MS = 80;
+const ORDER_SLOW_RETRY_MS = 180;
+const ORDER_UPDATE_WAIT_MS = 900;
 
 export interface TraderInitOptions {
   mode?: "live" | "paper";
@@ -22,12 +35,117 @@ interface PaperOrder {
   canceled?: boolean;
 }
 
+interface BestPriceSnapshot {
+  bid: number | null;
+  ask: number | null;
+  spread: number;
+  askDepth: number;
+  bidDepth: number;
+  updatedAt: number;
+}
+
+interface OrderbookWaiter {
+  minVersion: number;
+  resolve: (version: number) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface OrderFillSnapshot {
+  filled: number;
+  avgPrice: number;
+  status: string;
+  updatedAt: number;
+}
+
+interface OrderUpdateWaiter {
+  orderId: string;
+  minVersion: number;
+  resolve: (version: number) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface MarketBookLevel {
+  price: string;
+  size: string;
+}
+
+interface MarketSocketMessage {
+  event_type?: string;
+  asset_id?: string;
+  best_bid?: string;
+  best_ask?: string;
+  best_bid_size?: string;
+  best_ask_size?: string;
+  spread?: string;
+  bids?: MarketBookLevel[];
+  asks?: MarketBookLevel[];
+}
+
+interface UserSocketMessage {
+  event_type?: string;
+  id?: string;
+  status?: string;
+  size_matched?: string;
+  price?: string;
+  associate_trades?: Array<{ price?: string; size?: string; amount?: string }> | null;
+  taker_order_id?: string;
+  maker_orders?: Array<{ order_id?: string }>;
+}
+
+function getAdaptiveOrderbookPollMs(): number {
+  return getP50Ms() <= 25 ? ORDERBOOK_FAST_POLL_MS : ORDERBOOK_POLL_MS;
+}
+
+function getAdaptiveCacheTtlMs(): number {
+  return getP50Ms() <= 25 ? ORDERBOOK_FAST_CACHE_TTL_MS : ORDERBOOK_CACHE_TTL_MS;
+}
+
+function getAdaptiveOrderRetryMs(): number {
+  return getP50Ms() <= 25 ? ORDER_FAST_RETRY_MS : ORDER_SLOW_RETRY_MS;
+}
+
+function parseNum(value: unknown): number {
+  const num = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
+  return Number.isFinite(num) ? num : 0;
+}
+
+function summarizeBookSide(levels: MarketBookLevel[] | undefined, side: "bid" | "ask"): { price: number | null; depth: number } {
+  if (!levels || levels.length === 0) return { price: null, depth: 0 };
+  const sorted = levels
+    .map((level) => ({ price: parseNum(level.price), size: parseNum(level.size) }))
+    .filter((level) => level.price > 0 && level.size >= 0)
+    .sort((left, right) => side === "ask" ? left.price - right.price : right.price - left.price);
+  if (sorted.length === 0) return { price: null, depth: 0 };
+  let depth = 0;
+  for (let index = 0; index < Math.min(3, sorted.length); index += 1) {
+    depth += sorted[index].size;
+  }
+  return { price: sorted[0].price, depth };
+}
+
 export class Trader {
   private client!: ClobClient;
+  private apiCreds: ApiKeyCreds | null = null;
   private mode: "live" | "paper" = "live";
   private paperBalance = 0;
   private paperOrders = new Map<string, PaperOrder>();
   private paperOrderSeq = 0;
+  private orderbookCache = new Map<string, BestPriceSnapshot>();
+  private trackedTokens = new Set<string>();
+  private trackedMarkets = new Set<string>();
+  private orderbookLoopActive = false;
+  private orderbookVersion = 0;
+  private orderbookWaiters: OrderbookWaiter[] = [];
+  private marketWs: WebSocket | null = null;
+  private userWs: WebSocket | null = null;
+  private marketWsConnected = false;
+  private userWsConnected = false;
+  private marketWsPing: ReturnType<typeof setInterval> | null = null;
+  private userWsPing: ReturnType<typeof setInterval> | null = null;
+  private marketWsLastMessageAt = 0;
+  private orderFillCache = new Map<string, OrderFillSnapshot>();
+  private orderUpdateVersions = new Map<string, number>();
+  private orderUpdateWaiters: OrderUpdateWaiter[] = [];
 
   async init(options: TraderInitOptions = {}): Promise<void> {
     this.mode = options.mode || "live";
@@ -35,15 +153,18 @@ export class Trader {
 
     if (this.mode === "paper") {
       this.client = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, wallet);
+      this.apiCreds = null;
       this.paperBalance = options.paperBalance && options.paperBalance > 0 ? options.paperBalance : 100;
       this.paperOrders.clear();
       this.paperOrderSeq = 0;
+      this.startOrderbookLoop();
       logger.info(`交易客户端连接成功 (paper mode, initialBalance=$${this.paperBalance.toFixed(2)})`);
       return;
     }
 
     const tempClient = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, wallet);
     const creds = await tempClient.createOrDeriveApiKey();
+    this.apiCreds = creds;
     let sigType = Config.SIGNATURE_TYPE;
     if (Config.FUNDER_ADDRESS && Config.FUNDER_ADDRESS.toLowerCase() !== wallet.address.toLowerCase() && sigType === 0) {
       sigType = 1;
@@ -57,6 +178,9 @@ export class Trader {
       sigType,
       Config.FUNDER_ADDRESS,
     );
+    this.startOrderbookLoop();
+    this.startMarketSocket();
+    this.startUserSocket();
     logger.info(`交易客户端连接成功 (sigType=${sigType}, funder=${Config.FUNDER_ADDRESS.slice(0, 10)}...)`);
   }
 
@@ -67,6 +191,500 @@ export class Trader {
   private nextPaperOrderId(prefix: string): string {
     this.paperOrderSeq += 1;
     return `paper-${prefix}-${Date.now()}-${this.paperOrderSeq}`;
+  }
+
+  setTrackedTokens(tokenIds: string[]): void {
+    const nextTokens = Array.from(new Set(tokenIds.filter((tokenId) => tokenId && tokenId.length > 0)));
+    const previousTokens = new Set(this.trackedTokens);
+    const nextSet = new Set(nextTokens);
+    const hasNewToken = nextTokens.some((tokenId) => !this.trackedTokens.has(tokenId));
+    this.trackedTokens = nextSet;
+    this.syncMarketSubscriptions(previousTokens, nextSet);
+    if (hasNewToken) {
+      void this.warmTrackedTokens(nextTokens);
+    }
+  }
+
+  setTrackedMarkets(marketIds: string[]): void {
+    const nextIds = Array.from(new Set(marketIds.filter((marketId) => marketId && marketId.length > 0)));
+    const previousIds = new Set(this.trackedMarkets);
+    const nextSet = new Set(nextIds);
+    this.trackedMarkets = nextSet;
+    this.syncUserSubscriptions(previousIds, nextSet);
+  }
+
+  stopOrderbookLoop(): void {
+    this.orderbookLoopActive = false;
+    this.trackedTokens.clear();
+    this.trackedMarkets.clear();
+    this.stopMarketSocket();
+    this.stopUserSocket();
+    const version = this.orderbookVersion + 1;
+    this.orderbookVersion = version;
+    const waiters = this.orderbookWaiters;
+    this.orderbookWaiters = [];
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(version);
+    }
+    const orderWaiters = this.orderUpdateWaiters;
+    this.orderUpdateWaiters = [];
+    for (const waiter of orderWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(this.getOrderUpdateVersion(waiter.orderId) + 1);
+    }
+  }
+
+  private startOrderbookLoop(): void {
+    if (this.orderbookLoopActive) return;
+    this.orderbookLoopActive = true;
+    void this.orderbookLoop();
+  }
+
+  private async orderbookLoop(): Promise<void> {
+    while (this.orderbookLoopActive) {
+      const tokens = Array.from(this.trackedTokens);
+      let updated = false;
+      const wsFresh = this.marketWsConnected && Date.now() - this.marketWsLastMessageAt < 2_000;
+      if (tokens.length > 0 && !wsFresh) {
+        await Promise.allSettled(tokens.map(async (tokenId) => {
+          const snapshot = await this.fetchBestPrices(tokenId);
+          this.orderbookCache.set(tokenId, { ...snapshot, updatedAt: Date.now() });
+          updated = true;
+        }));
+      }
+      if (updated) {
+        this.notifyOrderbookUpdate();
+      }
+      const intervalMs = wsFresh ? Math.max(120, getAdaptiveOrderbookPollMs() * 4) : getAdaptiveOrderbookPollMs();
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  private startMarketSocket(): void {
+    if (this.mode !== "live" || this.marketWs || !this.orderbookLoopActive) return;
+    try {
+      const ws = new WebSocket(ORDERBOOK_WS_ENDPOINT);
+      this.marketWs = ws;
+      ws.on("open", () => {
+        this.marketWsConnected = true;
+        this.marketWsLastMessageAt = Date.now();
+        this.sendMarketSubscription(true);
+        this.marketWsPing = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send("PING");
+        }, WS_PING_MS);
+        logger.info("Polymarket market WS 已连接");
+      });
+      ws.on("message", (data: RawData) => {
+        this.marketWsLastMessageAt = Date.now();
+        const raw = data.toString();
+        if (raw === "PONG") return;
+        try {
+          const payload = JSON.parse(raw);
+          const messages = Array.isArray(payload) ? payload : [payload];
+          for (const message of messages) {
+            this.handleMarketSocketMessage(message as MarketSocketMessage);
+          }
+        } catch {}
+      });
+      ws.on("close", () => {
+        this.marketWsConnected = false;
+        this.marketWs = null;
+        if (this.marketWsPing) {
+          clearInterval(this.marketWsPing);
+          this.marketWsPing = null;
+        }
+        if (this.mode === "live" && this.orderbookLoopActive) {
+          setTimeout(() => this.startMarketSocket(), 1500);
+        }
+      });
+      ws.on("error", () => {
+        this.marketWsConnected = false;
+        if (this.marketWs) {
+          try { this.marketWs.terminate(); } catch {}
+        }
+      });
+    } catch {
+      if (this.mode === "live" && this.orderbookLoopActive) {
+        setTimeout(() => this.startMarketSocket(), 3000);
+      }
+    }
+  }
+
+  private stopMarketSocket(): void {
+    this.marketWsConnected = false;
+    this.marketWsLastMessageAt = 0;
+    if (this.marketWsPing) {
+      clearInterval(this.marketWsPing);
+      this.marketWsPing = null;
+    }
+    if (this.marketWs) {
+      try { this.marketWs.terminate(); } catch {}
+      this.marketWs = null;
+    }
+  }
+
+  private startUserSocket(): void {
+    if (this.mode !== "live" || this.userWs || !this.apiCreds || !this.orderbookLoopActive) return;
+    try {
+      const ws = new WebSocket(USER_WS_ENDPOINT);
+      this.userWs = ws;
+      ws.on("open", () => {
+        this.userWsConnected = true;
+        this.sendUserSubscription(true);
+        this.userWsPing = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send("PING");
+        }, WS_PING_MS);
+        logger.info("Polymarket user WS 已连接");
+      });
+      ws.on("message", (data: RawData) => {
+        const raw = data.toString();
+        if (raw === "PONG") return;
+        try {
+          const payload = JSON.parse(raw);
+          const messages = Array.isArray(payload) ? payload : [payload];
+          for (const message of messages) {
+            this.handleUserSocketMessage(message as UserSocketMessage);
+          }
+        } catch {}
+      });
+      ws.on("close", () => {
+        this.userWsConnected = false;
+        this.userWs = null;
+        if (this.userWsPing) {
+          clearInterval(this.userWsPing);
+          this.userWsPing = null;
+        }
+        if (this.mode === "live" && this.orderbookLoopActive && this.apiCreds) {
+          setTimeout(() => this.startUserSocket(), 1500);
+        }
+      });
+      ws.on("error", () => {
+        this.userWsConnected = false;
+        if (this.userWs) {
+          try { this.userWs.terminate(); } catch {}
+        }
+      });
+    } catch {
+      if (this.mode === "live" && this.orderbookLoopActive && this.apiCreds) {
+        setTimeout(() => this.startUserSocket(), 3000);
+      }
+    }
+  }
+
+  private stopUserSocket(): void {
+    this.userWsConnected = false;
+    if (this.userWsPing) {
+      clearInterval(this.userWsPing);
+      this.userWsPing = null;
+    }
+    if (this.userWs) {
+      try { this.userWs.terminate(); } catch {}
+      this.userWs = null;
+    }
+  }
+
+  private syncMarketSubscriptions(previous: Set<string>, next: Set<string>): void {
+    if (!this.marketWsConnected || !this.marketWs || this.marketWs.readyState !== WebSocket.OPEN) return;
+    const added = Array.from(next).filter((tokenId) => !previous.has(tokenId));
+    const removed = Array.from(previous).filter((tokenId) => !next.has(tokenId));
+    if (added.length > 0) {
+      this.marketWs.send(JSON.stringify({
+        assets_ids: added,
+        operation: "subscribe",
+        custom_feature_enabled: true,
+      }));
+    }
+    if (removed.length > 0) {
+      this.marketWs.send(JSON.stringify({
+        assets_ids: removed,
+        operation: "unsubscribe",
+      }));
+    }
+  }
+
+  private syncUserSubscriptions(previous: Set<string>, next: Set<string>): void {
+    if (!this.userWsConnected || !this.userWs || this.userWs.readyState !== WebSocket.OPEN) return;
+    const added = Array.from(next).filter((marketId) => !previous.has(marketId));
+    const removed = Array.from(previous).filter((marketId) => !next.has(marketId));
+    if (added.length > 0) {
+      this.userWs.send(JSON.stringify({ markets: added, operation: "subscribe" }));
+    }
+    if (removed.length > 0) {
+      this.userWs.send(JSON.stringify({ markets: removed, operation: "unsubscribe" }));
+    }
+  }
+
+  private sendMarketSubscription(initial = false): void {
+    if (!this.marketWs || this.marketWs.readyState !== WebSocket.OPEN) return;
+    const assets = Array.from(this.trackedTokens);
+    this.marketWs.send(JSON.stringify(initial
+      ? { assets_ids: assets, type: "market", custom_feature_enabled: true }
+      : { assets_ids: assets, operation: "subscribe", custom_feature_enabled: true }));
+  }
+
+  private sendUserSubscription(initial = false): void {
+    if (!this.userWs || this.userWs.readyState !== WebSocket.OPEN || !this.apiCreds) return;
+    const markets = Array.from(this.trackedMarkets);
+    this.userWs.send(JSON.stringify(initial
+      ? {
+        auth: {
+          apiKey: this.apiCreds.key,
+          secret: this.apiCreds.secret,
+          passphrase: this.apiCreds.passphrase,
+        },
+        markets,
+        type: "user",
+      }
+      : { markets, operation: "subscribe" }));
+  }
+
+  private handleMarketSocketMessage(message: MarketSocketMessage): void {
+    const tokenId = message.asset_id;
+    if (!tokenId) return;
+    if (message.event_type === "book") {
+      const bidSide = summarizeBookSide(message.bids, "bid");
+      const askSide = summarizeBookSide(message.asks, "ask");
+      const spread = askSide.price != null && bidSide.price != null ? askSide.price - bidSide.price : 1;
+      this.orderbookCache.set(tokenId, {
+        bid: bidSide.price,
+        ask: askSide.price,
+        spread,
+        askDepth: askSide.depth,
+        bidDepth: bidSide.depth,
+        updatedAt: Date.now(),
+      });
+      this.notifyOrderbookUpdate();
+      return;
+    }
+
+    if (message.event_type === "best_bid_ask") {
+      const cached = this.orderbookCache.get(tokenId);
+      const bid = parseNum(message.best_bid);
+      const ask = parseNum(message.best_ask);
+      const nextBid = bid > 0 ? bid : null;
+      const nextAsk = ask > 0 ? ask : null;
+      const spread = parseNum(message.spread) || (nextAsk != null && nextBid != null ? nextAsk - nextBid : cached?.spread || 1);
+      this.orderbookCache.set(tokenId, {
+        bid: nextBid,
+        ask: nextAsk,
+        spread,
+        askDepth: parseNum(message.best_ask_size) || cached?.askDepth || 0,
+        bidDepth: parseNum(message.best_bid_size) || cached?.bidDepth || 0,
+        updatedAt: Date.now(),
+      });
+      this.notifyOrderbookUpdate();
+    }
+  }
+
+  private handleUserSocketMessage(message: UserSocketMessage): void {
+    if (message.event_type === "order" && message.id) {
+      const filled = parseNum(message.size_matched);
+      let avgPrice = parseNum(message.price);
+      const trades = message.associate_trades || [];
+      if (trades.length > 0) {
+        let totalQty = 0;
+        let totalVal = 0;
+        for (const trade of trades) {
+          const qty = parseNum(trade.size ?? trade.amount);
+          const price = parseNum(trade.price);
+          if (qty > 0 && price > 0) {
+            totalQty += qty;
+            totalVal += qty * price;
+          }
+        }
+        if (totalQty > 0) avgPrice = totalVal / totalQty;
+      }
+      this.upsertOrderFillCache(message.id, filled, avgPrice, message.status || "UPDATE");
+      return;
+    }
+
+    if (message.event_type === "trade") {
+      if (message.taker_order_id) this.bumpOrderUpdateSignal(message.taker_order_id);
+      for (const makerOrder of message.maker_orders || []) {
+        if (makerOrder.order_id) this.bumpOrderUpdateSignal(makerOrder.order_id);
+      }
+    }
+  }
+
+  private upsertOrderFillCache(orderId: string, filled: number, avgPrice: number, status: string): void {
+    const existing = this.orderFillCache.get(orderId);
+    const nextFilled = Math.max(existing?.filled || 0, filled);
+    const nextPrice = avgPrice > 0 ? avgPrice : existing?.avgPrice || 0;
+    this.orderFillCache.set(orderId, {
+      filled: nextFilled,
+      avgPrice: nextPrice,
+      status,
+      updatedAt: Date.now(),
+    });
+    this.bumpOrderUpdateSignal(orderId);
+  }
+
+  private getOrderUpdateVersion(orderId: string): number {
+    return this.orderUpdateVersions.get(orderId) || 0;
+  }
+
+  private bumpOrderUpdateSignal(orderId: string): void {
+    const nextVersion = this.getOrderUpdateVersion(orderId) + 1;
+    this.orderUpdateVersions.set(orderId, nextVersion);
+    const remaining: OrderUpdateWaiter[] = [];
+    for (const waiter of this.orderUpdateWaiters) {
+      if (waiter.orderId === orderId && nextVersion > waiter.minVersion) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(nextVersion);
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.orderUpdateWaiters = remaining;
+  }
+
+  private async waitForOrderUpdate(orderId: string, minVersion: number, timeoutMs = ORDER_UPDATE_WAIT_MS): Promise<number> {
+    const version = this.getOrderUpdateVersion(orderId);
+    if (version > minVersion) return version;
+    return new Promise<number>((resolve) => {
+      const waiter: OrderUpdateWaiter = {
+        orderId,
+        minVersion,
+        resolve: (nextVersion) => resolve(nextVersion),
+        timer: setTimeout(() => {
+          this.orderUpdateWaiters = this.orderUpdateWaiters.filter((candidate) => candidate !== waiter);
+          resolve(this.getOrderUpdateVersion(orderId));
+        }, Math.max(1, timeoutMs)),
+      };
+      this.orderUpdateWaiters.push(waiter);
+    });
+  }
+
+  private getCachedOrderFill(orderId: string): { filled: number; avgPrice: number } | null {
+    const cached = this.orderFillCache.get(orderId);
+    if (!cached) return null;
+    return { filled: cached.filled, avgPrice: cached.avgPrice };
+  }
+
+  private async fetchOrderFillDetailsOnce(orderId: string): Promise<{ filled: number; avgPrice: number }> {
+    const o: any = await this.client.getOrder(orderId);
+    const sizeMatched = parseNum(o.size_matched);
+    if (sizeMatched <= 0) {
+      this.upsertOrderFillCache(orderId, 0, 0, o.status || "OPEN");
+      return { filled: 0, avgPrice: 0 };
+    }
+    const trades: any[] = o.associate_trades || o.trades || [];
+    if (trades.length > 0) {
+      let totalQty = 0;
+      let totalVal = 0;
+      for (const trade of trades) {
+        const qty = parseNum(trade.size || trade.amount);
+        const px = parseNum(trade.price);
+        if (qty > 0 && px > 0) {
+          totalQty += qty;
+          totalVal += qty * px;
+        }
+      }
+      if (totalQty > 0) {
+        const filled = Math.min(sizeMatched, totalQty);
+        const avgPrice = totalVal / totalQty;
+        this.upsertOrderFillCache(orderId, filled, avgPrice, o.status || "MATCHED");
+        return { filled, avgPrice };
+      }
+    }
+    const avgPrice = parseNum(o.price);
+    this.upsertOrderFillCache(orderId, sizeMatched, avgPrice, o.status || "MATCHED");
+    return { filled: sizeMatched, avgPrice };
+  }
+
+  private async warmTrackedTokens(tokenIds: string[]): Promise<void> {
+    if (tokenIds.length === 0) return;
+    let updated = false;
+    await Promise.allSettled(tokenIds.map(async (tokenId) => {
+      const snapshot = await this.fetchBestPrices(tokenId);
+      this.orderbookCache.set(tokenId, { ...snapshot, updatedAt: Date.now() });
+      updated = true;
+    }));
+    if (updated) {
+      this.notifyOrderbookUpdate();
+    }
+  }
+
+  private notifyOrderbookUpdate(): void {
+    this.orderbookVersion += 1;
+    const version = this.orderbookVersion;
+    const remaining: OrderbookWaiter[] = [];
+    for (const waiter of this.orderbookWaiters) {
+      if (version > waiter.minVersion) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(version);
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.orderbookWaiters = remaining;
+  }
+
+  getOrderbookVersion(): number {
+    return this.orderbookVersion;
+  }
+
+  async waitForOrderbookUpdate(minVersion: number, timeoutMs = ORDERBOOK_UPDATE_WAIT_MS): Promise<number> {
+    if (this.orderbookVersion > minVersion) return this.orderbookVersion;
+    return new Promise<number>((resolve) => {
+      const waiter: OrderbookWaiter = {
+        minVersion,
+        resolve: (version) => resolve(version),
+        timer: setTimeout(() => {
+          this.orderbookWaiters = this.orderbookWaiters.filter((candidate) => candidate !== waiter);
+          resolve(this.orderbookVersion);
+        }, Math.max(1, timeoutMs)),
+      };
+      this.orderbookWaiters.push(waiter);
+    });
+  }
+
+  peekBestPrices(tokenId: string, maxAgeMs = getAdaptiveCacheTtlMs()): {
+    bid: number | null;
+    ask: number | null;
+    spread: number;
+    askDepth: number;
+    bidDepth: number;
+  } | null {
+    const cached = this.orderbookCache.get(tokenId);
+    if (!cached || Date.now() - cached.updatedAt > maxAgeMs) {
+      return null;
+    }
+    return {
+      bid: cached.bid,
+      ask: cached.ask,
+      spread: cached.spread,
+      askDepth: cached.askDepth,
+      bidDepth: cached.bidDepth,
+    };
+  }
+
+  private async fetchBestPrices(tokenId: string): Promise<Omit<BestPriceSnapshot, "updatedAt">> {
+    try {
+      const book = await this.client.getOrderBook(tokenId);
+      const bestBid = book.bids?.length ? Math.max(...book.bids.map(b => parseFloat(b.price))) : null;
+      const bestAsk = book.asks?.length ? Math.min(...book.asks.map(a => parseFloat(a.price))) : null;
+      const spread = (bestAsk != null && bestBid != null) ? bestAsk - bestBid : 1;
+      let askDepth = 0;
+      if (book.asks) {
+        const sorted = book.asks.slice().sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+        for (let i = 0; i < Math.min(3, sorted.length); i++) {
+          askDepth += parseFloat(sorted[i].size || "0");
+        }
+      }
+      let bidDepth = 0;
+      if (book.bids) {
+        const sorted = book.bids.slice().sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
+        for (let i = 0; i < Math.min(3, sorted.length); i++) {
+          bidDepth += parseFloat(sorted[i].size || "0");
+        }
+      }
+      return { bid: bestBid, ask: bestAsk, spread, askDepth, bidDepth };
+    } catch (e: any) {
+      logger.error(`获取盘口失败: ${e.message}`);
+      return { bid: null, ask: null, spread: 1, askDepth: 0, bidDepth: 0 };
+    }
   }
 
   private async fillPaperGtcOrder(orderId: string): Promise<PaperOrder | null> {
@@ -86,34 +704,14 @@ export class Trader {
   }
 
   async getBestPrices(tokenId: string): Promise<{ bid: number | null; ask: number | null; spread: number; askDepth: number; bidDepth: number }> {
-    try {
-      const book = await this.client.getOrderBook(tokenId);
-      // Polymarket CLOB returns bids ascending (worst first) and asks descending (worst first)
-      // Use Math.max/min to get best bid/ask regardless of sort order
-      const bestBid = book.bids?.length ? Math.max(...book.bids.map(b => parseFloat(b.price))) : null;
-      const bestAsk = book.asks?.length ? Math.min(...book.asks.map(a => parseFloat(a.price))) : null;
-      const spread = (bestAsk != null && bestBid != null) ? bestAsk - bestBid : 1;
-      let askDepth = 0;
-      if (book.asks) {
-        // asks are descending (worst first), so last 3 are the cheapest (best) asks
-        const sorted = book.asks.slice().sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
-        for (let i = 0; i < Math.min(3, sorted.length); i++) {
-          askDepth += parseFloat(sorted[i].size || "0");
-        }
-      }
-      let bidDepth = 0;
-      if (book.bids) {
-        // bids are ascending (worst first), so last 3 are the highest (best) bids
-        const sorted = book.bids.slice().sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
-        for (let i = 0; i < Math.min(3, sorted.length); i++) {
-          bidDepth += parseFloat(sorted[i].size || "0");
-        }
-      }
-      return { bid: bestBid, ask: bestAsk, spread, askDepth, bidDepth };
-    } catch (e: any) {
-      logger.error(`获取盘口失败: ${e.message}`);
-      return { bid: null, ask: null, spread: 1, askDepth: 0, bidDepth: 0 };
+    const cached = this.peekBestPrices(tokenId);
+    if (cached) {
+      return cached;
     }
+    const snapshot = await this.fetchBestPrices(tokenId);
+    this.orderbookCache.set(tokenId, { ...snapshot, updatedAt: Date.now() });
+    this.notifyOrderbookUpdate();
+    return snapshot;
   }
 
   async placeFakBuy(tokenId: string, amount: number, negRisk = false): Promise<any> {
@@ -262,12 +860,14 @@ export class Trader {
       const order = await this.fillPaperGtcOrder(orderId);
       return order?.filled || 0;
     }
+    const cached = this.getCachedOrderFill(orderId);
+    if (cached && cached.filled > 0) return cached.filled;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const o = await this.client.getOrder(orderId);
-        return parseFloat(o.size_matched || "0");
+        const details = await this.fetchOrderFillDetailsOnce(orderId);
+        return details.filled;
       } catch (e: any) {
-        if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+        if (attempt < 2) await new Promise(r => setTimeout(r, getAdaptiveOrderRetryMs()));
         else logger.warn(`getOrderFilled failed after 3 attempts (${orderId.slice(0,12)}): ${e.message}`);
       }
     }
@@ -280,38 +880,38 @@ export class Trader {
       const order = await this.fillPaperGtcOrder(orderId);
       return order ? { filled: order.filled, avgPrice: order.avgPrice } : { filled: 0, avgPrice: 0 };
     }
+    const cached = this.getCachedOrderFill(orderId);
+    if (cached && cached.filled > 0) return cached;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const o: any = await this.client.getOrder(orderId);
-        const sizeMatched = parseFloat(o.size_matched || "0");
-        if (sizeMatched <= 0) return { filled: 0, avgPrice: 0 };
-        // CLOB 订单返回的 associate_trades 包含每笔成交明细
-        const trades: any[] = o.associate_trades || o.trades || [];
-        if (trades.length > 0) {
-          let totalQty = 0, totalVal = 0;
-          for (const t of trades) {
-            const qty = parseFloat(t.size || t.amount || "0");
-            const px = parseFloat(t.price || "0");
-            if (qty > 0 && px > 0) { totalQty += qty; totalVal += qty * px; }
-          }
-          if (totalQty > 0) {
-            // 以 trades 明细的实际总量为准, 与 size_matched 取较小值防止超算
-            const filled = Math.min(sizeMatched, totalQty);
-            if (Math.abs(sizeMatched - totalQty) > 0.5) {
-              logger.warn(`getOrderFillDetails: size_matched=${sizeMatched.toFixed(1)} vs trades_total=${totalQty.toFixed(1)}, using min=${filled.toFixed(1)}`);
-            }
-            return { filled, avgPrice: totalVal / totalQty };
-          }
-        }
-        // 无明细时用 size_matched 和订单价格(限价单)
-        const orderPrice = parseFloat(o.price || "0");
-        return { filled: sizeMatched, avgPrice: orderPrice > 0 ? orderPrice : 0 };
+        return await this.fetchOrderFillDetailsOnce(orderId);
       } catch (e: any) {
-        if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+        if (attempt < 2) await new Promise(r => setTimeout(r, getAdaptiveOrderRetryMs()));
         else logger.warn(`getOrderFillDetails failed after 3 attempts (${orderId.slice(0,12)}): ${e.message}`);
       }
     }
     return { filled: 0, avgPrice: 0 };
+  }
+
+  async waitForOrderFillDetails(orderId: string, timeoutMs: number): Promise<{ filled: number; avgPrice: number }> {
+    if (this.mode === "paper") {
+      return this.getOrderFillDetails(orderId);
+    }
+    const deadline = Date.now() + Math.max(getAdaptiveOrderRetryMs(), timeoutMs);
+    let version = this.getOrderUpdateVersion(orderId);
+    while (Date.now() < deadline) {
+      const cached = this.getCachedOrderFill(orderId);
+      if (cached && cached.filled > 0) return cached;
+      try {
+        const fetched = await this.fetchOrderFillDetailsOnce(orderId);
+        if (fetched.filled > 0) return fetched;
+      } catch {}
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.waitForOrderUpdate(orderId, version, Math.min(remaining, getAdaptiveOrderRetryMs()));
+      version = this.getOrderUpdateVersion(orderId);
+    }
+    return this.getOrderFillDetails(orderId);
   }
 
   async cancelOrder(orderId: string): Promise<void> {

@@ -131,6 +131,9 @@ tr:hover{background:rgba(88,166,255,.04)}
       <h3>🔀 对冲状态</h3>
       <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
       <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+      <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
+      <div class="row"><span class="k">策略优先级</span><span class="v" id="h-strategy-policy">--</span></div>
+      <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
       <div class="row"><span class="k">纸面调参</span><span class="v" id="h-paper-tuning">--</span></div>
       <div class="row"><span class="k">最近调参</span><span class="v" id="h-paper-adjust">--</span></div>
       <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
@@ -181,6 +184,7 @@ tr:hover{background:rgba(88,166,255,.04)}
       <h3>⚙ 参数</h3>
       <div class="row"><span class="k">每腿预算</span><span class="v">余额25% (5~100份)</span></div>
       <div class="row"><span class="k">双腿 sum 上限</span><span class="v">0.93 (渐进→0.96)</span></div>
+      <div class="row"><span class="k">趋势模式</span><span class="v">强单边时轻仓单腿顺势</span></div>
       <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
       <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
@@ -399,6 +403,18 @@ function render(s) {
   const adjustEl = document.getElementById('h-paper-adjust');
   adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '--') : '--');
   adjustEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
+  const strategyEl = document.getElementById('h-strategy-mode');
+  const strategyModeMap = {none:'待机',mispricing:'错价',trend:'趋势'};
+  strategyEl.textContent = strategyModeMap[s.activeStrategyMode] || s.activeStrategyMode || '--';
+  strategyEl.style.color = s.activeStrategyMode === 'trend' ? '#bc8cff' : s.activeStrategyMode === 'mispricing' ? '#58a6ff' : '';
+  const policyEl = document.getElementById('h-strategy-policy');
+  const policyMap = {'mispricing-first':'错价优先，趋势补充'};
+  policyEl.textContent = policyMap[s.strategyPolicy] || s.strategyPolicy || '--';
+  policyEl.style.color = '#8b949e';
+  const trendEl = document.getElementById('h-trend-bias');
+  const trendBiasMap = {flat:'中性',up:'看涨',down:'看跌'};
+  trendEl.textContent = trendBiasMap[s.trendBias] || s.trendBias || '--';
+  trendEl.style.color = s.trendBias === 'up' ? '#3fb950' : s.trendBias === 'down' ? '#f85149' : '';
 
   document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
   document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
