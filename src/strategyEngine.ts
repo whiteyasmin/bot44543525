@@ -129,18 +129,20 @@ export function evaluateMispricingOpportunity(params: MispricingEvaluationParams
 
   const upValid = oldestUpAsk > 0.10 && upDrop >= dumpThreshold;
   const downValid = oldestDownAsk > 0.10 && downDrop >= dumpThreshold;
-  const strongDownTrend = trendMomentum <= -trendContraPct;
-  const strongUpTrend = trendMomentum >= trendContraPct;
-  const alignedDownMove = shortMomentum <= -momentumContraPct && trendMomentum <= -(trendContraPct * 0.33);
-  const alignedUpMove = shortMomentum >= momentumContraPct && trendMomentum >= (trendContraPct * 0.33);
+  const upExtremeDump = upDrop >= dumpThreshold * 1.35;
+  const downExtremeDump = downDrop >= dumpThreshold * 1.35;
+  const strongDownTrend = trendMomentum <= -trendContraPct && shortMomentum <= -(momentumContraPct * 0.5);
+  const strongUpTrend = trendMomentum >= trendContraPct && shortMomentum >= (momentumContraPct * 0.5);
+  const alignedDownMove = shortMomentum <= -(momentumContraPct * 1.25) && trendMomentum <= -(trendContraPct * 0.5);
+  const alignedUpMove = shortMomentum >= (momentumContraPct * 1.25) && trendMomentum >= (trendContraPct * 0.5);
 
-  const upRejected = upValid && (strongDownTrend || alignedDownMove);
+  const upRejected = upValid && (upExtremeDump ? (strongDownTrend && alignedDownMove) : (strongDownTrend || alignedDownMove));
   if (upRejected) {
     result.momentumRejects.push(
       `UP dump but BTC dropping short=${(shortMomentum * 100).toFixed(3)}%/${momentumWindowSec}s trend=${(trendMomentum * 100).toFixed(3)}%/${trendWindowSec}s`,
     );
   }
-  const downRejected = downValid && (strongUpTrend || alignedUpMove);
+  const downRejected = downValid && (downExtremeDump ? (strongUpTrend && alignedUpMove) : (strongUpTrend || alignedUpMove));
   if (downRejected) {
     result.momentumRejects.push(
       `DN dump but BTC rising short=+${(shortMomentum * 100).toFixed(3)}%/${momentumWindowSec}s trend=+${(trendMomentum * 100).toFixed(3)}%/${trendWindowSec}s`,

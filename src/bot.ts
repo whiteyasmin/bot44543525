@@ -50,9 +50,9 @@ const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许
 const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
 const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
-const MOMENTUM_CONTRA_PCT = 0.0006;        // BTC 60s内反方向移动超过 0.06% 则拒绝dump
+const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 60s内反方向移动超过 0.10% 才拒绝dump
 const TREND_WINDOW_SEC = 180;              // 中期趋势窗口 180秒
-const TREND_CONTRA_PCT = 0.0015;           // BTC 180s内单边超过 0.15% 则视为真实趋势
+const TREND_CONTRA_PCT = 0.0024;           // BTC 180s内单边超过 0.24% 才视为强真实趋势
 const TREND_ENTRY_MAX_SECS = 840;          // 趋势单仅在回合前期介入
 const TREND_ENTRY_MIN_SECS = 480;          // 趋势单剩余时间过少不追
 const TREND_SHORT_TRIGGER_PCT = 0.0018;    // 60s 同向至少 0.18%
@@ -311,6 +311,7 @@ export class Hedge15mEngine {
   private currentTrendBias: "up" | "down" | "flat" = "flat";
   private trendSignalStreak = 0;
   private trendSignalDir: "up" | "down" | "flat" = "flat";
+  private lastMomentumRejectSignature = "";
 
   // Market state layer
   private marketState = new RoundMarketState();
@@ -338,6 +339,7 @@ export class Hedge15mEngine {
     this.roundMomentumRejects = 0;
     this.roundSumRejects = 0;
     this.roundEntryAskRejects = 0;
+    this.lastMomentumRejectSignature = "";
   }
 
   private logRoundRejectSummary(reason: string): void {
@@ -962,9 +964,13 @@ export class Hedge15mEngine {
                 if (mispricing.cautionMessage) {
                   logger.warn(`HEDGE15M CAUTION: ${mispricing.cautionMessage} — proceeding with caution`);
                 }
-                for (const rejectMessage of mispricing.momentumRejects) {
-                  this.roundMomentumRejects += 1;
-                  logger.warn(`HEDGE15M MOMENTUM REJECT: ${rejectMessage}`);
+                const rejectSignature = mispricing.momentumRejects.join(" | ");
+                if (rejectSignature && rejectSignature !== this.lastMomentumRejectSignature) {
+                  this.lastMomentumRejectSignature = rejectSignature;
+                  this.roundMomentumRejects += mispricing.momentumRejects.length;
+                  for (const rejectMessage of mispricing.momentumRejects) {
+                    logger.warn(`HEDGE15M MOMENTUM REJECT: ${rejectMessage}`);
+                  }
                 }
 
                 const candidate = mispricing.candidates[0];
