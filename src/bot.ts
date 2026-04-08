@@ -67,7 +67,7 @@ const TREND_BUDGET_PCT = 0.08;             // 趋势单更轻仓
 const TREND_TAKE_PROFIT_BID = 0.90;        // 趋势单高胜率先落袋
 const TREND_STOP_LOSS_BID = 0.42;          // 趋势失败快速退出
 const STRATEGY_POLICY = "mispricing-first" as const;
-const BASE_BUDGET_PCT = 0.20;             // 默认轻仓，优先控制回撤
+const BASE_BUDGET_PCT = 0.18;             // 默认轻仓，优先控制回撤
 const THIN_EDGE_BUDGET_PCT = 0.12;        // 对冲空间偏薄时进一步缩仓
 const HIGH_ASK_BUDGET_PCT = 0.10;         // 高价入场只允许极小仓位
 const LEG1_HEDGE_TIMEOUT_SECS = 30;
@@ -75,9 +75,9 @@ const LEG1_HEDGE_TIMEOUT_MIN_SECS = 15;
 const LEG1_HEDGE_TIMEOUT_SUM_BUFFER = 0.03;
 const THIN_EDGE_HEDGE_TIMEOUT_MS = 15_000;
 const THIN_EDGE_HEDGE_SUM_BUFFER = 0.01;
-const THIN_EDGE_PROFIT_GRACE_MS = 4_000;
-const THIN_EDGE_DESIRED_LOCKED_PROFIT = 0.35;
-const EARLY_EXIT_AFTER_MS = 90_000;
+const THIN_EDGE_STOP_LOSS = 0.88;            // 边缘入场更紧止损 (正常0.82)
+const THIN_EDGE_MIN_PROFIT_PER_SHARE = 0.008; // 边缘入场每股至少0.8分利润, 否则拒绝
+const EARLY_EXIT_AFTER_MS = 60_000;
 const EARLY_EXIT_SUM_BUFFER = 0.06;
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
@@ -601,18 +601,6 @@ export class Hedge15mEngine {
 
   private getProjectedLockedProfit(shares: number, fillPrice: number, oppAsk: number): number {
     return shares - (shares * fillPrice * (1 + TAKER_FEE) + shares * oppAsk * (1 + TAKER_FEE));
-  }
-
-  private shouldDelayThinEdgeLeg2(oppAsk: number, sumTarget: number): boolean {
-    if (!this.leg1ThinEdgeEntry || this.leg1FilledAt <= 0 || this.leg1Shares <= 0) return false;
-    const heldMs = Date.now() - this.leg1FilledAt;
-    if (heldMs < 0 || heldMs > THIN_EDGE_PROFIT_GRACE_MS) return false;
-    const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-    const currentSum = fillPrice + oppAsk;
-    if (currentSum > sumTarget) return false;
-    const projectedLockedProfit = this.getProjectedLockedProfit(this.leg1Shares, fillPrice, oppAsk);
-    if (projectedLockedProfit >= THIN_EDGE_DESIRED_LOCKED_PROFIT) return false;
-    return true;
   }
 
   private getRoundPhase(): string {
@@ -1200,10 +1188,10 @@ export class Hedge15mEngine {
               // ── Leg1 止损: 全时段生效(secs>30), 消陨15-120s空窗 ──
               // 相对阈值(入场价*75%) 或 绝对阈值(bid<0.15)
               else if (leg1Bid != null && secs > 30 && (
-                leg1Bid < this.leg1Price * this.getLeg1StopLossThreshold() ||   // adaptive 更早止损
-                leg1Bid < LEG1_STOP_ABS                         // 绝对: 低于15%, 方向几乎错误
+                leg1Bid < this.leg1Price * (this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold()) ||
+                leg1Bid < LEG1_STOP_ABS
               )) {
-                const stopLossThreshold = this.getLeg1StopLossThreshold();
+                const stopLossThreshold = this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold();
                 const reason = leg1Bid < LEG1_STOP_ABS
                   ? `绝对止损 bid=${leg1Bid.toFixed(2)}<${LEG1_STOP_ABS}`
                   : `中途止损 bid=${leg1Bid.toFixed(2)}<entry*${stopLossThreshold}=${(this.leg1Price*stopLossThreshold).toFixed(2)}`;
@@ -1226,16 +1214,7 @@ export class Hedge15mEngine {
                   this.status = `等Leg2: L1=${this.leg1Dir.toUpperCase()}@${fillPrice.toFixed(2)} 对面ask=${oppAsk.toFixed(2)} sum=${sum.toFixed(2)} target≤${target.toFixed(2)} ${secs<=60?'⏰':''}`;
 
                   if (sum <= target) {
-                    if (this.shouldDelayThinEdgeLeg2(oppAsk, target)) {
-                      const projectedLockedProfit = this.getProjectedLockedProfit(this.leg1Shares, fillPrice, oppAsk);
-                      this.status = `薄利优化: sum=${sum.toFixed(2)} 已可对冲, 先等更优Leg2 (+$${projectedLockedProfit.toFixed(2)})`;
-                      if (Date.now() - this.leg1ThinEdgeDelayLoggedAt >= 1000) {
-                        logger.info(`HEDGE15M THIN EDGE PROFIT WAIT: sum=${sum.toFixed(2)} target=${target.toFixed(2)} projected+$${projectedLockedProfit.toFixed(2)} < desired+$${THIN_EDGE_DESIRED_LOCKED_PROFIT.toFixed(2)}, hold briefly for better Leg2`);
-                        this.leg1ThinEdgeDelayLoggedAt = Date.now();
-                      }
-                    } else {
-                      await this.buyLeg2(trader, oppAsk, target);
-                    }
+                    await this.buyLeg2(trader, oppAsk, target);
                   }
                 }
               }
@@ -1412,9 +1391,17 @@ export class Hedge15mEngine {
 
     const budgetPct = this.getAdaptiveLegBudgetPct(askPrice, oppCurrentAsk, entryQualityMaxSum, maxSumTarget);
     const thinEdgeEntry = observedEntrySum > entryQualityMaxSum;
-    if (observedEntrySum > entryQualityMaxSum) {
+    if (thinEdgeEntry) {
+      const projProfitPerShare = 1 - observedEntrySum * (1 + TAKER_FEE);
+      if (projProfitPerShare < THIN_EDGE_MIN_PROFIT_PER_SHARE) {
+        logger.warn(
+          `HEDGE15M THIN EDGE REJECTED: sum=${observedEntrySum.toFixed(3)} projected profit/share=$${projProfitPerShare.toFixed(4)} < min $${THIN_EDGE_MIN_PROFIT_PER_SHARE}`,
+        );
+        this.trackRoundRejectReason("thin-edge-profit-too-low");
+        return;
+      }
       logger.info(
-        `HEDGE15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
+        `HEDGE15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, projected profit/share=$${projProfitPerShare.toFixed(4)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
       );
     }
     await this.openLeg1Position(

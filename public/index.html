@@ -118,8 +118,8 @@ tr:hover{background:rgba(88,166,255,.04)}
   <div class="summary-bar">
     <div class="stat-card"><div class="stat-val" id="s-profit">$0.00</div><div class="stat-lbl">总盈亏</div></div>
     <div class="stat-card"><div class="stat-val" id="s-balance">$0.00</div><div class="stat-lbl">余额</div></div>
-    <div class="stat-card"><div class="stat-val" id="s-roi">0.0%</div><div class="stat-lbl">ROI</div></div>
-    <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-sum">--</div><div class="stat-lbl">实时 SUM</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩 / ROI</div></div>
   </div>
 
   <div class="grid">
@@ -204,6 +204,13 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
       <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
       <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
+      </div>
+    </div>
+
+    <!-- Latency / Diagnostics -->
+    <div class="card full horizontal-card">
+      <h3>📡 延迟 / 执行诊断</h3>
+      <div class="detail-grid">
       <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
       <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
       <div class="row"><span class="k">最近网络样本</span><span class="v" id="h-lat-live">--</span></div>
@@ -231,16 +238,16 @@ tr:hover{background:rgba(88,166,255,.04)}
     <div class="card full horizontal-card">
       <h3>⚙ 参数</h3>
       <div class="detail-grid">
-      <div class="row"><span class="k">每腿预算</span><span class="v" id="p-budget">正常20% / 边缘12% / 高价10% (3~100份)</span></div>
+      <div class="row"><span class="k">每腿预算</span><span class="v" id="p-budget">正常18% / 边缘12% / 高价10% (3~100份)</span></div>
       <div class="row"><span class="k">双腿 sum 上限</span><span class="v" id="p-sum">--</span></div>
       <div class="row"><span class="k">趋势模式</span><span class="v">强单边时轻仓单腿顺势</span></div>
       <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
       <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
       <div class="row"><span class="k">手续费</span><span class="v">2% (taker)</span></div>
-      <div class="row"><span class="k">止损</span><span class="v">入场价*82% 或 bid&lt;0.15</span></div>
+      <div class="row"><span class="k">止损</span><span class="v">正常82% / 边缘88% 或 bid&lt;0.15</span></div>
       <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
-      <div class="row"><span class="k">割肉</span><span class="v">边缘单15s未锁 / 常规对冲超时 / ≤30s且bid&lt;0.35</span></div>
+      <div class="row"><span class="k">割肉</span><span class="v">边缘15s未锁 / 裸仓60s早退 / 对冲超时 / ≤30s且bid&lt;0.35</span></div>
       </div>
     </div>
 
@@ -454,8 +461,13 @@ function render(s) {
   pEl.textContent = (s.totalProfit>=0?'+':'')+('$'+s.totalProfit.toFixed(2));
   pEl.style.color = s.totalProfit>=0?'#3fb950':'#f85149';
   document.getElementById('s-balance').textContent = '$'+s.balance.toFixed(2);
-  document.getElementById('s-roi').textContent = s.sessionROI.toFixed(1)+'%';
-  document.getElementById('s-record').textContent = s.wins+'W / '+s.losses+'L';
+  const sumVal = (s.upAsk > 0 && s.downAsk > 0) ? s.upAsk + s.downAsk : 0;
+  const sumEl = document.getElementById('s-sum');
+  if (sumEl) {
+    sumEl.textContent = sumVal > 0 ? sumVal.toFixed(3) : '--';
+    sumEl.style.color = sumVal > 0 ? (sumVal <= 0.96 ? '#3fb950' : sumVal <= 0.98 ? '#e3b341' : '#f85149') : '';
+  }
+  document.getElementById('s-record').textContent = s.wins+'W / '+s.losses+'L · '+s.sessionROI.toFixed(1)+'%';
 
   // Timer
   const secs = Math.max(0, Math.floor(s.secondsLeft));
@@ -511,8 +523,8 @@ function render(s) {
   const paramBudgetEl = document.getElementById('p-budget');
   if (paramBudgetEl) {
     paramBudgetEl.textContent = s.activeStrategyMode === 'trend'
-      ? '趋势单8% / Mispricing正常20% / 边缘12% / 高价10% (3~100份)'
-      : '正常20% / 边缘12% / 高价10% (3~100份)';
+      ? '趋势单8% / Mispricing正常18% / 边缘12% / 高价10% (3~100份)'
+      : '正常18% / 边缘12% / 高价10% (3~100份)';
   }
   const paramSumEl = document.getElementById('p-sum');
   if (paramSumEl) {
