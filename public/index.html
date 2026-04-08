@@ -35,6 +35,7 @@ header h1::before{content:'₿';font-size:20px;color:#f7931a}
 .card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px 18px}
 .card h3{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
 .full{grid-column:1/-1}
+.horizontal-card .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 18px}
 
 .summary-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
 .stat-card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px;position:relative;overflow:hidden}
@@ -71,6 +72,10 @@ table{width:100%;border-collapse:collapse;font-size:12px;font-family:'SF Mono',C
 th{text-align:left;color:#6e7681;font-size:11px;padding:6px 8px;border-bottom:1px solid #1e2733}
 td{padding:6px 8px;border-bottom:1px solid #1e273330}
 tr:hover{background:rgba(88,166,255,.04)}
+
+@media (max-width: 900px){
+  .horizontal-card .detail-grid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -130,8 +135,9 @@ tr:hover{background:rgba(88,166,255,.04)}
     </div>
 
     <!-- Hedge Status -->
-    <div class="card">
+    <div class="card full horizontal-card">
       <h3>🔀 对冲状态</h3>
+      <div class="detail-grid">
       <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
       <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
       <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
@@ -168,6 +174,7 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">User断流/重连</span><span class="v" id="h-user-ws-stats">--</span></div>
       <div class="row"><span class="k">HTTP回退次数</span><span class="v" id="h-fallback-stats">--</span></div>
       <div class="row"><span class="k">Book陈旧/交叉</span><span class="v" id="h-local-book-issues">--</span></div>
+      </div>
     </div>
 
     <!-- Wallet Config -->
@@ -204,28 +211,32 @@ tr:hover{background:rgba(88,166,255,.04)}
     </div>
 
     <!-- Parameters -->
-    <div class="card">
+    <div class="card full horizontal-card">
       <h3>⚙ 参数</h3>
-      <div class="row"><span class="k">每腿预算</span><span class="v">余额25% (5~100份)</span></div>
-      <div class="row"><span class="k">双腿 sum 上限</span><span class="v">0.93 (渐进→0.96)</span></div>
+      <div class="detail-grid">
+      <div class="row"><span class="k">每腿预算</span><span class="v" id="p-budget">正常20% / 边缘12% / 高价10% (3~100份)</span></div>
+      <div class="row"><span class="k">双腿 sum 上限</span><span class="v" id="p-sum">--</span></div>
       <div class="row"><span class="k">趋势模式</span><span class="v">强单边时轻仓单腿顺势</span></div>
       <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
       <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
       <div class="row"><span class="k">手续费</span><span class="v">2% (taker)</span></div>
-      <div class="row"><span class="k">止损</span><span class="v">入场价*75% 或 bid&lt;0.15</span></div>
+      <div class="row"><span class="k">止损</span><span class="v">入场价*82% 或 bid&lt;0.15</span></div>
       <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
-      <div class="row"><span class="k">割肉</span><span class="v">≤30s+bid&lt;0.35</span></div>
+      <div class="row"><span class="k">割肉</span><span class="v">边缘单15s未锁 / 常规对冲超时 / ≤30s且bid&lt;0.35</span></div>
+      </div>
     </div>
 
-    <div class="card">
+    <div class="card full horizontal-card">
       <h3>审计</h3>
+      <div class="detail-grid">
       <div class="row"><span class="k">历史笔数</span><span class="v" id="a-trades">--</span></div>
       <div class="row"><span class="k">胜率</span><span class="v" id="a-winrate">--</span></div>
       <div class="row"><span class="k">Profit Factor</span><span class="v" id="a-pf">--</span></div>
       <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
       <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
       <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
+      </div>
     </div>
 
     <!-- History -->
@@ -492,6 +503,20 @@ function render(s) {
   const trendBiasMap = {flat:'中性',up:'看涨',down:'看跌'};
   trendEl.textContent = trendBiasMap[s.trendBias] || s.trendBias || '--';
   trendEl.style.color = s.trendBias === 'up' ? '#3fb950' : s.trendBias === 'down' ? '#f85149' : '';
+  const paramBudgetEl = document.getElementById('p-budget');
+  if (paramBudgetEl) {
+    paramBudgetEl.textContent = s.activeStrategyMode === 'trend'
+      ? '趋势单8% / Mispricing正常20% / 边缘12% / 高价10% (3~100份)'
+      : '正常20% / 边缘12% / 高价10% (3~100份)';
+  }
+  const paramSumEl = document.getElementById('p-sum');
+  if (paramSumEl) {
+    if (s.tradingMode === 'paper') {
+      paramSumEl.textContent = Number(s.baseSumTarget || 0).toFixed(2) + ' (渐进→' + Number(s.maxSumTarget || 0).toFixed(2) + ')';
+    } else {
+      paramSumEl.textContent = '0.93 (渐进→0.96)';
+    }
+  }
 
   document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
   document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
