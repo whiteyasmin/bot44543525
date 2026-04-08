@@ -17,6 +17,10 @@ const WS_PING_MS = 10_000;
 const ORDER_FAST_RETRY_MS = 80;
 const ORDER_SLOW_RETRY_MS = 180;
 const ORDER_UPDATE_WAIT_MS = 900;
+const LOCAL_BOOK_MAX_LEVELS = 32;
+const LOCAL_BOOK_STALE_MS = 1_500;
+const LOCAL_BOOK_FULL_SYNC_MS = 4_000;
+const LOCAL_BOOK_SNAPSHOT_MAX_AGE_MS = 1_200;
 
 export interface TraderInitOptions {
   mode?: "live" | "paper";
@@ -42,6 +46,14 @@ interface BestPriceSnapshot {
   askDepth: number;
   bidDepth: number;
   updatedAt: number;
+}
+
+interface LocalOrderbook {
+  bids: Map<number, number>;
+  asks: Map<number, number>;
+  updatedAt: number;
+  lastFullSyncAt: number;
+  source: "ws" | "http";
 }
 
 interface OrderbookWaiter {
@@ -79,6 +91,14 @@ interface MarketSocketMessage {
   spread?: string;
   bids?: MarketBookLevel[];
   asks?: MarketBookLevel[];
+  price_changes?: Array<{
+    asset_id?: string;
+    price?: string;
+    size?: string;
+    side?: string;
+    best_bid?: string;
+    best_ask?: string;
+  }>;
 }
 
 interface UserSocketMessage {
@@ -123,6 +143,64 @@ function summarizeBookSide(levels: MarketBookLevel[] | undefined, side: "bid" | 
   return { price: sorted[0].price, depth };
 }
 
+function buildBookMap(levels: MarketBookLevel[] | undefined): Map<number, number> {
+  const map = new Map<number, number>();
+  if (!levels) return map;
+  for (const level of levels) {
+    const price = parseNum(level.price);
+    const size = parseNum(level.size);
+    if (price > 0 && size > 0) map.set(price, size);
+  }
+  return map;
+}
+
+export interface TraderDiagnostics {
+  marketWsConnected: boolean;
+  userWsConnected: boolean;
+  marketWsAgeMs: number;
+  userWsAgeMs: number;
+  orderbookSource: "ws" | "http" | "idle";
+  localBookReady: boolean;
+  trackedTokenCount: number;
+  localBookTokenCount: number;
+  fallbackActive: boolean;
+  marketWsDisconnects: number;
+  userWsDisconnects: number;
+  marketWsReconnects: number;
+  userWsReconnects: number;
+  fallbackTransitions: number;
+  lastFallbackAt: number;
+  localBookMaxDepth: number;
+  localBookStaleCount: number;
+  localBookCrossedCount: number;
+}
+
+function trimBookSide(side: Map<number, number>, direction: "bid" | "ask"): void {
+  if (side.size <= LOCAL_BOOK_MAX_LEVELS) return;
+
+  const prices = Array.from(side.keys()).sort((left, right) => direction === "bid" ? right - left : left - right);
+  for (const price of prices.slice(LOCAL_BOOK_MAX_LEVELS)) {
+    side.delete(price);
+  }
+}
+
+function getSortedBookLevels(side: Map<number, number>, direction: "bid" | "ask"): Array<{ price: number; size: number }> {
+  return Array.from(side.entries())
+    .map(([price, size]) => ({ price, size }))
+    .filter((level) => level.price > 0 && level.size > 0)
+    .sort((left, right) => direction === "ask" ? left.price - right.price : right.price - left.price);
+}
+
+function summarizeBookMap(side: Map<number, number>, direction: "bid" | "ask"): { price: number | null; depth: number } {
+  const sorted = getSortedBookLevels(side, direction);
+  if (sorted.length === 0) return { price: null, depth: 0 };
+  let depth = 0;
+  for (let index = 0; index < Math.min(3, sorted.length); index += 1) {
+    depth += sorted[index].size;
+  }
+  return { price: sorted[0].price, depth };
+}
+
 export class Trader {
   private client!: ClobClient;
   private apiCreds: ApiKeyCreds | null = null;
@@ -131,6 +209,7 @@ export class Trader {
   private paperOrders = new Map<string, PaperOrder>();
   private paperOrderSeq = 0;
   private orderbookCache = new Map<string, BestPriceSnapshot>();
+  private localOrderbooks = new Map<string, LocalOrderbook>();
   private trackedTokens = new Set<string>();
   private trackedMarkets = new Set<string>();
   private orderbookLoopActive = false;
@@ -143,6 +222,14 @@ export class Trader {
   private marketWsPing: ReturnType<typeof setInterval> | null = null;
   private userWsPing: ReturnType<typeof setInterval> | null = null;
   private marketWsLastMessageAt = 0;
+  private userWsLastMessageAt = 0;
+  private marketWsDisconnects = 0;
+  private userWsDisconnects = 0;
+  private marketWsReconnects = 0;
+  private userWsReconnects = 0;
+  private fallbackTransitions = 0;
+  private lastFallbackAt = 0;
+  private fallbackActiveState = false;
   private orderFillCache = new Map<string, OrderFillSnapshot>();
   private orderUpdateVersions = new Map<string, number>();
   private orderUpdateWaiters: OrderUpdateWaiter[] = [];
@@ -246,8 +333,11 @@ export class Trader {
       const tokens = Array.from(this.trackedTokens);
       let updated = false;
       const wsFresh = this.marketWsConnected && Date.now() - this.marketWsLastMessageAt < 2_000;
-      if (tokens.length > 0 && !wsFresh) {
-        await Promise.allSettled(tokens.map(async (tokenId) => {
+      const refreshTargets = !wsFresh
+        ? tokens
+        : tokens.filter((tokenId) => this.needsLocalBookRefresh(tokenId));
+      if (refreshTargets.length > 0) {
+        await Promise.allSettled(refreshTargets.map(async (tokenId) => {
           const snapshot = await this.fetchBestPrices(tokenId);
           this.orderbookCache.set(tokenId, { ...snapshot, updatedAt: Date.now() });
           updated = true;
@@ -267,6 +357,7 @@ export class Trader {
       const ws = new WebSocket(ORDERBOOK_WS_ENDPOINT);
       this.marketWs = ws;
       ws.on("open", () => {
+        if (this.marketWsLastMessageAt > 0 || this.marketWsDisconnects > 0) this.marketWsReconnects += 1;
         this.marketWsConnected = true;
         this.marketWsLastMessageAt = Date.now();
         this.sendMarketSubscription(true);
@@ -288,6 +379,7 @@ export class Trader {
         } catch {}
       });
       ws.on("close", () => {
+        this.marketWsDisconnects += 1;
         this.marketWsConnected = false;
         this.marketWs = null;
         if (this.marketWsPing) {
@@ -330,7 +422,9 @@ export class Trader {
       const ws = new WebSocket(USER_WS_ENDPOINT);
       this.userWs = ws;
       ws.on("open", () => {
+        if (this.userWsLastMessageAt > 0 || this.userWsDisconnects > 0) this.userWsReconnects += 1;
         this.userWsConnected = true;
+        this.userWsLastMessageAt = Date.now();
         this.sendUserSubscription(true);
         this.userWsPing = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send("PING");
@@ -338,6 +432,7 @@ export class Trader {
         logger.info("Polymarket user WS 已连接");
       });
       ws.on("message", (data: RawData) => {
+        this.userWsLastMessageAt = Date.now();
         const raw = data.toString();
         if (raw === "PONG") return;
         try {
@@ -349,6 +444,7 @@ export class Trader {
         } catch {}
       });
       ws.on("close", () => {
+        this.userWsDisconnects += 1;
         this.userWsConnected = false;
         this.userWs = null;
         if (this.userWsPing) {
@@ -374,6 +470,7 @@ export class Trader {
 
   private stopUserSocket(): void {
     this.userWsConnected = false;
+    this.userWsLastMessageAt = 0;
     if (this.userWsPing) {
       clearInterval(this.userWsPing);
       this.userWsPing = null;
@@ -441,10 +538,17 @@ export class Trader {
 
   private handleMarketSocketMessage(message: MarketSocketMessage): void {
     const tokenId = message.asset_id;
-    if (!tokenId) return;
-    if (message.event_type === "book") {
+    if (message.event_type === "book" && tokenId) {
+      const now = Date.now();
       const bidSide = summarizeBookSide(message.bids, "bid");
       const askSide = summarizeBookSide(message.asks, "ask");
+      this.localOrderbooks.set(tokenId, {
+        bids: buildBookMap(message.bids),
+        asks: buildBookMap(message.asks),
+        updatedAt: now,
+        lastFullSyncAt: now,
+        source: "ws",
+      });
       const spread = askSide.price != null && bidSide.price != null ? askSide.price - bidSide.price : 1;
       this.orderbookCache.set(tokenId, {
         bid: bidSide.price,
@@ -458,23 +562,157 @@ export class Trader {
       return;
     }
 
-    if (message.event_type === "best_bid_ask") {
+    if (message.event_type === "price_change" && message.price_changes?.length) {
+      let updated = false;
+      for (const change of message.price_changes) {
+        const changeTokenId = change.asset_id;
+        if (!changeTokenId) continue;
+        const book = this.ensureLocalOrderbook(changeTokenId);
+        const side = (change.side || "").toUpperCase() === "BUY" ? book.bids : book.asks;
+        const price = parseNum(change.price);
+        const size = parseNum(change.size);
+        if (price <= 0) continue;
+        if (size <= 0) side.delete(price);
+        else side.set(price, size);
+        this.reconcileKnownBestLevels(book, parseNum(change.best_bid), parseNum(change.best_ask));
+        trimBookSide(book.bids, "bid");
+        trimBookSide(book.asks, "ask");
+        book.updatedAt = Date.now();
+        book.source = "ws";
+        const snapshot = this.snapshotFromLocalOrderbook(changeTokenId);
+        if (!snapshot) continue;
+        const bestBid = parseNum(change.best_bid);
+        const bestAsk = parseNum(change.best_ask);
+        this.orderbookCache.set(changeTokenId, {
+          ...snapshot,
+          bid: bestBid > 0 ? bestBid : snapshot.bid,
+          ask: bestAsk > 0 ? bestAsk : snapshot.ask,
+          spread: bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : snapshot.spread,
+          updatedAt: Date.now(),
+        });
+        updated = true;
+      }
+      if (updated) this.notifyOrderbookUpdate();
+      return;
+    }
+
+    if (message.event_type === "best_bid_ask" && tokenId) {
       const cached = this.orderbookCache.get(tokenId);
       const bid = parseNum(message.best_bid);
       const ask = parseNum(message.best_ask);
       const nextBid = bid > 0 ? bid : null;
       const nextAsk = ask > 0 ? ask : null;
+      const bestBidSize = parseNum(message.best_bid_size);
+      const bestAskSize = parseNum(message.best_ask_size);
+      const book = this.ensureLocalOrderbook(tokenId);
+      this.reconcileTopOfBook(book, bid, bestBidSize, ask, bestAskSize);
+      book.updatedAt = Date.now();
+      book.source = "ws";
+      const snapshot = this.snapshotFromLocalOrderbook(tokenId);
       const spread = parseNum(message.spread) || (nextAsk != null && nextBid != null ? nextAsk - nextBid : cached?.spread || 1);
       this.orderbookCache.set(tokenId, {
-        bid: nextBid,
-        ask: nextAsk,
+        bid: nextBid ?? snapshot?.bid ?? cached?.bid ?? null,
+        ask: nextAsk ?? snapshot?.ask ?? cached?.ask ?? null,
         spread,
-        askDepth: parseNum(message.best_ask_size) || cached?.askDepth || 0,
-        bidDepth: parseNum(message.best_bid_size) || cached?.bidDepth || 0,
+        askDepth: bestAskSize || snapshot?.askDepth || cached?.askDepth || 0,
+        bidDepth: bestBidSize || snapshot?.bidDepth || cached?.bidDepth || 0,
         updatedAt: Date.now(),
       });
       this.notifyOrderbookUpdate();
     }
+  }
+
+  private ensureLocalOrderbook(tokenId: string): LocalOrderbook {
+    const existing = this.localOrderbooks.get(tokenId);
+    if (existing) return existing;
+    const created: LocalOrderbook = {
+      bids: new Map<number, number>(),
+      asks: new Map<number, number>(),
+      updatedAt: 0,
+      lastFullSyncAt: 0,
+      source: "http",
+    };
+    this.localOrderbooks.set(tokenId, created);
+    return created;
+  }
+
+  private reconcileKnownBestLevels(book: LocalOrderbook, bestBid: number, bestAsk: number): void {
+    if (bestBid > 0) {
+      for (const price of Array.from(book.bids.keys())) {
+        if (price > bestBid) book.bids.delete(price);
+      }
+      for (const price of Array.from(book.asks.keys())) {
+        if (price <= bestBid) book.asks.delete(price);
+      }
+    }
+    if (bestAsk > 0) {
+      for (const price of Array.from(book.asks.keys())) {
+        if (price < bestAsk) book.asks.delete(price);
+      }
+      for (const price of Array.from(book.bids.keys())) {
+        if (price >= bestAsk) book.bids.delete(price);
+      }
+    }
+  }
+
+  private reconcileTopOfBook(book: LocalOrderbook, bestBid: number, bestBidSize: number, bestAsk: number, bestAskSize: number): void {
+    this.reconcileKnownBestLevels(book, bestBid, bestAsk);
+    if (bestBid > 0 && bestBidSize > 0) {
+      book.bids.set(bestBid, bestBidSize);
+    }
+    if (bestAsk > 0 && bestAskSize > 0) {
+      book.asks.set(bestAsk, bestAskSize);
+    }
+    trimBookSide(book.bids, "bid");
+    trimBookSide(book.asks, "ask");
+  }
+
+  private isLocalBookCrossed(book: LocalOrderbook): boolean {
+    const bestBid = summarizeBookMap(book.bids, "bid").price;
+    const bestAsk = summarizeBookMap(book.asks, "ask").price;
+    return bestBid != null && bestAsk != null && bestBid >= bestAsk;
+  }
+
+  private needsLocalBookRefresh(tokenId: string): boolean {
+    const book = this.localOrderbooks.get(tokenId);
+    if (!book) return true;
+    const now = Date.now();
+    if (now - book.updatedAt > LOCAL_BOOK_STALE_MS) return true;
+    if (now - book.lastFullSyncAt > LOCAL_BOOK_FULL_SYNC_MS) return true;
+    if (this.isLocalBookCrossed(book)) return true;
+    return this.snapshotFromLocalOrderbook(tokenId) == null;
+  }
+
+  private getTrackedLocalBookIssueCounts(): { staleCount: number; crossedCount: number } {
+    const now = Date.now();
+    let staleCount = 0;
+    let crossedCount = 0;
+    for (const tokenId of this.trackedTokens) {
+      const book = this.localOrderbooks.get(tokenId);
+      if (!book || now - book.updatedAt > LOCAL_BOOK_STALE_MS) {
+        staleCount += 1;
+        continue;
+      }
+      if (this.isLocalBookCrossed(book)) crossedCount += 1;
+    }
+    return { staleCount, crossedCount };
+  }
+
+  private snapshotFromLocalOrderbook(tokenId: string): Omit<BestPriceSnapshot, "updatedAt"> | null {
+    const book = this.localOrderbooks.get(tokenId);
+    if (!book) return null;
+    const bids = summarizeBookMap(book.bids, "bid");
+    const asks = summarizeBookMap(book.asks, "ask");
+    if (bids.price != null && asks.price != null && bids.price >= asks.price) {
+      return null;
+    }
+    return {
+      bid: bids.price,
+      ask: asks.price,
+      spread: asks.price != null && bids.price != null ? asks.price - bids.price : 1,
+      askDepth: asks.depth,
+      bidDepth: bids.depth,
+    };
   }
 
   private handleUserSocketMessage(message: UserSocketMessage): void {
@@ -648,24 +886,38 @@ export class Trader {
     bidDepth: number;
   } | null {
     const cached = this.orderbookCache.get(tokenId);
-    if (!cached || Date.now() - cached.updatedAt > maxAgeMs) {
-      return null;
+    if (cached && Date.now() - cached.updatedAt <= maxAgeMs) {
+      return {
+        bid: cached.bid,
+        ask: cached.ask,
+        spread: cached.spread,
+        askDepth: cached.askDepth,
+        bidDepth: cached.bidDepth,
+      };
     }
-    return {
-      bid: cached.bid,
-      ask: cached.ask,
-      spread: cached.spread,
-      askDepth: cached.askDepth,
-      bidDepth: cached.bidDepth,
-    };
+    const localSnapshot = this.snapshotFromLocalOrderbook(tokenId);
+    const book = this.localOrderbooks.get(tokenId);
+    if (localSnapshot && book && Date.now() - book.updatedAt <= Math.max(maxAgeMs, LOCAL_BOOK_SNAPSHOT_MAX_AGE_MS)) {
+      this.orderbookCache.set(tokenId, { ...localSnapshot, updatedAt: book.updatedAt });
+      return localSnapshot;
+    }
+    return null;
   }
 
   private async fetchBestPrices(tokenId: string): Promise<Omit<BestPriceSnapshot, "updatedAt">> {
     try {
+      const now = Date.now();
       const book = await this.client.getOrderBook(tokenId);
       const bestBid = book.bids?.length ? Math.max(...book.bids.map(b => parseFloat(b.price))) : null;
       const bestAsk = book.asks?.length ? Math.min(...book.asks.map(a => parseFloat(a.price))) : null;
       const spread = (bestAsk != null && bestBid != null) ? bestAsk - bestBid : 1;
+      this.localOrderbooks.set(tokenId, {
+        bids: buildBookMap(book.bids as MarketBookLevel[] | undefined),
+        asks: buildBookMap(book.asks as MarketBookLevel[] | undefined),
+        updatedAt: now,
+        lastFullSyncAt: now,
+        source: "http",
+      });
       let askDepth = 0;
       if (book.asks) {
         const sorted = book.asks.slice().sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
@@ -687,6 +939,40 @@ export class Trader {
     }
   }
 
+  getDiagnostics(): TraderDiagnostics {
+    const now = Date.now();
+    const marketWsAgeMs = this.marketWsLastMessageAt > 0 ? now - this.marketWsLastMessageAt : 0;
+    const userWsAgeMs = this.userWsLastMessageAt > 0 ? now - this.userWsLastMessageAt : 0;
+    const { staleCount, crossedCount } = this.getTrackedLocalBookIssueCounts();
+    const fallbackActive = this.mode === "live" && (!this.marketWsConnected || marketWsAgeMs >= 2_000);
+    if (fallbackActive !== this.fallbackActiveState) {
+      this.fallbackActiveState = fallbackActive;
+      if (fallbackActive) {
+        this.fallbackTransitions += 1;
+        this.lastFallbackAt = now;
+      }
+    }
+    return {
+      marketWsConnected: this.marketWsConnected,
+      userWsConnected: this.userWsConnected,
+      marketWsAgeMs,
+      userWsAgeMs,
+      orderbookSource: this.trackedTokens.size === 0 ? "idle" : fallbackActive ? "http" : "ws",
+      localBookReady: Array.from(this.trackedTokens).every((tokenId) => this.localOrderbooks.has(tokenId)),
+      trackedTokenCount: this.trackedTokens.size,
+      localBookTokenCount: this.localOrderbooks.size,
+      fallbackActive,
+      marketWsDisconnects: this.marketWsDisconnects,
+      userWsDisconnects: this.userWsDisconnects,
+      marketWsReconnects: this.marketWsReconnects,
+      userWsReconnects: this.userWsReconnects,
+      fallbackTransitions: this.fallbackTransitions,
+      lastFallbackAt: this.lastFallbackAt,
+      localBookMaxDepth: LOCAL_BOOK_MAX_LEVELS,
+      localBookStaleCount: staleCount,
+      localBookCrossedCount: crossedCount,
+    };
+  }
   private async fillPaperGtcOrder(orderId: string): Promise<PaperOrder | null> {
     const order = this.paperOrders.get(orderId);
     if (!order || order.canceled || order.orderType !== "GTC" || order.side !== "SELL") return order || null;

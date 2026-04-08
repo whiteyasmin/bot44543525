@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { logger } from "./logger";
 import { startLatencyMonitor, stopLatencyMonitor, recordLatency, getDynamicParams } from "./latency";
+import { getExecutionTelemetry, recordExecutionLatency, resetExecutionTelemetry } from "./telemetry";
 import { getCurrentRound15m, prefetchNextRound, Round15m } from "./market";
 import {
   startPriceFeed, getBtcPrice,
@@ -19,7 +20,7 @@ import {
   evaluateTrendOpportunity,
   getDirectionalBias as getDirectionalBiasSignal,
 } from "./strategyEngine";
-import { Trader } from "./trader";
+import { Trader, type TraderDiagnostics } from "./trader";
 
 // ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
@@ -119,6 +120,36 @@ export interface Hedge15mState {
   sessionROI: number;
   latencyP50: number;
   latencyP90: number;
+  diagnostics: {
+    marketWsConnected: boolean;
+    userWsConnected: boolean;
+    marketWsAgeMs: number;
+    userWsAgeMs: number;
+    orderbookSource: string;
+    localBookReady: boolean;
+    trackedTokenCount: number;
+    localBookTokenCount: number;
+    fallbackActive: boolean;
+    marketWsDisconnects: number;
+    userWsDisconnects: number;
+    marketWsReconnects: number;
+    userWsReconnects: number;
+    fallbackTransitions: number;
+    lastFallbackAt: number;
+    localBookMaxDepth: number;
+    localBookStaleCount: number;
+    localBookCrossedCount: number;
+    execSignalToSubmitP50: number;
+    execSubmitToAckP50: number;
+    execAckToFillP50: number;
+    execSignalToFillP50: number;
+    execSignalToFillP90: number;
+    execLeg2SignalToFillP50: number;
+    execLeg2SignalToFillP90: number;
+    execExitSignalToFillP50: number;
+    execExitSignalToFillP90: number;
+    execGtcWaitToFillP50: number;
+  };
 }
 
 export interface Hedge15mStartOptions {
@@ -168,6 +199,29 @@ async function getHotBestPrices(trader: Trader, tokenId: string): Promise<{ bid:
   const cached = trader.peekBestPrices(tokenId);
   if (cached) return cached;
   return withTimeout(trader.getBestPrices(tokenId), getDynamicParams().orderbookTimeoutMs);
+}
+
+function getDefaultTraderDiagnostics(): TraderDiagnostics {
+  return {
+    marketWsConnected: false,
+    userWsConnected: false,
+    marketWsAgeMs: 0,
+    userWsAgeMs: 0,
+    orderbookSource: "idle",
+    localBookReady: false,
+    trackedTokenCount: 0,
+    localBookTokenCount: 0,
+    fallbackActive: false,
+    marketWsDisconnects: 0,
+    userWsDisconnects: 0,
+    marketWsReconnects: 0,
+    userWsReconnects: 0,
+    fallbackTransitions: 0,
+    lastFallbackAt: 0,
+    localBookMaxDepth: 0,
+    localBookStaleCount: 0,
+    localBookCrossedCount: 0,
+  };
 }
 
 export class Hedge15mEngine {
@@ -475,6 +529,8 @@ export class Hedge15mEngine {
 
   getState(): Hedge15mState {
     const dp = getDynamicParams();
+    const exec = getExecutionTelemetry();
+    const traderDiag = this.trader ? this.trader.getDiagnostics() : getDefaultTraderDiagnostics();
     const secondsLeft = Math.max(0, Math.min(ROUND_DURATION, this.secondsLeft));
     const hasRoundClock = secondsLeft > 0;
     const roundElapsed = hasRoundClock ? Math.max(0, Math.min(ROUND_DURATION, ROUND_DURATION - secondsLeft)) : 0;
@@ -523,6 +579,19 @@ export class Hedge15mEngine {
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
+      diagnostics: {
+        ...traderDiag,
+        execSignalToSubmitP50: exec.signalToSubmit.p50,
+        execSubmitToAckP50: exec.submitToAck.p50,
+        execAckToFillP50: exec.ackToFill.p50,
+        execSignalToFillP50: exec.signalToFill.p50,
+        execSignalToFillP90: exec.signalToFill.p90,
+        execLeg2SignalToFillP50: exec.leg2SignalToFill.p50,
+        execLeg2SignalToFillP90: exec.leg2SignalToFill.p90,
+        execExitSignalToFillP50: exec.exitSignalToFill.p50,
+        execExitSignalToFillP90: exec.exitSignalToFill.p90,
+        execGtcWaitToFillP50: exec.gtcWaitToFill.p50,
+      },
     };
   }
 
@@ -590,6 +659,7 @@ export class Hedge15mEngine {
     this.paperSessionMode = options.paperSessionMode === "persistent" ? "persistent" : "session";
     this.historyFile = this.tradingMode === "paper" ? PAPER_HISTORY_FILE : HISTORY_FILE;
     this.resetAdaptivePaperTuning();
+    resetExecutionTelemetry();
     this.loopRunId += 1;
     const runId = this.loopRunId;
     this.running = true;
@@ -1162,7 +1232,7 @@ export class Hedge15mEngine {
     }
 
     const budgetPct = this.getAdaptiveLegBudgetPct(askPrice, oppCurrentAsk, entryQualityMaxSum);
-    await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, budgetPct, "mispricing");
+    await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, budgetPct, "mispricing", Date.now());
   }
 
   private async buyTrendLeg(
@@ -1190,7 +1260,7 @@ export class Hedge15mEngine {
     }
 
     this.dumpDetected = `TREND ${dir.toUpperCase()} BTC${MOMENTUM_WINDOW_SEC}/${TREND_WINDOW_SEC}`;
-    await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, TREND_BUDGET_PCT, "trend");
+    await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, TREND_BUDGET_PCT, "trend", Date.now());
   }
 
   private async openLeg1Position(
@@ -1201,6 +1271,7 @@ export class Hedge15mEngine {
     oppToken: string,
     budgetPct: number,
     strategyMode: "mispricing" | "trend",
+    signalDetectedAt = Date.now(),
   ): Promise<void> {
     const budget = this.balance * budgetPct;
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
@@ -1241,7 +1312,11 @@ export class Hedge15mEngine {
 
     try {
       logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${entryShares}份 @${entryAsk.toFixed(2)} cost=$${entryCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk}`);
+      const orderSubmitStartedAt = Date.now();
+      recordExecutionLatency("signalToSubmit", orderSubmitStartedAt - signalDetectedAt);
       const res = await trader.placeFakBuy(buyToken, entryCost, this.negRisk);
+      const orderAckAt = Date.now();
+      recordExecutionLatency("submitToAck", orderAckAt - orderSubmitStartedAt);
       if (!res) {
         this.status = "Leg1下单失败, 本轮不重试";
         logger.warn("HEDGE15M Leg1 FAK failed");
@@ -1253,7 +1328,10 @@ export class Hedge15mEngine {
       let realFillPrice = entryAsk;
       if (orderId) {
         const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
+        const fillConfirmedAt = Date.now();
+        recordExecutionLatency("ackToFill", fillConfirmedAt - orderAckAt);
         if (details.filled > 0) {
+          recordExecutionLatency("signalToFill", fillConfirmedAt - signalDetectedAt);
           filledShares = details.filled;
           if (details.avgPrice > 0) realFillPrice = details.avgPrice;
         } else {
@@ -1277,6 +1355,9 @@ export class Hedge15mEngine {
           minShares: MIN_SHARES,
         });
         if (estimatedFill.confirmed) {
+          const fillConfirmedAt = Date.now();
+          recordExecutionLatency("ackToFill", fillConfirmedAt - orderAckAt);
+          recordExecutionLatency("signalToFill", fillConfirmedAt - signalDetectedAt);
           filledShares = estimatedFill.shares;
           this.leg1Estimated = true;
           logger.info(`HEDGE15M Leg1: estimated fill from balance: ${filledShares} shares (spent=$${spent.toFixed(2)})`);
@@ -1337,6 +1418,7 @@ export class Hedge15mEngine {
   }
 
   private async buyLeg2(trader: Trader, oppAsk: number, sumTarget: number): Promise<void> {
+    const leg2SignalAt = Date.now();
     // 匹配Leg1实际成交份数, 保证对称对冲
     const sharesToBuy = this.leg1Shares;
 
@@ -1395,7 +1477,11 @@ export class Hedge15mEngine {
     }
     const leg2Dir = this.leg1Dir === "up" ? "DOWN" : "UP";
     logger.info(`HEDGE15M LEG2: ${leg2Dir} ${sharesToBuy.toFixed(0)}份 @${actualAsk.toFixed(2)} (passed=${oppAsk.toFixed(2)})`);
+    const leg2SubmitAt = Date.now();
+    recordExecutionLatency("leg2SignalToSubmit", leg2SubmitAt - leg2SignalAt);
     const res = await trader.placeFakBuy(this.leg2Token, actualCost, this.negRisk);
+    const leg2AckAt = Date.now();
+    recordExecutionLatency("leg2SubmitToAck", leg2AckAt - leg2SubmitAt);
     if (!res) {
       logger.warn("HEDGE15M Leg2 FAK failed");
       return;
@@ -1406,7 +1492,10 @@ export class Hedge15mEngine {
     let leg2RealPrice = oppAsk;
     if (orderId) {
       const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
+      const leg2FillAt = Date.now();
+      recordExecutionLatency("leg2AckToFill", leg2FillAt - leg2AckAt);
       if (details.filled > 0) {
+        recordExecutionLatency("leg2SignalToFill", leg2FillAt - leg2SignalAt);
         filledShares = details.filled;
         if (details.avgPrice > 0) leg2RealPrice = details.avgPrice;
       } else {
@@ -1431,6 +1520,9 @@ export class Hedge15mEngine {
         minShares: 1,
       });
       if (estimatedFill.confirmed) {
+        const leg2FillAt = Date.now();
+        recordExecutionLatency("leg2AckToFill", leg2FillAt - leg2AckAt);
+        recordExecutionLatency("leg2SignalToFill", leg2FillAt - leg2SignalAt);
         filledShares = estimatedFill.shares;
         this.leg2Estimated = true;
         logger.info(`HEDGE15M Leg2: estimated fill from balance: ${filledShares} shares (spent=$${spent.toFixed(2)})`);
@@ -1501,6 +1593,9 @@ export class Hedge15mEngine {
     if (filled > 0) {
       // GTC 已(部分)成交 — 查询真实成交价
       const gtcDetails = await trader.getOrderFillDetails(this.pendingSellOrderId);
+      if (this.pendingSellOrderTime > 0) {
+        recordExecutionLatency("gtcWaitToFill", Date.now() - this.pendingSellOrderTime);
+      }
       await trader.cancelOrder(this.pendingSellOrderId);
       const actualFilled = gtcDetails.filled > 0 ? gtcDetails.filled : filled;
       const soldShares = Math.min(actualFilled, this.leg1Shares);
@@ -1675,7 +1770,12 @@ export class Hedge15mEngine {
     // 标记正在卖出, 防止主循环并发触发重复卖出
     this.hedgeState = "done";
     const sharesToSell = this.leg1Shares;  // 缓存, emergencySell期间不应变
+    const exitSignalAt = Date.now();
+    recordExecutionLatency("exitSignalToSubmit", 0);
+    const exitSubmitAt = Date.now();
     const res = await trader.placeFakSell(this.leg1Token, sharesToSell, this.negRisk);
+    const exitAckAt = Date.now();
+    recordExecutionLatency("exitSubmitToAck", exitAckAt - exitSubmitAt);
     if (res) {
       // 检查实际成交量和真实成交价
       const orderId: string = res?.orderID || res?.order_id || "";
@@ -1683,7 +1783,10 @@ export class Hedge15mEngine {
       let realSellPrice = 0;
       if (orderId) {
         const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
+        const exitFillAt = Date.now();
+        recordExecutionLatency("exitAckToFill", exitFillAt - exitAckAt);
         if (details.filled > 0) {
+          recordExecutionLatency("exitSignalToFill", exitFillAt - exitSignalAt);
           soldShares = details.filled;
           realSellPrice = details.avgPrice;
         } else {
@@ -1699,6 +1802,9 @@ export class Hedge15mEngine {
         await this.refreshBalance();
         // 如果余额增加了(说明FAK已成交), 不再重复卖出
         if (this.balance > balBefore + this.leg1Shares * 0.05) {
+          const exitFillAt = Date.now();
+          recordExecutionLatency("exitAckToFill", exitFillAt - exitAckAt);
+          recordExecutionLatency("exitSignalToFill", exitFillAt - exitSignalAt);
           logger.info(`HEDGE15M ${reason}: balance increased $${balBefore.toFixed(2)}→$${this.balance.toFixed(2)}, FAK likely filled`);
           // 用估算价格记录
           soldShares = this.leg1Shares;

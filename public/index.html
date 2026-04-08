@@ -143,8 +143,25 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
       <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
       <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
-      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>      <div class="row"><span class="k">CLOB 延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
-      <div class="row"><span class="k">CLOB 延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>    </div>
+      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
+      <div class="row"><span class="k">CLOB 延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
+      <div class="row"><span class="k">CLOB 延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
+      <div class="row"><span class="k">Market WS</span><span class="v" id="h-market-ws">--</span></div>
+      <div class="row"><span class="k">User WS</span><span class="v" id="h-user-ws">--</span></div>
+      <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
+      <div class="row"><span class="k">本地Book</span><span class="v" id="h-local-book">--</span></div>
+      <div class="row"><span class="k">信号→发单</span><span class="v" id="h-exec-s2s">--</span></div>
+      <div class="row"><span class="k">发单→回报</span><span class="v" id="h-exec-s2a">--</span></div>
+      <div class="row"><span class="k">回报→成交</span><span class="v" id="h-exec-a2f">--</span></div>
+      <div class="row"><span class="k">信号→成交</span><span class="v" id="h-exec-s2f">--</span></div>
+      <div class="row"><span class="k">Leg2→成交</span><span class="v" id="h-exec-leg2">--</span></div>
+      <div class="row"><span class="k">卖出→成交</span><span class="v" id="h-exec-exit">--</span></div>
+      <div class="row"><span class="k">GTC等待成交</span><span class="v" id="h-exec-gtc">--</span></div>
+      <div class="row"><span class="k">Market断流/重连</span><span class="v" id="h-market-ws-stats">--</span></div>
+      <div class="row"><span class="k">User断流/重连</span><span class="v" id="h-user-ws-stats">--</span></div>
+      <div class="row"><span class="k">HTTP回退次数</span><span class="v" id="h-fallback-stats">--</span></div>
+      <div class="row"><span class="k">Book陈旧/交叉</span><span class="v" id="h-local-book-issues">--</span></div>
+    </div>
 
     <!-- Wallet Config -->
     <div class="card">
@@ -451,6 +468,55 @@ function render(s) {
   const latEl90 = document.getElementById('h-lat-p90');
   latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
   latEl90.style.color = latColor(lat90);
+
+  const diagnostics = s.diagnostics || {};
+  const marketWsEl = document.getElementById('h-market-ws');
+  marketWsEl.textContent = diagnostics.marketWsConnected ? '在线 / ' + (diagnostics.marketWsAgeMs || 0) + 'ms' : '离线';
+  marketWsEl.style.color = diagnostics.marketWsConnected ? ((diagnostics.marketWsAgeMs || 0) < 1000 ? '#3fb950' : '#e3b341') : '#f85149';
+  const userWsEl = document.getElementById('h-user-ws');
+  userWsEl.textContent = diagnostics.userWsConnected ? '在线 / ' + (diagnostics.userWsAgeMs || 0) + 'ms' : '离线';
+  userWsEl.style.color = diagnostics.userWsConnected ? '#3fb950' : '#f85149';
+  const bookSourceEl = document.getElementById('h-book-source');
+  bookSourceEl.textContent = diagnostics.orderbookSource === 'ws' ? 'WS' : diagnostics.orderbookSource === 'http' ? 'HTTP回退' : '--';
+  bookSourceEl.style.color = diagnostics.orderbookSource === 'ws' ? '#3fb950' : diagnostics.orderbookSource === 'http' ? '#e3b341' : '';
+  const localBookEl = document.getElementById('h-local-book');
+  localBookEl.textContent = (diagnostics.localBookReady ? '就绪 ' : '未就绪 ') + (diagnostics.localBookTokenCount || 0) + '/' + (diagnostics.trackedTokenCount || 0);
+  localBookEl.style.color = diagnostics.localBookReady && !(diagnostics.localBookStaleCount || 0) && !(diagnostics.localBookCrossedCount || 0) ? '#3fb950' : '#e3b341';
+  const execS2SEl = document.getElementById('h-exec-s2s');
+  execS2SEl.textContent = diagnostics.execSignalToSubmitP50 > 0 ? diagnostics.execSignalToSubmitP50 + 'ms' : '--';
+  execS2SEl.style.color = latColor(diagnostics.execSignalToSubmitP50 || 0);
+  const execS2AEl = document.getElementById('h-exec-s2a');
+  execS2AEl.textContent = diagnostics.execSubmitToAckP50 > 0 ? diagnostics.execSubmitToAckP50 + 'ms' : '--';
+  execS2AEl.style.color = latColor(diagnostics.execSubmitToAckP50 || 0);
+  const execA2FEl = document.getElementById('h-exec-a2f');
+  execA2FEl.textContent = diagnostics.execAckToFillP50 > 0 ? diagnostics.execAckToFillP50 + 'ms' : '--';
+  execA2FEl.style.color = latColor(diagnostics.execAckToFillP50 || 0);
+  const execS2FEl = document.getElementById('h-exec-s2f');
+  execS2FEl.textContent = diagnostics.execSignalToFillP50 > 0 ? diagnostics.execSignalToFillP50 + 'ms / P90 ' + (diagnostics.execSignalToFillP90 || 0) + 'ms' : '--';
+  execS2FEl.style.color = latColor(diagnostics.execSignalToFillP50 || 0);
+  const execLeg2El = document.getElementById('h-exec-leg2');
+  execLeg2El.textContent = diagnostics.execLeg2SignalToFillP50 > 0 ? diagnostics.execLeg2SignalToFillP50 + 'ms / P90 ' + (diagnostics.execLeg2SignalToFillP90 || 0) + 'ms' : '--';
+  execLeg2El.style.color = latColor(diagnostics.execLeg2SignalToFillP50 || 0);
+  const execExitEl = document.getElementById('h-exec-exit');
+  execExitEl.textContent = diagnostics.execExitSignalToFillP50 > 0 ? diagnostics.execExitSignalToFillP50 + 'ms / P90 ' + (diagnostics.execExitSignalToFillP90 || 0) + 'ms' : '--';
+  execExitEl.style.color = latColor(diagnostics.execExitSignalToFillP50 || 0);
+  const execGtcEl = document.getElementById('h-exec-gtc');
+  execGtcEl.textContent = diagnostics.execGtcWaitToFillP50 > 0 ? diagnostics.execGtcWaitToFillP50 + 'ms' : '--';
+  execGtcEl.style.color = latColor(diagnostics.execGtcWaitToFillP50 || 0);
+  const marketWsStatsEl = document.getElementById('h-market-ws-stats');
+  marketWsStatsEl.textContent = (diagnostics.marketWsDisconnects || 0) + ' / ' + (diagnostics.marketWsReconnects || 0);
+  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#e3b341' : '#3fb950';
+  const userWsStatsEl = document.getElementById('h-user-ws-stats');
+  userWsStatsEl.textContent = (diagnostics.userWsDisconnects || 0) + ' / ' + (diagnostics.userWsReconnects || 0);
+  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#e3b341' : '#3fb950';
+  const fallbackStatsEl = document.getElementById('h-fallback-stats');
+  fallbackStatsEl.textContent = (diagnostics.fallbackTransitions || 0) > 0
+    ? (diagnostics.fallbackTransitions || 0) + ' 次 / ' + (diagnostics.localBookMaxDepth || 0) + '档'
+    : '0 次 / ' + (diagnostics.localBookMaxDepth || 0) + '档';
+  fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#e3b341' : '#3fb950';
+  const localBookIssuesEl = document.getElementById('h-local-book-issues');
+  localBookIssuesEl.textContent = (diagnostics.localBookStaleCount || 0) + ' / ' + (diagnostics.localBookCrossedCount || 0);
+  localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#e3b341' : '#3fb950';
 
   // History
   const tbody = document.getElementById('history-body');
