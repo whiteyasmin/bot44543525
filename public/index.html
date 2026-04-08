@@ -204,6 +204,8 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
       <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
       <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
+      <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
+      <div class="row"><span class="k">Maker成交</span><span class="v" id="h-maker">--</span></div>
       </div>
     </div>
 
@@ -244,10 +246,11 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
       <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
-      <div class="row"><span class="k">手续费</span><span class="v">2% (taker)</span></div>
+      <div class="row"><span class="k">手续费</span><span class="v">taker 2% / maker 0% (Limit赛跑)</span></div>
       <div class="row"><span class="k">止损</span><span class="v">正常82% / 边缘88% 或 bid&lt;0.15</span></div>
       <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
       <div class="row"><span class="k">割肉</span><span class="v">边缘15s未锁 / 裸仓60s早退 / 对冲超时 / ≤30s且bid&lt;0.35</span></div>
+      <div class="row"><span class="k">双侧做市</span><span class="v">挂单offset 2¢ / sum≤$0.96 / 仓位15% / 前9分钟</span></div>
       </div>
     </div>
 
@@ -558,6 +561,38 @@ function render(s) {
     expEl.style.color = s.expectedProfit>=0?'#3fb950':'#f85149';
   } else {
     expEl.textContent = '--'; expEl.style.color = '';
+  }
+
+  // Dual-side pre-order status
+  const preEl = document.getElementById('h-preorder');
+  if (preEl) {
+    const upP = s.preOrderUpPrice || 0;
+    const dnP = s.preOrderDownPrice || 0;
+    if (upP > 0 || dnP > 0) {
+      const parts = [];
+      if (upP > 0) parts.push('UP@$' + upP.toFixed(2));
+      if (dnP > 0) parts.push('DN@$' + dnP.toFixed(2));
+      preEl.textContent = parts.join(' / ');
+      preEl.style.color = '#58a6ff';
+    } else {
+      preEl.textContent = s.hedgeState === 'watching' ? '待挂' : '--';
+      preEl.style.color = '#6e7681';
+    }
+  }
+  // Maker fill status
+  const makerEl = document.getElementById('h-maker');
+  if (makerEl) {
+    if (s.hedgeState === 'leg1_filled' || s.hedgeState === 'leg2_filled') {
+      const parts = [];
+      parts.push('L1:' + (s.leg1Maker ? '✅maker' : 'taker'));
+      if (s.hedgeState === 'leg2_filled') parts.push('L2:' + (s.leg2Maker ? '✅maker' : 'taker'));
+      makerEl.textContent = parts.join(' / ');
+      makerEl.style.color = (s.leg1Maker || s.leg2Maker) ? '#3fb950' : '#8b949e';
+    } else {
+      makerEl.textContent = '--';
+      makerEl.style.color = '';
+    }
+  }
   }
 
   // Latency

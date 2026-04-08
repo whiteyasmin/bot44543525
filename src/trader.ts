@@ -6,6 +6,7 @@ import { getP50Ms } from "./latency";
 import { logger } from "./logger";
 
 const PAPER_TAKER_FEE = 0.02;
+const PAPER_MAKER_FEE = 0.00;   // maker 挂单 0% fee
 const ORDERBOOK_CACHE_TTL_MS = 250;
 const ORDERBOOK_POLL_MS = 50;
 const ORDERBOOK_FAST_POLL_MS = 25;
@@ -975,17 +976,38 @@ export class Trader {
   }
   private async fillPaperGtcOrder(orderId: string): Promise<PaperOrder | null> {
     const order = this.paperOrders.get(orderId);
-    if (!order || order.canceled || order.orderType !== "GTC" || order.side !== "SELL") return order || null;
+    if (!order || order.canceled || order.orderType !== "GTC") return order || null;
     if (order.filled >= order.size) return order;
     const book = await this.getBestPrices(order.tokenId);
-    if (book.bid == null || book.bidDepth <= 0) return order;
-    if (order.price != null && book.bid + 1e-9 < order.price) return order;
-    const fillable = Math.min(order.size - order.filled, book.bidDepth);
-    if (fillable <= 0) return order;
-    const fillPrice = Math.max(order.price || book.bid, book.bid);
-    order.filled += fillable;
-    order.avgPrice = fillPrice;
-    this.paperBalance += fillable * fillPrice * (1 - PAPER_TAKER_FEE);
+
+    if (order.side === "SELL") {
+      if (book.bid == null || book.bidDepth <= 0) return order;
+      if (order.price != null && book.bid + 1e-9 < order.price) return order;
+      const fillable = Math.min(order.size - order.filled, book.bidDepth);
+      if (fillable <= 0) return order;
+      const fillPrice = Math.max(order.price || book.bid, book.bid);
+      const prevFilled = order.filled;
+      order.avgPrice = prevFilled > 0
+        ? (prevFilled * order.avgPrice + fillable * fillPrice) / (prevFilled + fillable)
+        : fillPrice;
+      order.filled += fillable;
+      this.paperBalance += fillable * fillPrice * (1 - PAPER_MAKER_FEE); // GTC 挂单成交 = maker 费率
+    } else if (order.side === "BUY") {
+      if (book.ask == null || book.askDepth <= 0) return order;
+      // GTC buy 成交条件: ask ≤ 挂单价
+      if (order.price != null && book.ask - 1e-9 > order.price) return order;
+      const fillable = Math.min(order.size - order.filled, book.askDepth);
+      if (fillable <= 0) return order;
+      const fillPrice = Math.min(order.price || book.ask, book.ask);
+      const prevFilled = order.filled;
+      order.avgPrice = prevFilled > 0
+        ? (prevFilled * order.avgPrice + fillable * fillPrice) / (prevFilled + fillable)
+        : fillPrice;
+      order.filled += fillable;
+      // GTC buy 预扣时已扣款，成交价可能比预扣价低，退还差额
+      const refund = (order.price! - fillPrice) * fillable * (1 + PAPER_MAKER_FEE);
+      if (refund > 0) this.paperBalance += refund;
+    }
     return order;
   }
 
@@ -1125,10 +1147,58 @@ export class Trader {
     }
   }
 
+  /** 挂 GTC 限价买单 (maker)，不等成交，返回 orderID 供调用方追踪 */
+  async placeGtcBuy(tokenId: string, shares: number, price: number, negRisk = false): Promise<string | null> {
+    if (this.mode === "paper") {
+      const cost = shares * price * (1 + PAPER_MAKER_FEE);
+      if (cost > this.paperBalance) {
+        logger.warn(`PAPER GTC买单失败: 余额不足 need=$${cost.toFixed(2)} have=$${this.paperBalance.toFixed(2)}`);
+        return null;
+      }
+      const orderId = this.nextPaperOrderId("gtcbuy");
+      this.paperOrders.set(orderId, {
+        orderId,
+        tokenId,
+        side: "BUY",
+        orderType: "GTC",
+        size: shares,
+        filled: 0,
+        avgPrice: 0,
+        price,
+      });
+      // 预扣资金
+      this.paperBalance -= cost;
+      logger.info(`PAPER GTC限价买单: ${shares.toFixed(0)}份 @${price.toFixed(2)} token=${tokenId.slice(0, 20)}... negRisk=${negRisk}`);
+      return orderId;
+    }
+    try {
+      const resp = await this.client.createAndPostOrder(
+        { tokenID: tokenId, price, size: shares, side: Side.BUY },
+        { tickSize: "0.01", negRisk },
+        OrderType.GTC,
+      );
+      const orderId: string = resp?.orderID || resp?.order_id || "";
+      logger.info(`GTC限价买单: ${shares}份 @${price.toFixed(2)} token=${tokenId.slice(0, 20)}... orderId=${orderId}`);
+      return orderId || null;
+    } catch (e: any) {
+      logger.error(`GTC买单失败: ${e.message}`);
+      return null;
+    }
+  }
+
   async cancelAll(): Promise<void> {
     if (this.mode === "paper") {
       for (const order of this.paperOrders.values()) {
-        if (order.orderType === "GTC") order.canceled = true;
+        if (order.orderType === "GTC" && !order.canceled) {
+          // GTC buy 取消时退还未成交部分的预扣资金 (与 cancelOrder 逻辑一致)
+          if (order.side === "BUY" && order.price != null) {
+            const unfilled = order.size - order.filled;
+            if (unfilled > 0) {
+              this.paperBalance += unfilled * order.price * (1 + PAPER_MAKER_FEE);
+            }
+          }
+          order.canceled = true;
+        }
       }
       logger.info("已取消所有挂单 (paper)");
       return;
@@ -1203,7 +1273,17 @@ export class Trader {
   async cancelOrder(orderId: string): Promise<void> {
     if (this.mode === "paper") {
       const order = this.paperOrders.get(orderId);
-      if (order) order.canceled = true;
+      if (order) {
+        // GTC buy 取消时退还未成交部分的预扣资金
+        if (!order.canceled && order.orderType === "GTC" && order.side === "BUY" && order.price != null) {
+          const unfilled = order.size - order.filled;
+          if (unfilled > 0) {
+            const refund = unfilled * order.price * (1 + PAPER_MAKER_FEE);
+            this.paperBalance += refund;
+          }
+        }
+        order.canceled = true;
+      }
       return;
     }
     try {

@@ -83,6 +83,27 @@ const THIN_EDGE_STOP_LOSS = 0.88;            // 边缘入场更紧止损 (正常
 const THIN_EDGE_MIN_PROFIT_PER_SHARE = 0.008; // 边缘入场每股至少0.8分利润, 否则拒绝
 const EARLY_EXIT_AFTER_MS = 60_000;
 const EARLY_EXIT_SUM_BUFFER = 0.06;
+const LIMIT_RACE_ENABLED = true;           // 启用 Limit+FAK 赛跑
+const LIMIT_RACE_OFFSET = 0.01;            // limit 挂单价 = ask - offset
+const LIMIT_RACE_FAST_OFFSET = 0.02;       // dump 快速时更激进
+const LIMIT_RACE_TIMEOUT_MS = 400;         // limit 等待上限 ms
+const LIMIT_RACE_POLL_MS = 50;             // 每 50ms 检查一次
+const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
+const LIMIT_LEG2_ENABLED = true;           // Leg2 也尝试 limit
+const LIMIT_LEG2_OFFSET = 0.01;
+const LIMIT_LEG2_TIMEOUT_MS = 300;
+const CHAINLINK_CONFIRM_ENABLED = true;    // Chainlink 方向确认
+const CHAINLINK_CONTRA_PENALTY = 0.50;     // CL与dump方向矛盾时仓位减半
+const CHAINLINK_LAG_AGGRESSIVE_PCT = 0.001; // CL滞后>0.1% → 更激进的limit offset
+const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
+const DUAL_SIDE_SUM_CEILING = 0.96;        // 预挂单目标: 双侧sum ≤ 此值
+const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少)
+const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
+const DUAL_SIDE_BUDGET_PCT = 0.15;         // 预挂单仓位 (单侧)
+const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
+const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
+const DUAL_SIDE_MAX_ASK = 0.50;            // 挂单价上限
+const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 
@@ -129,6 +150,10 @@ export interface Hedge15mState {
   strategyPolicy: string;
   trendBias: string;
   sessionROI: number;
+  preOrderUpPrice: number;
+  preOrderDownPrice: number;
+  leg1Maker: boolean;
+  leg2Maker: boolean;
   latencyP50: number;
   latencyP90: number;
   latencyNetworkSource: string;
@@ -337,6 +362,18 @@ export class Hedge15mEngine {
   private trendSignalStreak = 0;
   private trendSignalDir: "up" | "down" | "flat" = "flat";
   private trendPeakBid = 0;                  // 趋势单持仓期间最高bid
+  private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
+  private leg1MakerFill = false;             // Leg1是否maker成交
+  private leg2MakerFill = false;             // Leg2是否maker成交
+  private preOrderUpId = "";                 // 双侧预挂单: UP token GTC orderId
+  private preOrderDownId = "";               // 双侧预挂单: DOWN token GTC orderId
+  private preOrderUpPrice = 0;
+  private preOrderDownPrice = 0;
+  private preOrderUpShares = 0;
+  private preOrderDownShares = 0;
+  private preOrderUpToken = "";
+  private preOrderDownToken = "";
+  private preOrderLastRefresh = 0;
   private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
 
@@ -605,10 +642,6 @@ export class Hedge15mEngine {
     return base;
   }
 
-  private getProjectedLockedProfit(shares: number, fillPrice: number, oppAsk: number): number {
-    return shares - (shares * fillPrice * (1 + TAKER_FEE) + shares * oppAsk * (1 + TAKER_FEE));
-  }
-
   private getRoundPhase(): string {
     if (!this.running) return "idle";
     if (this.hedgeState === "off") return "booting";
@@ -693,6 +726,10 @@ export class Hedge15mEngine {
       strategyPolicy: STRATEGY_POLICY,
       trendBias: this.currentTrendBias,
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
+      preOrderUpPrice: this.preOrderUpPrice,
+      preOrderDownPrice: this.preOrderDownPrice,
+      leg1Maker: this.leg1MakerFill,
+      leg2Maker: this.leg2MakerFill,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
       latencyNetworkSource: latency.networkSource,
@@ -937,6 +974,18 @@ export class Hedge15mEngine {
     this.leg1Estimated = false;
     this.leg2Estimated = false;
     this.trendPeakBid = 0;
+    this.currentDumpDrop = 0;
+    this.leg1MakerFill = false;
+    this.leg2MakerFill = false;
+    this.preOrderUpId = "";
+    this.preOrderDownId = "";
+    this.preOrderUpPrice = 0;
+    this.preOrderDownPrice = 0;
+    this.preOrderUpShares = 0;
+    this.preOrderDownShares = 0;
+    this.preOrderUpToken = "";
+    this.preOrderDownToken = "";
+    this.preOrderLastRefresh = 0;
     this.leg1EntryInFlight = false;
     this.leg1AttemptedThisRound = false;
     this.resetRoundRejectStats();
@@ -1036,6 +1085,12 @@ export class Hedge15mEngine {
             const { dumpWindowMs, dumpBaselineMs } = getDynamicParams();
             this.marketState.push(this.upAsk, this.downAsk, dumpWindowMs + 500);
 
+            // ── 双侧预挂单做市: 检查成交 + 刷新挂单 ──
+            await this.manageDualSideOrders(trader, rnd, secs);
+            if (this.hedgeState !== "watching") {
+              // 预挂单成交转入 leg1_filled, 跳过dump检测
+            } else {
+
             // ── 连亏冷却: 3连亏后跳过1轮 ──
             if (this.consecutiveLosses >= 3) {
               this.status = `冷却中 (连亏${this.consecutiveLosses}次, 跳过本轮)`;
@@ -1088,6 +1143,7 @@ export class Hedge15mEngine {
                 const candidate = mispricing.candidates[0];
                 if (candidate) {
                   this.dumpDetected = candidate.dumpDetected;
+                  this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                   this.activeStrategyMode = "mispricing";
                   this.resetTrendSignalTracking();
                   logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}: ${this.dumpDetected}`);
@@ -1144,10 +1200,15 @@ export class Hedge15mEngine {
               }
             }
             } // end consecutive loss guard
+            } // end dual-side pre-order guard
           }
 
           // Window expired
           if (elapsed >= ENTRY_WINDOW_S && this.hedgeState === "watching") {
+            // 窗口到期, 取消预挂单
+            if (this.preOrderUpId || this.preOrderDownId) {
+              await this.cancelDualSideOrders(trader);
+            }
             this.hedgeState = "done";
             this.status = "窗口到期,无砸盘";
             this.skips++;
@@ -1318,10 +1379,15 @@ export class Hedge15mEngine {
               const realPrice = gtcDetails.avgPrice > 0 ? gtcDetails.avgPrice : (this.pendingSellPrice > 0 ? this.pendingSellPrice : this.leg1Price);
               logger.info(`HEDGE15M 回合结束: GTC已成交 ${gtcDetails.filled.toFixed(0)}份 @${realPrice.toFixed(2)}`);
               const recovered = gtcDetails.filled * realPrice * (1 - TAKER_FEE);
+              const l1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+              const soldCostBasis = gtcDetails.filled * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
+              const partialProfit = recovered - soldCostBasis;
+              this.totalProfit += partialProfit;
+              this.sessionProfit += partialProfit;
               this.leg1Shares -= gtcDetails.filled;
-              this.totalCost = this.leg1Shares > 0 ? this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE) : 0;
+              this.totalCost = this.leg1Shares > 0 ? this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee) : 0;
               this.balance += recovered;
-              logger.info(`HEDGE15M GTC部分结算: 剩余${this.leg1Shares.toFixed(0)}份 totalCost=$${this.totalCost.toFixed(2)}`);
+              logger.info(`HEDGE15M GTC部分结算: 卖出${gtcDetails.filled.toFixed(0)}份@${realPrice.toFixed(2)} P/L=$${partialProfit.toFixed(2)} 剩余${this.leg1Shares.toFixed(0)}份`);
             }
             this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
           }
@@ -1365,6 +1431,11 @@ export class Hedge15mEngine {
     if (this.leg1AttemptedThisRound) {
       logger.warn("Hedge15m Leg1 skipped: order already attempted this round, avoiding duplicate exposure");
       return;
+    }
+
+    // 取消双侧预挂单, 释放资金给反应式下单
+    if (this.preOrderUpId || this.preOrderDownId) {
+      await this.cancelDualSideOrders(trader);
     }
 
     // ── Leg1价格上限: 过高入场对冲空间不足 ──
@@ -1440,6 +1511,11 @@ export class Hedge15mEngine {
     if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) return;
 
+    // 取消双侧预挂单
+    if (this.preOrderUpId || this.preOrderDownId) {
+      await this.cancelDualSideOrders(trader);
+    }
+
     const plan = planTrendEntry({
       askPrice,
       maxEntryAsk: TREND_MAX_ENTRY_ASK,
@@ -1455,6 +1531,420 @@ export class Hedge15mEngine {
 
     this.dumpDetected = `TREND ${dir.toUpperCase()} BTC${MOMENTUM_WINDOW_SEC}/${TREND_WINDOW_SEC}`;
     await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, TREND_BUDGET_PCT, "trend", Date.now());
+  }
+
+  // ── 双侧预挂单做市 ──
+
+  /** 取消所有预挂单并释放资金 */
+  private async cancelDualSideOrders(trader: Trader): Promise<void> {
+    if (this.preOrderUpId) {
+      await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+      logger.info(`DUAL SIDE: cancelled UP pre-order ${this.preOrderUpId.slice(0, 12)}`);
+      this.preOrderUpId = "";
+    }
+    if (this.preOrderDownId) {
+      await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+      logger.info(`DUAL SIDE: cancelled DOWN pre-order ${this.preOrderDownId.slice(0, 12)}`);
+      this.preOrderDownId = "";
+    }
+    this.preOrderUpPrice = 0;
+    this.preOrderDownPrice = 0;
+    this.preOrderUpShares = 0;
+    this.preOrderDownShares = 0;
+    this.preOrderLastRefresh = 0;
+    // 同步余额: paper 模式下 cancelOrder 已退款到 paperBalance
+    await this.refreshBalance();
+  }
+
+  /**
+   * 双侧预挂单做市:
+   * 在 watching 阶段主动挂 GTC limit buy 在 UP 和 DOWN 两侧,
+   * 当市场下砸到目标价时以 maker 费率(0%)成交, 实现:
+   * 1. 比反应式下单更快 (单已在book中)
+   * 2. 省 2% taker fee
+   * 3. 如果一侧被吃到 → 等于拿到便宜的 Leg1, 接续正常 Leg2 逻辑
+   */
+  private async manageDualSideOrders(
+    trader: Trader,
+    rnd: Round15m,
+    secs: number,
+  ): Promise<void> {
+    if (!DUAL_SIDE_ENABLED) return;
+    if (this.hedgeState !== "watching") return;
+    if (this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
+    if (secs < DUAL_SIDE_MIN_SECS) {
+      // 时间不足, 取消预挂单
+      if (this.preOrderUpId || this.preOrderDownId) {
+        await this.cancelDualSideOrders(trader);
+      }
+      return;
+    }
+    if (this.consecutiveLosses >= 3) return; // 冷却中不挂
+
+    const upAsk = this.upAsk;
+    const downAsk = this.downAsk;
+    if (upAsk <= 0 || downAsk <= 0) return;
+
+    // ── 检查已有预挂单是否被成交 ──
+    if (this.preOrderUpId) {
+      const upFill = await trader.getOrderFillDetails(this.preOrderUpId);
+      if (upFill.filled > 0) {
+        // UP 侧被成交 → 先取消 UP 余量 + 另一侧
+        if (upFill.filled < this.preOrderUpShares) {
+          await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+          const afterCancel = await trader.getOrderFillDetails(this.preOrderUpId);
+          if (afterCancel.filled > upFill.filled) {
+            upFill.filled = afterCancel.filled;
+            upFill.avgPrice = afterCancel.avgPrice;
+          }
+        }
+        logger.info(`DUAL SIDE FILLED: UP ${upFill.filled.toFixed(0)}份 @${upFill.avgPrice.toFixed(2)} (limit@${this.preOrderUpPrice.toFixed(2)}) maker=true`);
+        // 取消另一侧 (先cancel再查fill, 避免竞态丢份额)
+        if (this.preOrderDownId) {
+          await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+          const dnCheck = await trader.getOrderFillDetails(this.preOrderDownId);
+          if (dnCheck.filled > 0) {
+            logger.warn(`DUAL SIDE GHOST: DOWN also filled ${dnCheck.filled.toFixed(0)}份, selling immediately`);
+            await trader.placeFakSell(this.preOrderDownToken, dnCheck.filled, this.negRisk).catch((e: any) => {
+              logger.error(`DUAL SIDE GHOST sell failed: ${e.message}`);
+            });
+          }
+          this.preOrderDownId = "";
+          this.preOrderDownPrice = 0;
+          this.preOrderDownShares = 0;
+        }
+        this.transitionPreOrderToLeg1(
+          "up", this.preOrderUpToken, rnd.downToken,
+          upFill.filled, upFill.avgPrice > 0 ? upFill.avgPrice : this.preOrderUpPrice,
+          this.preOrderUpId,
+        );
+        this.preOrderUpId = "";
+        this.preOrderUpPrice = 0;
+        this.preOrderUpShares = 0;
+        await this.refreshBalance();
+        return;
+      }
+    }
+
+    if (this.preOrderDownId) {
+      const dnFill = await trader.getOrderFillDetails(this.preOrderDownId);
+      if (dnFill.filled > 0) {
+        // DOWN 侧被成交 → 先取消 DOWN 余量 + 另一侧
+        if (dnFill.filled < this.preOrderDownShares) {
+          await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+          const afterCancel = await trader.getOrderFillDetails(this.preOrderDownId);
+          if (afterCancel.filled > dnFill.filled) {
+            dnFill.filled = afterCancel.filled;
+            dnFill.avgPrice = afterCancel.avgPrice;
+          }
+        }
+        logger.info(`DUAL SIDE FILLED: DOWN ${dnFill.filled.toFixed(0)}份 @${dnFill.avgPrice.toFixed(2)} (limit@${this.preOrderDownPrice.toFixed(2)}) maker=true`);
+        if (this.preOrderUpId) {
+          await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+          const upCheck = await trader.getOrderFillDetails(this.preOrderUpId);
+          if (upCheck.filled > 0) {
+            logger.warn(`DUAL SIDE GHOST: UP also filled ${upCheck.filled.toFixed(0)}份, selling immediately`);
+            await trader.placeFakSell(this.preOrderUpToken, upCheck.filled, this.negRisk).catch((e: any) => {
+              logger.error(`DUAL SIDE GHOST sell failed: ${e.message}`);
+            });
+          }
+          this.preOrderUpId = "";
+          this.preOrderUpPrice = 0;
+          this.preOrderUpShares = 0;
+        }
+        this.transitionPreOrderToLeg1(
+          "down", this.preOrderDownToken, rnd.upToken,
+          dnFill.filled, dnFill.avgPrice > 0 ? dnFill.avgPrice : this.preOrderDownPrice,
+          this.preOrderDownId,
+        );
+        this.preOrderDownId = "";
+        this.preOrderDownPrice = 0;
+        this.preOrderDownShares = 0;
+        await this.refreshBalance();
+        return;
+      }
+    }
+
+    // ── 计算理想挂单价 ──
+    // 目标: 如果一侧被吃到, sum = myFillPrice + oppositeAsk ≤ DUAL_SIDE_SUM_CEILING
+    // → myLimit ≤ DUAL_SIDE_SUM_CEILING - oppositeCurrentAsk
+    // 同时至少比当前ask低一个offset
+    const idealUpLimit = Math.min(
+      DUAL_SIDE_SUM_CEILING - downAsk,
+      upAsk - DUAL_SIDE_OFFSET,
+    );
+    const idealDownLimit = Math.min(
+      DUAL_SIDE_SUM_CEILING - upAsk,
+      downAsk - DUAL_SIDE_OFFSET,
+    );
+
+    // 价格精度 0.01
+    const upLimit = Math.round(idealUpLimit * 100) / 100;
+    const downLimit = Math.round(idealDownLimit * 100) / 100;
+
+    // 单侧预算 = 总预算/2, 避免双侧合计锁定过多资金
+    const singleSideBudget = this.balance * DUAL_SIDE_BUDGET_PCT * 0.5;
+
+    const now = Date.now();
+    const needRefresh = now - this.preOrderLastRefresh >= DUAL_SIDE_REFRESH_MS;
+
+    // ── UP 侧挂单管理 ──
+    if (upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= DUAL_SIDE_MAX_ASK) {
+      const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
+      if (upShares >= MIN_SHARES) {
+        const drift = Math.abs(upLimit - this.preOrderUpPrice);
+        if (!this.preOrderUpId) {
+          // 首次挂单
+          const oid = await trader.placeGtcBuy(rnd.upToken, upShares, upLimit, !!rnd.negRisk);
+          if (oid) {
+            this.preOrderUpId = oid;
+            this.preOrderUpPrice = upLimit;
+            this.preOrderUpShares = upShares;
+            this.preOrderUpToken = rnd.upToken;
+            logger.info(`DUAL SIDE: UP pre-order ${upShares}份 @${upLimit.toFixed(2)} (sum target=${(upLimit + downAsk).toFixed(2)})`);
+          }
+        } else if (needRefresh && drift >= DUAL_SIDE_MIN_DRIFT) {
+          // 价格偏移过大, 重挂 — cancel 后检查是否在窗口内成交
+          await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+          const reFill = await trader.getOrderFillDetails(this.preOrderUpId);
+          if (reFill.filled > 0) {
+            // cancel 前成交了, 不重挂, 下次循环会走 fill 路径
+            logger.info(`DUAL SIDE: UP filled ${reFill.filled.toFixed(0)} during re-place cancel, will handle next tick`);
+          } else {
+          const oid = await trader.placeGtcBuy(rnd.upToken, upShares, upLimit, !!rnd.negRisk);
+          if (oid) {
+            this.preOrderUpId = oid;
+            this.preOrderUpPrice = upLimit;
+            this.preOrderUpShares = upShares;
+            logger.info(`DUAL SIDE: UP re-placed ${upShares}份 @${upLimit.toFixed(2)} (drift=${drift.toFixed(2)})`);
+          } else {
+            this.preOrderUpId = "";
+            this.preOrderUpPrice = 0;
+            this.preOrderUpShares = 0;
+          }
+          }
+        }
+      }
+    } else if (this.preOrderUpId) {
+      // 价格脱离区间, 取消
+      await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+      this.preOrderUpId = "";
+      this.preOrderUpPrice = 0;
+      this.preOrderUpShares = 0;
+      logger.info(`DUAL SIDE: UP cancelled (limit=${upLimit.toFixed(2)} out of range)`);
+    }
+
+    // ── DOWN 侧挂单管理 ──
+    if (downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= DUAL_SIDE_MAX_ASK) {
+      const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
+      if (dnShares >= MIN_SHARES) {
+        const drift = Math.abs(downLimit - this.preOrderDownPrice);
+        if (!this.preOrderDownId) {
+          const oid = await trader.placeGtcBuy(rnd.downToken, dnShares, downLimit, !!rnd.negRisk);
+          if (oid) {
+            this.preOrderDownId = oid;
+            this.preOrderDownPrice = downLimit;
+            this.preOrderDownShares = dnShares;
+            this.preOrderDownToken = rnd.downToken;
+            logger.info(`DUAL SIDE: DOWN pre-order ${dnShares}份 @${downLimit.toFixed(2)} (sum target=${(downLimit + upAsk).toFixed(2)})`);
+          }
+        } else if (needRefresh && drift >= DUAL_SIDE_MIN_DRIFT) {
+          await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+          const reFill = await trader.getOrderFillDetails(this.preOrderDownId);
+          if (reFill.filled > 0) {
+            logger.info(`DUAL SIDE: DOWN filled ${reFill.filled.toFixed(0)} during re-place cancel, will handle next tick`);
+          } else {
+          const oid = await trader.placeGtcBuy(rnd.downToken, dnShares, downLimit, !!rnd.negRisk);
+          if (oid) {
+            this.preOrderDownId = oid;
+            this.preOrderDownPrice = downLimit;
+            this.preOrderDownShares = dnShares;
+            logger.info(`DUAL SIDE: DOWN re-placed ${dnShares}份 @${downLimit.toFixed(2)} (drift=${drift.toFixed(2)})`);
+          } else {
+            this.preOrderDownId = "";
+            this.preOrderDownPrice = 0;
+            this.preOrderDownShares = 0;
+          }
+          }
+        }
+      }
+    } else if (this.preOrderDownId) {
+      await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+      this.preOrderDownId = "";
+      this.preOrderDownPrice = 0;
+      this.preOrderDownShares = 0;
+      logger.info(`DUAL SIDE: DOWN cancelled (limit=${downLimit.toFixed(2)} out of range)`);
+    }
+
+    if (needRefresh) this.preOrderLastRefresh = now;
+  }
+
+  /** 预挂单成交 → 转为 Leg1 持仓 */
+  private transitionPreOrderToLeg1(
+    dir: string,
+    leg1Token: string,
+    leg2Token: string,
+    filledShares: number,
+    fillPrice: number,
+    orderId: string,
+  ): void {
+    this.hedgeState = "leg1_filled";
+    this.activeStrategyMode = "mispricing";
+    this.leg1Dir = dir;
+    this.leg1Price = fillPrice;
+    this.leg1FillPrice = fillPrice;
+    this.leg1OrderId = orderId.slice(0, 12);
+    this.leg1FilledAt = Date.now();
+    this.leg1ThinEdgeEntry = false;
+    this.leg1ThinEdgeObservedSum = 0;
+    this.leg1ThinEdgePreferredSum = 0;
+    this.leg1ThinEdgeHardMaxSum = 0;
+    this.leg1ThinEdgeDelayLoggedAt = 0;
+    this.leg1Shares = filledShares;
+    this.leg1Token = leg1Token;
+    this.leg2Token = leg2Token;
+    this.leg1MakerFill = true; // 预挂单永远是 maker
+    this.leg1AttemptedThisRound = true;
+    this.totalCost = filledShares * fillPrice; // maker fee = 0
+    // paper 模式下 placeGtcBuy 已预扣 paperBalance, 不要重复扣; 直接同步
+    // live 模式下 balance 是链上余额, 成交已扣款
+    // 两种模式统一: 从 trader 读取真实余额
+    // 注: refreshBalance 是 async 但 transition 是 sync → 保守处理
+    // 在 manageDualSideOrders 调用 transition 前后会 refreshBalance
+    // 这里仅设 totalCost 用于后续 P/L 计算, 不扣 balance
+    this.onLeg1Opened();
+    this.status = `Leg1预挂成交 ${dir.toUpperCase()} @${fillPrice.toFixed(2)} x${filledShares.toFixed(0)} maker, 等Leg2`;
+    logger.info(`HEDGE15M DUAL SIDE → LEG1: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 @${fillPrice.toFixed(2)} maker orderId=${orderId.slice(0, 12)}`);
+    this.writeRoundAudit("leg1-filled", {
+      strategyMode: "mispricing",
+      dir,
+      entryAsk: fillPrice,
+      fillPrice,
+      filledShares,
+      orderId: orderId.slice(0, 12),
+      maker: true,
+      fee: 0,
+      source: "dual-side-preorder",
+      thinEdgeEntry: false,
+      observedEntrySum: 0,
+      preferredSum: 0,
+      hardMaxSum: 0,
+    });
+  }
+
+  /**
+   * Limit+FAK 赛跑: 先挂 limit 等待短暂时间, 未成交则 cancel + FAK fallback
+   * 返回 { orderId, filled, avgPrice, maker } 或 null(两者都失败)
+   */
+  private async limitRaceBuy(
+    trader: Trader,
+    tokenId: string,
+    shares: number,
+    currentAsk: number,
+    limitOffset: number,
+    timeoutMs: number,
+    negRisk: boolean,
+  ): Promise<{ orderId: string; filled: number; avgPrice: number; maker: boolean } | null> {
+    const limitPrice = Math.round((currentAsk - limitOffset) * 100) / 100; // 保持 0.01 精度
+    if (limitPrice <= 0.01) {
+      // limit 价格太低, 直接 FAK
+      return this.fakBuyFallback(trader, tokenId, shares, currentAsk, negRisk);
+    }
+
+    // ── Phase 1: 挂 GTC limit buy ──
+    const gtcOrderId = await trader.placeGtcBuy(tokenId, shares, limitPrice, negRisk);
+    if (!gtcOrderId) {
+      logger.warn(`LIMIT RACE: GTC buy failed, fallback to FAK`);
+      return this.fakBuyFallback(trader, tokenId, shares, currentAsk, negRisk);
+    }
+
+    // ── Phase 2: 轮询等待成交 ──
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const details = await trader.getOrderFillDetails(gtcOrderId);
+      if (details.filled >= shares * 0.5) {
+        // 成交过半, 取消剩余后视为成功
+        await trader.cancelOrder(gtcOrderId);
+        const finalDetails = await trader.getOrderFillDetails(gtcOrderId);
+        const realFilled = finalDetails.filled > details.filled ? finalDetails.filled : details.filled;
+        const realAvg = finalDetails.filled > details.filled ? finalDetails.avgPrice : details.avgPrice;
+        logger.info(`LIMIT RACE WIN: ${realFilled.toFixed(0)}/${shares} @${realAvg.toFixed(2)} (limit@${limitPrice.toFixed(2)}) maker=true`);
+        return { orderId: gtcOrderId, filled: realFilled, avgPrice: realAvg, maker: true };
+      }
+      // 检查盘口: ask 是否反弹
+      const book = trader.peekBestPrices(tokenId, 500);
+      if (book && book.ask != null && book.ask > currentAsk * 1.03) {
+        // ask 反弹超 3%, 立刻 cancel → FAK
+        logger.info(`LIMIT RACE ABORT: ask rebounded ${book.ask.toFixed(2)} > ${currentAsk.toFixed(2)}*1.03, cancel+FAK`);
+        break;
+      }
+      await new Promise(r => setTimeout(r, LIMIT_RACE_POLL_MS));
+    }
+
+    // ── Phase 3: 超时/反弹 → cancel → 检查是否在取消前成交 → FAK fallback ──
+    let cancelSucceeded = true;
+    try {
+      await trader.cancelOrder(gtcOrderId);
+    } catch {
+      cancelSucceeded = false;
+    }
+    const finalCheck = await trader.getOrderFillDetails(gtcOrderId);
+    if (finalCheck.filled > 0) {
+      logger.info(`LIMIT RACE LATE: filled ${finalCheck.filled.toFixed(0)} during cancel @${finalCheck.avgPrice.toFixed(2)}, maker=true`);
+      return { orderId: gtcOrderId, filled: finalCheck.filled, avgPrice: finalCheck.avgPrice, maker: true };
+    }
+    if (!cancelSucceeded) {
+      // cancel 可能失败, GTC 可能仍挂着, 不安全发 FAK → 再试一次 cancel
+      logger.warn(`LIMIT RACE: cancel may have failed, retry cancel before FAK`);
+      await trader.cancelOrder(gtcOrderId).catch(() => {});
+      const recheck = await trader.getOrderFillDetails(gtcOrderId);
+      if (recheck.filled > 0) {
+        return { orderId: gtcOrderId, filled: recheck.filled, avgPrice: recheck.avgPrice, maker: true };
+      }
+    }
+
+    // 完全未成交, FAK fallback
+    logger.info(`LIMIT RACE MISS: no fill in ${timeoutMs}ms @limit=${limitPrice.toFixed(2)}, fallback FAK`);
+    return this.fakBuyFallback(trader, tokenId, shares, currentAsk, negRisk);
+  }
+
+  private async fakBuyFallback(
+    trader: Trader,
+    tokenId: string,
+    shares: number,
+    askPrice: number,
+    negRisk: boolean,
+  ): Promise<{ orderId: string; filled: number; avgPrice: number; maker: boolean } | null> {
+    const cost = shares * askPrice;
+    const res = await trader.placeFakBuy(tokenId, cost, negRisk);
+    if (!res) return null;
+    const orderId = res?.orderID || res?.order_id || "";
+    if (!orderId) return null;
+    const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
+    if (details.filled > 0) {
+      return { orderId, filled: details.filled, avgPrice: details.avgPrice > 0 ? details.avgPrice : askPrice, maker: false };
+    }
+    return null;
+  }
+
+  /** 计算 Chainlink 价格滞后度 (与 Binance 的差异百分比) */
+  private getChainlinkLag(): number {
+    if (!isChainlinkFresh()) return 0;
+    const clPrice = getChainlinkPrice();
+    const btcPrice = getBtcPrice();
+    if (clPrice <= 0 || btcPrice <= 0) return 0;
+    return Math.abs(btcPrice - clPrice) / btcPrice;
+  }
+
+  /** Chainlink 方向是否与 dump 侧矛盾 (dump DOWN 但 CL 说 BTC 跌了 → 矛盾) */
+  private isChainlinkContra(dumpDir: string): boolean {
+    if (!CHAINLINK_CONFIRM_ENABLED || !isChainlinkFresh()) return false;
+    const clDir = getChainlinkDirection(); // "up" | "down"
+    // dump DOWN 意味着 "BTC可能涨了所以DOWN跌"; 如果 CL 说跌 → 矛盾
+    // dump UP   意味着 "BTC可能跌了所以UP跌";   如果 CL 说涨 → 矛盾
+    if (dumpDir === "down" && clDir === "down") return true; // BTC实际跌了, DOWN 不该跌
+    if (dumpDir === "up" && clDir === "up") return true;     // BTC实际涨了, UP 不该跌
+    return false;
   }
 
   private async openLeg1Position(
@@ -1514,62 +2004,52 @@ export class Hedge15mEngine {
       : `Leg1下单中: ${dir.toUpperCase()} @${entryAsk.toFixed(2)} x${entryShares.toFixed(0)}`;
 
     try {
-      logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${entryShares}份 @${entryAsk.toFixed(2)} cost=$${entryCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk}`);
+      // ── Chainlink 方向确认: 矛盾时减仓 ──
+      let adjustedShares = entryShares;
+      if (CHAINLINK_CONFIRM_ENABLED && this.isChainlinkContra(dir)) {
+        adjustedShares = Math.max(MIN_SHARES, Math.floor(entryShares * CHAINLINK_CONTRA_PENALTY));
+        logger.info(`CHAINLINK CONTRA: ${dir} contradicts CL, shares ${entryShares} → ${adjustedShares}`);
+      }
+
+      // ── Limit race offset: dump快/CL滞后 → 更激进 ──
+      let limitOffset = LIMIT_RACE_OFFSET;
+      if (this.currentDumpDrop >= LIMIT_RACE_FAST_DUMP_THRESHOLD) {
+        limitOffset = LIMIT_RACE_FAST_OFFSET;
+      }
+      const clLag = this.getChainlinkLag();
+      if (clLag > CHAINLINK_LAG_AGGRESSIVE_PCT) {
+        limitOffset = Math.max(limitOffset, LIMIT_RACE_FAST_OFFSET);
+        logger.info(`CHAINLINK LAG ${(clLag * 100).toFixed(2)}% → aggressive offset ${limitOffset}`);
+      }
+
+      const adjustedCost = adjustedShares * entryAsk;
+      logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
       const orderSubmitStartedAt = Date.now();
       recordExecutionLatency("signalToSubmit", orderSubmitStartedAt - signalDetectedAt);
-      const res = await trader.placeFakBuy(buyToken, entryCost, this.negRisk);
+
+      let fillResult: { orderId: string; filled: number; avgPrice: number; maker: boolean } | null = null;
+      if (LIMIT_RACE_ENABLED) {
+        fillResult = await this.limitRaceBuy(trader, buyToken, adjustedShares, entryAsk, limitOffset, LIMIT_RACE_TIMEOUT_MS, this.negRisk);
+      } else {
+        fillResult = await this.fakBuyFallback(trader, buyToken, adjustedShares, entryAsk, this.negRisk);
+      }
+
       const orderAckAt = Date.now();
       recordExecutionLatency("submitToAck", orderAckAt - orderSubmitStartedAt);
-      if (!res) {
+
+      if (!fillResult) {
         this.status = "Leg1下单失败, 本轮不重试";
-        logger.warn("HEDGE15M Leg1 FAK failed");
+        logger.warn("HEDGE15M Leg1 entry failed (limit race + FAK)");
         return;
       }
 
-      const orderId = res?.orderID || res?.order_id || "";
-      let filledShares = entryShares;
-      let realFillPrice = entryAsk;
-      if (orderId) {
-        const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
-        const fillConfirmedAt = Date.now();
-        recordExecutionLatency("ackToFill", fillConfirmedAt - orderAckAt);
-        if (details.filled > 0) {
-          recordExecutionLatency("signalToFill", fillConfirmedAt - signalDetectedAt);
-          filledShares = details.filled;
-          if (details.avgPrice > 0) realFillPrice = details.avgPrice;
-        } else {
-          this.status = "Leg1零成交, 本轮不重试";
-          logger.warn("HEDGE15M Leg1 zero fill");
-          return;
-        }
-      } else {
-        logger.warn("HEDGE15M Leg1: no orderId returned, checking balance for fill confirmation");
-        const balBefore = this.balance;
-        await this.refreshBalance();
-        const spent = balBefore - this.balance;
-        const expectedSpend = entryCost * (1 + TAKER_FEE);
-        const estimatedFill = estimateFilledShares({
-          spent,
-          entryAsk,
-          takerFee: TAKER_FEE,
-          minBalancePct: BALANCE_ESTIMATE_MIN_PCT,
-          maxBalancePct: BALANCE_ESTIMATE_MAX_PCT,
-          expectedSpend,
-          minShares: MIN_SHARES,
-        });
-        if (estimatedFill.confirmed) {
-          const fillConfirmedAt = Date.now();
-          recordExecutionLatency("ackToFill", fillConfirmedAt - orderAckAt);
-          recordExecutionLatency("signalToFill", fillConfirmedAt - signalDetectedAt);
-          filledShares = estimatedFill.shares;
-          this.leg1Estimated = true;
-          logger.info(`HEDGE15M Leg1: estimated fill from balance: ${filledShares} shares (spent=$${spent.toFixed(2)})`);
-        } else {
-          this.status = "Leg1回报不确定, 本轮锁定避免重复加仓";
-          logger.warn(`HEDGE15M Leg1: ambiguous balance delta $${spent.toFixed(2)} (expected≈$${expectedSpend.toFixed(2)}), locking round to avoid duplicate fills`);
-          return;
-        }
-      }
+      recordExecutionLatency("signalToFill", orderAckAt - signalDetectedAt);
+
+      const orderId = fillResult.orderId;
+      const filledShares = fillResult.filled;
+      const realFillPrice = fillResult.avgPrice;
+      const isMaker = fillResult.maker;
+      const actualFee = isMaker ? 0 : TAKER_FEE;
 
       this.hedgeState = "leg1_filled";
       this.activeStrategyMode = strategyMode;
@@ -1586,13 +2066,14 @@ export class Hedge15mEngine {
       this.leg1Shares = filledShares;
       this.leg1Token = buyToken;
       this.leg2Token = oppToken;
-      this.totalCost = filledShares * realFillPrice * (1 + TAKER_FEE);
+      this.leg1MakerFill = isMaker;
+      this.totalCost = filledShares * realFillPrice * (1 + actualFee);
       this.balance -= this.totalCost;
       this.onLeg1Opened();
       this.status = strategyMode === "trend"
         ? `趋势持仓 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}`
-        : `Leg1 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}, 等Leg2`;
-      logger.info(`HEDGE15M LEG1 FILLED [${strategyMode.toUpperCase()}]: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)}`);
+        : `Leg1 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}${isMaker ? " maker" : ""}, 等Leg2`;
+      logger.info(`HEDGE15M LEG1 FILLED [${strategyMode.toUpperCase()}]: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)} maker=${isMaker} fee=${(actualFee * 100).toFixed(0)}%`);
       this.writeRoundAudit("leg1-filled", {
         strategyMode,
         dir,
@@ -1600,6 +2081,8 @@ export class Hedge15mEngine {
         fillPrice: realFillPrice,
         filledShares,
         orderId: orderId.slice(0, 12),
+        maker: isMaker,
+        fee: actualFee,
         thinEdgeEntry: this.leg1ThinEdgeEntry,
         observedEntrySum: this.leg1ThinEdgeObservedSum,
         preferredSum: this.leg1ThinEdgePreferredSum,
@@ -1708,7 +2191,8 @@ export class Hedge15mEngine {
 
     // ── Profit gate: 锁利过薄不做Leg2 ──
     {
-      const projectedLockedCost = sharesToBuy * fillPrice * (1 + TAKER_FEE) + sharesToBuy * actualAsk * (1 + TAKER_FEE);
+      const leg1ActualFee = this.leg1MakerFill ? 0 : TAKER_FEE;
+      const projectedLockedCost = sharesToBuy * fillPrice * (1 + leg1ActualFee) + sharesToBuy * actualAsk * (1 + TAKER_FEE);
       const projectedLockedProfit = sharesToBuy - projectedLockedCost;
       const projectedLockedRoi = projectedLockedCost > 0 ? projectedLockedProfit / projectedLockedCost : 0;
       if (
@@ -1728,61 +2212,32 @@ export class Hedge15mEngine {
       return;
     }
     const leg2Dir = this.leg1Dir === "up" ? "DOWN" : "UP";
-    logger.info(`HEDGE15M LEG2: ${leg2Dir} ${sharesToBuy.toFixed(0)}份 @${actualAsk.toFixed(2)} (passed=${oppAsk.toFixed(2)})`);
+    logger.info(`HEDGE15M LEG2: ${leg2Dir} ${sharesToBuy.toFixed(0)}份 @${actualAsk.toFixed(2)} (passed=${oppAsk.toFixed(2)}) limitRace=${LIMIT_LEG2_ENABLED}`);
     const leg2SubmitAt = Date.now();
     recordExecutionLatency("leg2SignalToSubmit", leg2SubmitAt - leg2SignalAt);
-    const res = await trader.placeFakBuy(this.leg2Token, actualCost, this.negRisk);
+
+    let leg2Fill: { orderId: string; filled: number; avgPrice: number; maker: boolean } | null = null;
+    if (LIMIT_LEG2_ENABLED) {
+      leg2Fill = await this.limitRaceBuy(trader, this.leg2Token, sharesToBuy, actualAsk, LIMIT_LEG2_OFFSET, LIMIT_LEG2_TIMEOUT_MS, this.negRisk);
+    } else {
+      leg2Fill = await this.fakBuyFallback(trader, this.leg2Token, sharesToBuy, actualAsk, this.negRisk);
+    }
+
     const leg2AckAt = Date.now();
     recordExecutionLatency("leg2SubmitToAck", leg2AckAt - leg2SubmitAt);
-    if (!res) {
-      logger.warn("HEDGE15M Leg2 FAK failed");
+
+    if (!leg2Fill) {
+      logger.warn("HEDGE15M Leg2 entry failed (limit race + FAK), Leg1 unhedged");
       return;
     }
 
-    const orderId = res?.orderID || res?.order_id || "";
-    let filledShares = sharesToBuy;
-    let leg2RealPrice = oppAsk;
-    if (orderId) {
-      const details = await trader.waitForOrderFillDetails(orderId, getDynamicParams().fillCheckMs);
-      const leg2FillAt = Date.now();
-      recordExecutionLatency("leg2AckToFill", leg2FillAt - leg2AckAt);
-      if (details.filled > 0) {
-        recordExecutionLatency("leg2SignalToFill", leg2FillAt - leg2SignalAt);
-        filledShares = details.filled;
-        if (details.avgPrice > 0) leg2RealPrice = details.avgPrice;
-      } else {
-        // Leg2 zero fill: Leg1仍在裸仓, 需主动管理
-        logger.warn("HEDGE15M Leg2 zero fill, Leg1 remains unhedged — will rely on TP/SL/settlement");
-        return;
-      }
-    } else {
-      // 无orderId: 通过余额变化推断成交
-      logger.warn("HEDGE15M Leg2: no orderId returned, checking balance for fill confirmation");
-      const balBefore = this.balance;
-      await this.refreshBalance();
-      const spent = balBefore - this.balance;
-      const expectedSpend = actualCost * (1 + TAKER_FEE);
-      const estimatedFill = estimateFilledShares({
-        spent,
-        entryAsk: actualAsk,
-        takerFee: TAKER_FEE,
-        minBalancePct: BALANCE_ESTIMATE_MIN_PCT,
-        maxBalancePct: BALANCE_ESTIMATE_MAX_PCT,
-        expectedSpend,
-        minShares: 1,
-      });
-      if (estimatedFill.confirmed) {
-        const leg2FillAt = Date.now();
-        recordExecutionLatency("leg2AckToFill", leg2FillAt - leg2AckAt);
-        recordExecutionLatency("leg2SignalToFill", leg2FillAt - leg2SignalAt);
-        filledShares = estimatedFill.shares;
-        this.leg2Estimated = true;
-        logger.info(`HEDGE15M Leg2: estimated fill from balance: ${filledShares} shares (spent=$${spent.toFixed(2)})`);
-      } else {
-        logger.warn(`HEDGE15M Leg2: ambiguous balance delta $${spent.toFixed(2)} (expected≈$${expectedSpend.toFixed(2)}), assuming no fill`);
-        return;
-      }
-    }
+    recordExecutionLatency("leg2SignalToFill", leg2AckAt - leg2SignalAt);
+
+    const orderId = leg2Fill.orderId;
+    let filledShares = leg2Fill.filled;
+    let leg2RealPrice = leg2Fill.avgPrice;
+    const leg2IsMaker = leg2Fill.maker;
+    const leg2Fee = leg2IsMaker ? 0 : TAKER_FEE;
 
     // ── Leg2 部分成交: 卖掉多余 Leg1 份数, 避免裸仓风险 ──
     if (filledShares < this.leg1Shares) {
@@ -1803,14 +2258,18 @@ export class Hedge15mEngine {
           }
         }
         const sellRecovered = actualSold * actualPrice * (1 - TAKER_FEE);
-        const soldCostBasis = actualSold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+        const leg1CostFee = this.leg1MakerFill ? 0 : TAKER_FEE;
+        const soldCostBasis = actualSold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1CostFee);
+        const excessPnl = sellRecovered - soldCostBasis;
+        this.totalProfit += excessPnl;
+        this.sessionProfit += excessPnl;
         this.balance += sellRecovered;
         this.totalCost = Math.max(0, this.totalCost - soldCostBasis);
         this.leg1Shares = this.leg1Shares - actualSold;
         if (actualSold < unhedged) {
           logger.warn(`HEDGE15M: partial sell of excess Leg1: ${actualSold.toFixed(0)}/${unhedged.toFixed(0)}, ${(unhedged - actualSold).toFixed(0)} still at risk`);
         }
-        logger.info(`HEDGE15M: sold ${actualSold.toFixed(0)} excess Leg1 @${actualPrice.toFixed(2)}, recovered=$${sellRecovered.toFixed(2)} costBasis=$${soldCostBasis.toFixed(2)}`);
+        logger.info(`HEDGE15M: sold ${actualSold.toFixed(0)} excess Leg1 @${actualPrice.toFixed(2)}, recovered=$${sellRecovered.toFixed(2)} costBasis=$${soldCostBasis.toFixed(2)} P/L=$${excessPnl.toFixed(2)}`);
       } else {
         logger.warn(`HEDGE15M: failed to sell unhedged Leg1, ${unhedged.toFixed(0)} shares at risk`);
       }
@@ -1820,24 +2279,28 @@ export class Hedge15mEngine {
     this.leg2FillPrice = leg2RealPrice;
     this.leg2OrderId = orderId ? orderId.slice(0, 12) : "";
     this.leg2Shares = filledShares;
-    const leg2Cost = filledShares * leg2RealPrice * (1 + TAKER_FEE);
+    this.leg2MakerFill = leg2IsMaker;
+    const leg2Cost = filledShares * leg2RealPrice * (1 + leg2Fee);
     this.totalCost += leg2Cost;
     this.balance -= leg2Cost;
     this.hedgeState = "leg2_filled";
 
     const hedgedShares = Math.min(this.leg1Shares, filledShares);
     const residualShares = Math.max(0, this.leg1Shares - hedgedShares);
-    const leg1UnitCost = (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
-    const lockedCost = hedgedShares * leg1UnitCost + filledShares * leg2RealPrice * (1 + TAKER_FEE);
+    const leg1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+    const leg1UnitCost = (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1Fee);
+    const lockedCost = hedgedShares * leg1UnitCost + filledShares * leg2RealPrice * (1 + leg2Fee);
     this.expectedProfit = hedgedShares > 0 ? hedgedShares - lockedCost : 0;
     this.status = residualShares > 0
       ? `部分对冲: 锁定+$${this.expectedProfit.toFixed(2)}, 裸露${residualShares.toFixed(0)}份`
-      : `双腿锁定! L1=${this.leg1Dir.toUpperCase()}@${this.leg1FillPrice.toFixed(2)} L2=@${leg2RealPrice.toFixed(2)} 预期+$${this.expectedProfit.toFixed(2)}`;
-    logger.info(`HEDGE15M LOCKED: hedged=${hedgedShares.toFixed(0)} residual=${residualShares.toFixed(0)} L1 fill=${this.leg1FillPrice.toFixed(2)} L2 fill=${leg2RealPrice.toFixed(2)} totalCost=$${this.totalCost.toFixed(2)} lockedProfit=$${this.expectedProfit.toFixed(2)}`);
+      : `双腿锁定! L1=${this.leg1Dir.toUpperCase()}@${this.leg1FillPrice.toFixed(2)} L2=@${leg2RealPrice.toFixed(2)} 预期+$${this.expectedProfit.toFixed(2)}${this.leg1MakerFill || leg2IsMaker ? " 🏷maker" : ""}`;
+    logger.info(`HEDGE15M LOCKED: hedged=${hedgedShares.toFixed(0)} residual=${residualShares.toFixed(0)} L1 fill=${this.leg1FillPrice.toFixed(2)}(${this.leg1MakerFill ? "M" : "T"}) L2 fill=${leg2RealPrice.toFixed(2)}(${leg2IsMaker ? "M" : "T"}) totalCost=$${this.totalCost.toFixed(2)} lockedProfit=$${this.expectedProfit.toFixed(2)}`);
     this.writeRoundAudit("hedge-locked", {
       hedgedShares,
       residualShares,
       leg2FillPrice: leg2RealPrice,
+      leg1Maker: this.leg1MakerFill,
+      leg2Maker: leg2IsMaker,
       lockedProfit: this.expectedProfit,
     });
   }
@@ -1861,7 +2324,8 @@ export class Hedge15mEngine {
       const sellPrice = gtcDetails.avgPrice > 0 ? gtcDetails.avgPrice
         : (this.pendingSellPrice > 0 ? this.pendingSellPrice
           : (currentBid && currentBid > 0 ? currentBid : this.leg1Price * 0.85));
-      const soldCost = soldShares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+      const l1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+      const soldCost = soldShares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
       const recovered = soldShares * sellPrice * (1 - TAKER_FEE);
       const profit = recovered - soldCost;
       const result = profit >= 0 ? "WIN" : "LOSS";
@@ -1888,7 +2352,7 @@ export class Hedge15mEngine {
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
       if (unsold > 0) {
-        this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+        this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
         this.leg1Shares = unsold;
       } else {
         this.totalCost = 0; this.leg1Shares = 0; this.hedgeState = "done";
@@ -1929,7 +2393,8 @@ export class Hedge15mEngine {
             if (det.filled > 0) {
               const sellPrice = det.avgPrice > 0 ? det.avgPrice : (currentBid && currentBid > 0 ? currentBid : this.leg1Price * 0.85);
               const recovered = det.filled * sellPrice * (1 - TAKER_FEE);
-              const soldCost = det.filled * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+              const l1Fee2 = this.leg1MakerFill ? 0 : TAKER_FEE;
+              const soldCost = det.filled * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee2);
               const profit = recovered - soldCost;
               const result = profit >= 0 ? "WIN" : "LOSS";
               if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
@@ -1957,7 +2422,7 @@ export class Hedge15mEngine {
               this.saveHistory();
               this.leg1Shares -= det.filled;
               if (this.leg1Shares <= 0) { this.totalCost = 0; this.hedgeState = "done"; }
-              else { this.totalCost = this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE); }
+              else { this.totalCost = this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee2); }
               logger.info(`HEDGE15M GTC→FAK: sold ${det.filled.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
               return;
             }
@@ -1992,6 +2457,12 @@ export class Hedge15mEngine {
       }
 
       await trader.cancelOrder(this.pendingSellOrderId);
+      // cancel 后 final check: 防止 cancel 前一刻成交
+      const postCancelFill = await trader.getOrderFilled(this.pendingSellOrderId);
+      if (postCancelFill > 0) {
+        logger.info(`HEDGE15M: GTC filled during reprice cancel (${postCancelFill} shares)`);
+        return this.managePendingSell(trader, currentBid, secs);
+      }
       const gtcId = await trader.placeGtcSell(this.leg1Token, this.leg1Shares, newPrice, this.negRisk);
       if (gtcId) {
         this.pendingSellOrderId = gtcId;
@@ -2088,7 +2559,8 @@ export class Hedge15mEngine {
       const sellPrice = realSellPrice > 0 ? realSellPrice : (currentBid && currentBid > 0 ? currentBid : this.leg1Price * 0.85);
       const recovered = soldShares * sellPrice * (1 - TAKER_FEE);
       const unsold = sharesToSell - soldShares;
-      const soldCost = soldShares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+      const l1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+      const soldCost = soldShares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
       const profit = recovered - soldCost;
       const result = profit >= 0 ? "WIN" : "LOSS";
 
@@ -2134,7 +2606,7 @@ export class Hedge15mEngine {
 
       if (unsold > 0) {
         logger.warn(`HEDGE15M ${reason}: 部分成交 ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)}, ${unsold.toFixed(0)}份未卖出`);
-        this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + TAKER_FEE);
+        this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
         this.leg1Shares = unsold;
         // 未卖出部分挂 GTC 继续追卖, 不干等结算
         await this.placeGtcSellFallback(trader, reason, currentBid);
