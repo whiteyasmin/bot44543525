@@ -52,9 +52,6 @@ export function planHedgeEntry(input: HedgeEntryPlanInput): EntryPlanResult {
   if (directionalBias !== "flat" && dir !== directionalBias) {
     return { allowed: false, reason: `${dir.toUpperCase()} entry against ${directionalBias.toUpperCase()} round bias` };
   }
-  if (oppCurrentAsk > 0 && askPrice + oppCurrentAsk > entryQualityMaxSum) {
-    return { allowed: false, reason: `sum=${(askPrice + oppCurrentAsk).toFixed(2)} > preferred ${entryQualityMaxSum.toFixed(2)}` };
-  }
 
   return { allowed: true };
 }

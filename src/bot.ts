@@ -38,15 +38,17 @@ const LEG1_STOP_ABS   = 0.15;     // Leg1 bid绝对下限, 低于此无论入场
 const MAX_ENTRY_ASK   = 0.50;     // Leg1 入场价上限 (实盘)
 const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功对冲概率极低
 const PAPER_SUM_TARGET = 0.95;    // 仿真盘sum target (回测最优)
-const PAPER_MAX_SUM_TARGET = 0.97;
+const PAPER_MAX_SUM_TARGET = 1.00;
 const PAPER_MAX_ENTRY_ASK = 0.59;
-const PAPER_HARD_MAX_SUM_TARGET = 0.99;
+const PAPER_HARD_MAX_SUM_TARGET = 1.00;
 const PAPER_SUM_ADJUST_STEP = 0.01;
 const PAPER_SKIP_ADJUST_TRIGGER = 2;
 const PAPER_DYNAMIC_TUNING_ENABLED = false;
 const PAPER_MIN_LOCKED_PROFIT = 0.02;     // 至少锁定 $0.02 (不再是主要门槛)
 const PAPER_MIN_LOCKED_ROI = 0.02;        // 至少锁定 2% ROI (主要门槛)
 const PAPER_ENTRY_SUM_BUFFER = 0.01;      // 入场时预留对冲空间buffer
+const PAPER_OVER_SUM_SMALL_BUDGET_PCT = 0.06;
+const PAPER_NEAR_CAP_SMALL_BUDGET_PCT = 0.04;
 const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点对冲空间
 const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
@@ -543,13 +545,20 @@ export class Hedge15mEngine {
     });
   }
 
-  private getAdaptiveLegBudgetPct(askPrice: number, oppCurrentAsk: number, preferredMaxSum: number): number {
+  private getAdaptiveLegBudgetPct(askPrice: number, oppCurrentAsk: number, preferredMaxSum: number, hardMaxSum: number): number {
     let budgetPct = BASE_BUDGET_PCT;
+    const currentSum = oppCurrentAsk > 0 ? askPrice + oppCurrentAsk : 0;
     if (askPrice >= 0.40) {
       budgetPct = Math.min(budgetPct, HIGH_ASK_BUDGET_PCT);
     }
     if (oppCurrentAsk > 0 && askPrice + oppCurrentAsk >= preferredMaxSum - 0.005) {
       budgetPct = Math.min(budgetPct, THIN_EDGE_BUDGET_PCT);
+    }
+    if (currentSum > preferredMaxSum) {
+      budgetPct = Math.min(budgetPct, PAPER_OVER_SUM_SMALL_BUDGET_PCT);
+    }
+    if (currentSum >= hardMaxSum - 0.01) {
+      budgetPct = Math.min(budgetPct, PAPER_NEAR_CAP_SMALL_BUDGET_PCT);
     }
     return budgetPct;
   }
@@ -1320,6 +1329,7 @@ export class Hedge15mEngine {
     const oppCurrentAsk = dir === "up" ? this.downAsk : this.upAsk;
     const maxSumTarget = this.getMaxSumTarget();
     let entryQualityMaxSum = this.getPaperEntryQualityMaxSum(maxSumTarget);
+    const observedEntrySum = oppCurrentAsk > 0 ? askPrice + oppCurrentAsk : 0;
     const directionalBias = this.getRoundDirectionalBias();
     if (directionalBias === dir && askPrice <= DIRECTIONAL_ENTRY_ASK_CAP) {
       entryQualityMaxSum = Math.min(maxSumTarget, entryQualityMaxSum + DIRECTIONAL_ENTRY_SUM_BONUS);
@@ -1343,7 +1353,12 @@ export class Hedge15mEngine {
       return;
     }
 
-    const budgetPct = this.getAdaptiveLegBudgetPct(askPrice, oppCurrentAsk, entryQualityMaxSum);
+    const budgetPct = this.getAdaptiveLegBudgetPct(askPrice, oppCurrentAsk, entryQualityMaxSum, maxSumTarget);
+    if (observedEntrySum > entryQualityMaxSum) {
+      logger.info(
+        `HEDGE15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
+      );
+    }
     await this.openLeg1Position(trader, dir, askPrice, buyToken, oppToken, budgetPct, "mispricing", Date.now());
   }
 
