@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { writeDecisionAudit } from "./decisionAudit";
 import { logger } from "./logger";
 import { startLatencyMonitor, stopLatencyMonitor, recordLatency, getDynamicParams, getLatencySnapshot } from "./latency";
 import { getExecutionTelemetry, recordExecutionLatency, resetExecutionTelemetry } from "./telemetry";
@@ -261,6 +262,7 @@ export class Hedge15mEngine {
 
   private secondsLeft = 0;
   private currentMarket = "";
+  private currentConditionId = "";
   private upAsk = 0;
   private downAsk = 0;
 
@@ -312,6 +314,7 @@ export class Hedge15mEngine {
   private trendSignalStreak = 0;
   private trendSignalDir: "up" | "down" | "flat" = "flat";
   private lastMomentumRejectSignature = "";
+  private roundRejectReasonCounts = new Map<string, number>();
 
   // Market state layer
   private marketState = new RoundMarketState();
@@ -340,6 +343,53 @@ export class Hedge15mEngine {
     this.roundSumRejects = 0;
     this.roundEntryAskRejects = 0;
     this.lastMomentumRejectSignature = "";
+    this.roundRejectReasonCounts.clear();
+  }
+
+  private trackRoundRejectReason(reason: string): void {
+    const normalized = reason.trim();
+    if (!normalized) return;
+    this.roundRejectReasonCounts.set(normalized, (this.roundRejectReasonCounts.get(normalized) || 0) + 1);
+  }
+
+  private getTopRoundRejectReasons(limit = 5): Array<{ detail: string; count: number }> {
+    return Array.from(this.roundRejectReasonCounts.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, limit)
+      .map(([detail, count]) => ({ detail, count }));
+  }
+
+  private writeRoundAudit(event: string, details: Record<string, unknown> = {}): void {
+    writeDecisionAudit(event, {
+      tradingMode: this.tradingMode,
+      paperSessionMode: this.paperSessionMode,
+      market: this.currentMarket,
+      conditionId: this.currentConditionId,
+      secondsLeft: this.secondsLeft,
+      status: this.status,
+      hedgeState: this.hedgeState,
+      activeStrategyMode: this.activeStrategyMode,
+      trendBias: this.currentTrendBias,
+      leg1Dir: this.leg1Dir,
+      leg1Price: this.leg1Price,
+      leg1FillPrice: this.leg1FillPrice,
+      leg1Shares: this.leg1Shares,
+      leg2Price: this.leg2Price,
+      leg2FillPrice: this.leg2FillPrice,
+      leg2Shares: this.leg2Shares,
+      totalCost: this.totalCost,
+      expectedProfit: this.expectedProfit,
+      balance: this.balance,
+      totalProfit: this.totalProfit,
+      dumpDetected: this.dumpDetected,
+      rejectCounts: {
+        momentum: this.roundMomentumRejects,
+        sum: this.roundSumRejects,
+        entryAsk: this.roundEntryAskRejects,
+      },
+      topRejectReasons: this.getTopRoundRejectReasons(),
+      ...details,
+    });
   }
 
   private logRoundRejectSummary(reason: string): void {
@@ -349,6 +399,17 @@ export class Hedge15mEngine {
     if (this.roundEntryAskRejects > 0) parts.push(`entryAsk=${this.roundEntryAskRejects}`);
     if (parts.length === 0) return;
     logger.info(`HEDGE15M ROUND SUMMARY: ${reason}, rejects(${parts.join(", ")})`);
+    const topReasons = Array.from(this.roundRejectReasonCounts.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5);
+    for (const [detail, count] of topReasons) {
+      logger.info(`HEDGE15M REJECT DETAIL: ${count}x ${detail}`);
+    }
+    this.writeRoundAudit("round-no-entry", {
+      reason,
+      summary: parts.join(", "),
+      topRejectReasons: topReasons.map(([detail, count]) => ({ detail, count })),
+    });
   }
 
   private resetTrendSignalTracking(): void {
@@ -863,6 +924,7 @@ export class Hedge15mEngine {
 
         const cid = rnd.conditionId;
         const secs = rnd.secondsLeft;
+        this.currentConditionId = cid;
         this.currentMarket = rnd.question;
         this.secondsLeft = secs;
         setRoundSecsLeft(secs);
@@ -890,8 +952,10 @@ export class Hedge15mEngine {
             this.status = `跳过: 剩余${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s`;
             this.skips++;
             logger.info(`HEDGE15M SKIP LATE ROUND: ${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s minimum`);
+            this.writeRoundAudit("round-skip-late", { secondsLeft: secs, minimumEntrySeconds: MIN_ENTRY_SECS, negRisk: this.negRisk });
           } else {
             logger.info(`HEDGE15M ROUND: ${rnd.question}, ${Math.floor(secs)}s left, BTC=$${this.roundStartBtcPrice.toFixed(0)}`);
+            this.writeRoundAudit("round-start", { question: rnd.question, secondsLeft: secs, roundStartBtcPrice: this.roundStartBtcPrice, negRisk: this.negRisk });
           }
         }
 
@@ -1260,6 +1324,7 @@ export class Hedge15mEngine {
     if (!plan.allowed) {
       if (plan.reason?.includes("MAX_ENTRY_ASK")) this.noteAdaptivePaperSkip("entry-ask");
       if (plan.reason?.includes("sum=")) this.noteAdaptivePaperSkip("sum");
+      this.trackRoundRejectReason(`plan: ${plan.reason}`);
       logger.warn(`Hedge15m Leg1 skipped: ${plan.reason}`);
       return;
     }
@@ -1309,6 +1374,7 @@ export class Hedge15mEngine {
     const budget = this.balance * budgetPct;
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
     if (shares < MIN_SHARES) {
+      this.trackRoundRejectReason(`${strategyMode}: shares ${shares} < ${MIN_SHARES}`);
       logger.warn(`Hedge15m Leg1 skipped: ${shares}份 < ${MIN_SHARES} (balance=$${this.balance.toFixed(2)}, ask=$${askPrice.toFixed(2)})`);
       return;
     }
@@ -1324,6 +1390,7 @@ export class Hedge15mEngine {
       reboundLimit: strategyMode === "trend" ? 1.05 : 1.10,
     });
     if (!orderbookPlan.allowed) {
+      this.trackRoundRejectReason(`orderbook: ${orderbookPlan.reason}`);
       logger.warn(`Hedge15m Leg1 skipped: ${orderbookPlan.reason}`);
       return;
     }
@@ -1331,6 +1398,7 @@ export class Hedge15mEngine {
     const entryAsk = orderbookPlan.entryAsk;
     const entryShares = Math.min(MAX_SHARES, Math.floor(budget / entryAsk));
     if (entryShares < MIN_SHARES) {
+      this.trackRoundRejectReason(`${strategyMode}: fresh shares ${entryShares} < ${MIN_SHARES}`);
       logger.warn(`Hedge15m Leg1 skipped (fresh): ${entryShares}份 < ${MIN_SHARES} @${entryAsk.toFixed(2)}`);
       return;
     }
@@ -1418,6 +1486,14 @@ export class Hedge15mEngine {
         ? `趋势持仓 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}`
         : `Leg1 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}, 等Leg2`;
       logger.info(`HEDGE15M LEG1 FILLED [${strategyMode.toUpperCase()}]: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)}`);
+      this.writeRoundAudit("leg1-filled", {
+        strategyMode,
+        dir,
+        entryAsk,
+        fillPrice: realFillPrice,
+        filledShares,
+        orderId: orderId.slice(0, 12),
+      });
     } finally {
       this.leg1EntryInFlight = false;
       if (this.hedgeState === "leg1_pending") {
@@ -1615,6 +1691,12 @@ export class Hedge15mEngine {
       ? `部分对冲: 锁定+$${this.expectedProfit.toFixed(2)}, 裸露${residualShares.toFixed(0)}份`
       : `双腿锁定! L1=${this.leg1Dir.toUpperCase()}@${this.leg1FillPrice.toFixed(2)} L2=@${leg2RealPrice.toFixed(2)} 预期+$${this.expectedProfit.toFixed(2)}`;
     logger.info(`HEDGE15M LOCKED: hedged=${hedgedShares.toFixed(0)} residual=${residualShares.toFixed(0)} L1 fill=${this.leg1FillPrice.toFixed(2)} L2 fill=${leg2RealPrice.toFixed(2)} totalCost=$${this.totalCost.toFixed(2)} lockedProfit=$${this.expectedProfit.toFixed(2)}`);
+    this.writeRoundAudit("hedge-locked", {
+      hedgedShares,
+      residualShares,
+      leg2FillPrice: leg2RealPrice,
+      lockedProfit: this.expectedProfit,
+    });
   }
 
   /** 独立管理 GTC 挂单: 检查成交、自动降价追单、超时处理 */
@@ -1670,6 +1752,13 @@ export class Hedge15mEngine {
       this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
       this.status = `GTC成交: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}`;
       logger.info(`HEDGE15M GTC FILLED: sold ${soldShares.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
+      this.writeRoundAudit("gtc-filled", {
+        soldShares,
+        unsold,
+        sellPrice,
+        profit,
+        result,
+      });
       return;
     }
 
@@ -1912,6 +2001,16 @@ export class Hedge15mEngine {
 
       this.status = `${reason}: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}${unsold > 0 ? ` (${unsold.toFixed(0)}份待结算)` : ''}`;
       logger.info(`HEDGE15M ${reason}: sold ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)} Leg1 ${this.leg1Dir.toUpperCase()}, recovered≈$${recovered.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
+      this.writeRoundAudit("leg1-exit", {
+        reason,
+        soldShares,
+        requestedShares: sharesToSell,
+        unsold,
+        sellPrice,
+        recovered,
+        profit,
+        result,
+      });
       // 退出后同步链上余额, 防止长期运行累积偏差
       if (unsold <= 0) this.refreshBalance().catch(() => {});
     } else {
@@ -1991,6 +2090,14 @@ export class Hedge15mEngine {
 
     this.status = `结算: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} (返$${returnVal.toFixed(2)} dir=${actualDir}/${dirSource})`;
     logger.info(`HEDGE15M SETTLED: ${result} dir=${actualDir}(${dirSource}) return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)} L1fill=${this.leg1FillPrice.toFixed(2)} L2fill=${this.leg2FillPrice.toFixed(2)}`);
+    this.writeRoundAudit("settlement", {
+      result,
+      actualDir,
+      dirSource,
+      returnVal,
+      profit,
+      settlementReason,
+    });
 
     // 等待链上结算生效后再同步余额
     await sleep(5000);

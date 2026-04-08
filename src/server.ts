@@ -7,7 +7,7 @@ import { Duplex } from "stream";
 import { Config, ServerConfig, updateConfig } from "./config";
 import { loadAuditReport } from "./audit";
 import { Hedge15mEngine } from "./bot";
-import { getLogFilePath } from "./instancePaths";
+import { getDecisionAuditFilePath, getLogFilePath } from "./instancePaths";
 import { logger } from "./logger";
 import * as fs from "fs";
 
@@ -207,6 +207,17 @@ app.get("/api/download-history", auth, (_req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${path.basename(historyPath)}"`);
   res.send(fs.readFileSync(historyPath, "utf8"));
+});
+
+app.get("/api/download-decision-audit", auth, (_req, res) => {
+  const auditPath = getDecisionAuditFilePath();
+  if (!fs.existsSync(auditPath)) {
+    res.status(404).json({ error: "审计日志文件未找到" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(auditPath)}"`);
+  res.send(fs.readFileSync(auditPath, "utf8"));
 });
 
 app.get("/api/healthz", (_req, res) => {

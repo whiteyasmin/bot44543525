@@ -37,6 +37,14 @@ export function getLogFilePath(): string {
   return process.env.LOG_FILE || path.join(process.cwd(), `bot${suffix()}.log`);
 }
 
+export function getDecisionAuditFilePathForInstance(instanceId: string): string {
+  return path.join(process.cwd(), "data", `hedge15m-decisions${suffixFor(instanceId)}.jsonl`);
+}
+
+export function getDecisionAuditFilePath(): string {
+  return process.env.DECISION_AUDIT_FILE || path.join(process.cwd(), "data", `hedge15m-decisions${suffix()}.jsonl`);
+}
+
 export function getLiveHistoryFilePath(): string {
   return process.env.HISTORY_FILE || path.join(process.cwd(), "data", `hedge15m-history${suffix()}.json`);
 }

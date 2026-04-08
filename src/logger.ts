@@ -2,17 +2,30 @@ import * as fs from "fs";
 import { getLogFilePath } from "./instancePaths";
 
 const LOG_FILE = getLogFilePath();
-const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_LOG_SIZE = 25 * 1024 * 1024; // 25MB
+const MAX_LOG_FILES = 12;
 let stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+
+function rotateBackups(baseFile: string, maxFiles: number): void {
+  for (let index = maxFiles - 1; index >= 1; index -= 1) {
+    const from = `${baseFile}.${index}`;
+    const to = `${baseFile}.${index + 1}`;
+    if (fs.existsSync(from)) {
+      if (fs.existsSync(to)) fs.unlinkSync(to);
+      fs.renameSync(from, to);
+    }
+  }
+  const firstBackup = `${baseFile}.1`;
+  if (fs.existsSync(firstBackup)) fs.unlinkSync(firstBackup);
+  fs.renameSync(baseFile, firstBackup);
+}
 
 function rotateIfNeeded(): void {
   try {
     const stat = fs.statSync(LOG_FILE);
     if (stat.size > MAX_LOG_SIZE) {
       stream.end();
-      const backup = LOG_FILE + ".old";
-      if (fs.existsSync(backup)) fs.unlinkSync(backup);
-      fs.renameSync(LOG_FILE, backup);
+      rotateBackups(LOG_FILE, MAX_LOG_FILES);
       stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
     }
   } catch {}
