@@ -31,10 +31,13 @@ header h1::before{content:'₿';font-size:20px;color:#f7931a}
 .badge-stop{background:rgba(110,118,129,.15);color:#8b949e;border:1px solid rgba(110,118,129,.3)}.badge-stop::before{background:#6e7681}
 
 .wrap{padding:20px 24px;max-width:1200px;margin:auto}
-.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(12,minmax(0,1fr))}
 .card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px 18px}
 .card h3{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
 .full{grid-column:1/-1}
+.span-4{grid-column:span 4}
+.span-6{grid-column:span 6}
+.span-8{grid-column:span 8}
 .horizontal-card .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 18px}
 
 .summary-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
@@ -74,6 +77,8 @@ td{padding:6px 8px;border-bottom:1px solid #1e273330}
 tr:hover{background:rgba(88,166,255,.04)}
 
 @media (max-width: 900px){
+  .grid{grid-template-columns:1fr}
+  .span-4,.span-6,.span-8,.full{grid-column:1/-1}
   .horizontal-card .detail-grid{grid-template-columns:1fr}
 }
 </style>
@@ -119,7 +124,7 @@ tr:hover{background:rgba(88,166,255,.04)}
 
   <div class="grid">
     <!-- Timer -->
-    <div class="card">
+    <div class="card span-4">
       <h3>⏱ 回合计时器</h3>
       <div class="timer-wrap">
         <div class="timer-big" id="timer">--:--</div>
@@ -178,7 +183,7 @@ tr:hover{background:rgba(88,166,255,.04)}
     </div>
 
     <!-- Wallet Config -->
-    <div class="card">
+    <div class="card span-4">
       <h3>🔑 账户配置</h3>
       <div style="margin-bottom:8px">
         <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">运行模式</label>
@@ -211,6 +216,18 @@ tr:hover{background:rgba(88,166,255,.04)}
     </div>
 
     <!-- Parameters -->
+    <div class="card span-4 horizontal-card">
+      <h3>审计</h3>
+      <div class="detail-grid">
+      <div class="row"><span class="k">历史笔数</span><span class="v" id="a-trades">--</span></div>
+      <div class="row"><span class="k">胜率</span><span class="v" id="a-winrate">--</span></div>
+      <div class="row"><span class="k">Profit Factor</span><span class="v" id="a-pf">--</span></div>
+      <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
+      <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
+      <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
+      </div>
+    </div>
+
     <div class="card full horizontal-card">
       <h3>⚙ 参数</h3>
       <div class="detail-grid">
@@ -224,18 +241,6 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">止损</span><span class="v">入场价*82% 或 bid&lt;0.15</span></div>
       <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
       <div class="row"><span class="k">割肉</span><span class="v">边缘单15s未锁 / 常规对冲超时 / ≤30s且bid&lt;0.35</span></div>
-      </div>
-    </div>
-
-    <div class="card full horizontal-card">
-      <h3>审计</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">历史笔数</span><span class="v" id="a-trades">--</span></div>
-      <div class="row"><span class="k">胜率</span><span class="v" id="a-winrate">--</span></div>
-      <div class="row"><span class="k">Profit Factor</span><span class="v" id="a-pf">--</span></div>
-      <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
-      <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
-      <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
       </div>
     </div>
 
