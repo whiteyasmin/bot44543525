@@ -139,49 +139,6 @@ tr:hover{background:rgba(88,166,255,.04)}
       </div>
     </div>
 
-    <!-- Hedge Status -->
-    <div class="card full horizontal-card">
-      <h3>🔀 对冲状态</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
-      <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
-      <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
-      <div class="row"><span class="k">策略优先级</span><span class="v" id="h-strategy-policy">--</span></div>
-      <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
-      <div class="row"><span class="k">纸面调参</span><span class="v" id="h-paper-tuning">--</span></div>
-      <div class="row"><span class="k">最近调参</span><span class="v" id="h-paper-adjust">--</span></div>
-      <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
-      <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
-      <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
-      <div class="row"><span class="k">砸盘检测</span><span class="v" id="h-dump">--</span></div>
-      <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
-      <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
-      <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
-      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
-      <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
-      <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
-      <div class="row"><span class="k">最近网络样本</span><span class="v" id="h-lat-live">--</span></div>
-      <div class="row"><span class="k">CLOB Ping</span><span class="v" id="h-lat-ping">--</span></div>
-      <div class="row"><span class="k">HTTP订单簿</span><span class="v" id="h-lat-http">--</span></div>
-      <div class="row"><span class="k">本地缓存命中</span><span class="v" id="h-lat-cache">--</span></div>
-      <div class="row"><span class="k">Market WS</span><span class="v" id="h-market-ws">--</span></div>
-      <div class="row"><span class="k">User WS</span><span class="v" id="h-user-ws">--</span></div>
-      <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
-      <div class="row"><span class="k">本地Book</span><span class="v" id="h-local-book">--</span></div>
-      <div class="row"><span class="k">信号→发单</span><span class="v" id="h-exec-s2s">--</span></div>
-      <div class="row"><span class="k">发单→回报</span><span class="v" id="h-exec-s2a">--</span></div>
-      <div class="row"><span class="k">回报→成交</span><span class="v" id="h-exec-a2f">--</span></div>
-      <div class="row"><span class="k">信号→成交</span><span class="v" id="h-exec-s2f">--</span></div>
-      <div class="row"><span class="k">Leg2→成交</span><span class="v" id="h-exec-leg2">--</span></div>
-      <div class="row"><span class="k">卖出→成交</span><span class="v" id="h-exec-exit">--</span></div>
-      <div class="row"><span class="k">GTC等待成交</span><span class="v" id="h-exec-gtc">--</span></div>
-      <div class="row"><span class="k">Market断流/重连</span><span class="v" id="h-market-ws-stats">--</span></div>
-      <div class="row"><span class="k">User断流/重连</span><span class="v" id="h-user-ws-stats">--</span></div>
-      <div class="row"><span class="k">HTTP回退次数</span><span class="v" id="h-fallback-stats">--</span></div>
-      <div class="row"><span class="k">Book陈旧/交叉</span><span class="v" id="h-local-book-issues">--</span></div>
-      </div>
-    </div>
-
     <!-- Wallet Config -->
     <div class="card span-4">
       <h3>🔑 账户配置</h3>
@@ -225,6 +182,49 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
       <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
       <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
+      </div>
+    </div>
+
+    <!-- Hedge Status -->
+    <div class="card full horizontal-card">
+      <h3>🔀 对冲状态</h3>
+      <div class="detail-grid">
+      <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
+      <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+      <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
+      <div class="row"><span class="k">策略优先级</span><span class="v" id="h-strategy-policy">--</span></div>
+      <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
+      <div class="row"><span class="k">纸面调参</span><span class="v" id="h-paper-tuning">--</span></div>
+      <div class="row"><span class="k">最近调参</span><span class="v" id="h-paper-adjust">--</span></div>
+      <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
+      <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
+      <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
+      <div class="row"><span class="k">砸盘检测</span><span class="v" id="h-dump">--</span></div>
+      <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
+      <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
+      <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
+      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
+      <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
+      <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
+      <div class="row"><span class="k">最近网络样本</span><span class="v" id="h-lat-live">--</span></div>
+      <div class="row"><span class="k">CLOB Ping</span><span class="v" id="h-lat-ping">--</span></div>
+      <div class="row"><span class="k">HTTP订单簿</span><span class="v" id="h-lat-http">--</span></div>
+      <div class="row"><span class="k">本地缓存命中</span><span class="v" id="h-lat-cache">--</span></div>
+      <div class="row"><span class="k">Market WS</span><span class="v" id="h-market-ws">--</span></div>
+      <div class="row"><span class="k">User WS</span><span class="v" id="h-user-ws">--</span></div>
+      <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
+      <div class="row"><span class="k">本地Book</span><span class="v" id="h-local-book">--</span></div>
+      <div class="row"><span class="k">信号→发单</span><span class="v" id="h-exec-s2s">--</span></div>
+      <div class="row"><span class="k">发单→回报</span><span class="v" id="h-exec-s2a">--</span></div>
+      <div class="row"><span class="k">回报→成交</span><span class="v" id="h-exec-a2f">--</span></div>
+      <div class="row"><span class="k">信号→成交</span><span class="v" id="h-exec-s2f">--</span></div>
+      <div class="row"><span class="k">Leg2→成交</span><span class="v" id="h-exec-leg2">--</span></div>
+      <div class="row"><span class="k">卖出→成交</span><span class="v" id="h-exec-exit">--</span></div>
+      <div class="row"><span class="k">GTC等待成交</span><span class="v" id="h-exec-gtc">--</span></div>
+      <div class="row"><span class="k">Market断流/重连</span><span class="v" id="h-market-ws-stats">--</span></div>
+      <div class="row"><span class="k">User断流/重连</span><span class="v" id="h-user-ws-stats">--</span></div>
+      <div class="row"><span class="k">HTTP回退次数</span><span class="v" id="h-fallback-stats">--</span></div>
+      <div class="row"><span class="k">Book陈旧/交叉</span><span class="v" id="h-local-book-issues">--</span></div>
       </div>
     </div>
 
