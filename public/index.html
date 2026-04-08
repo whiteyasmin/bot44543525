@@ -144,8 +144,11 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
       <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
       <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
-      <div class="row"><span class="k">CLOB 延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
-      <div class="row"><span class="k">CLOB 延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
+      <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
+      <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
+      <div class="row"><span class="k">CLOB Ping</span><span class="v" id="h-lat-ping">--</span></div>
+      <div class="row"><span class="k">HTTP订单簿</span><span class="v" id="h-lat-http">--</span></div>
+      <div class="row"><span class="k">本地缓存命中</span><span class="v" id="h-lat-cache">--</span></div>
       <div class="row"><span class="k">Market WS</span><span class="v" id="h-market-ws">--</span></div>
       <div class="row"><span class="k">User WS</span><span class="v" id="h-user-ws">--</span></div>
       <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
@@ -468,6 +471,15 @@ function render(s) {
   const latEl90 = document.getElementById('h-lat-p90');
   latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
   latEl90.style.color = latColor(lat90);
+  const pingEl = document.getElementById('h-lat-ping');
+  pingEl.textContent = s.latencyPingP50 > 0 ? s.latencyPingP50 + 'ms / P90 ' + (s.latencyPingP90 || 0) + 'ms' : '--';
+  pingEl.style.color = latColor(s.latencyPingP50 || 0);
+  const httpEl = document.getElementById('h-lat-http');
+  httpEl.textContent = s.latencyHttpP50 > 0 ? s.latencyHttpP50 + 'ms / P90 ' + (s.latencyHttpP90 || 0) + 'ms' : '--';
+  httpEl.style.color = latColor(s.latencyHttpP50 || 0);
+  const cacheEl = document.getElementById('h-lat-cache');
+  cacheEl.textContent = s.latencyCacheP50 > 0 ? s.latencyCacheP50 + 'ms / P90 ' + (s.latencyCacheP90 || 0) + 'ms' : '--';
+  cacheEl.style.color = s.latencyCacheP50 > 0 ? '#58a6ff' : '';
 
   const diagnostics = s.diagnostics || {};
   const marketWsEl = document.getElementById('h-market-ws');

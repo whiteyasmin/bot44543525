@@ -3,14 +3,28 @@ import { logger } from "./logger";
 
 const PING_INTERVAL_MS = 10_000; // 每10s ping一次 CLOB
 const PING_TIMEOUT_MS  = 5_000;
-const HISTORY_SIZE     = 20;     // 保留最近20个样本(ping + 真实下单调用混合)
+const HISTORY_SIZE     = 20;
 
-const samples: number[] = [];
+const pingSamples: number[] = [];
+const httpSamples: number[] = [];
+const cacheSamples: number[] = [];
 
-function addSample(ms: number): void {
+function addSample(bucket: number[], ms: number): void {
   if (ms <= 0 || ms > 8_000) return; // 过滤异常值
-  samples.push(ms);
-  while (samples.length > HISTORY_SIZE) samples.shift();
+  bucket.push(ms);
+  while (bucket.length > HISTORY_SIZE) bucket.shift();
+}
+
+function summarize(bucket: number[], fallbackP50: number, fallbackP90: number): { p50: number; p90: number; count: number } {
+  if (bucket.length === 0) {
+    return { p50: fallbackP50, p90: fallbackP90, count: 0 };
+  }
+  const sorted = [...bucket].sort((a, b) => a - b);
+  return {
+    p50: sorted[Math.floor((sorted.length - 1) * 0.5)],
+    p90: sorted[Math.floor((sorted.length - 1) * 0.9)],
+    count: bucket.length,
+  };
 }
 
 async function doPing(): Promise<void> {
@@ -25,8 +39,8 @@ async function doPing(): Promise<void> {
     // 即便返回 404 也算有效延迟测量
     void r;
     const ms = Date.now() - t0;
-    addSample(ms);
-    logger.info(`CLOB ping: ${ms}ms (P50=${getP50Ms()}ms P90=${getP90Ms()}ms)`);
+    addSample(pingSamples, ms);
+    logger.info(`CLOB ping: ${ms}ms (netP50=${getP50Ms()}ms netP90=${getP90Ms()}ms)`);
   } catch {
     // 超时或网络中断 — 不记样本, 下次再测
   }
@@ -45,22 +59,50 @@ export function stopLatencyMonitor(): void {
 }
 
 /** 由交易循环调用: 记录一次真实的订单簿请求延迟 */
-export function recordLatency(ms: number): void {
-  addSample(ms);
+export function recordLatency(ms: number, source: "http" | "cache" = "http"): void {
+  addSample(source === "cache" ? cacheSamples : httpSamples, ms);
+}
+
+export function getLatencySnapshot(): {
+  networkP50: number;
+  networkP90: number;
+  pingP50: number;
+  pingP90: number;
+  httpP50: number;
+  httpP90: number;
+  cacheP50: number;
+  cacheP90: number;
+  pingCount: number;
+  httpCount: number;
+  cacheCount: number;
+} {
+  const ping = summarize(pingSamples, 150, 250);
+  const http = summarize(httpSamples, 150, 250);
+  const cache = summarize(cacheSamples, 0, 0);
+  const networkSource = http.count > 0 ? http : ping;
+  return {
+    networkP50: networkSource.p50,
+    networkP90: networkSource.p90,
+    pingP50: ping.p50,
+    pingP90: ping.p90,
+    httpP50: http.count > 0 ? http.p50 : 0,
+    httpP90: http.count > 0 ? http.p90 : 0,
+    cacheP50: cache.count > 0 ? cache.p50 : 0,
+    cacheP90: cache.count > 0 ? cache.p90 : 0,
+    pingCount: ping.count,
+    httpCount: http.count,
+    cacheCount: cache.count,
+  };
 }
 
 /** P50 延迟 (中位数), 无样本时返回保守默认值 */
 export function getP50Ms(): number {
-  if (samples.length === 0) return 150;
-  const sorted = [...samples].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) * 0.5)];
+  return getLatencySnapshot().networkP50;
 }
 
 /** P90 延迟, 无样本时返回保守默认值 */
 export function getP90Ms(): number {
-  if (samples.length === 0) return 250;
-  const sorted = [...samples].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) * 0.9)];
+  return getLatencySnapshot().networkP90;
 }
 
 /**

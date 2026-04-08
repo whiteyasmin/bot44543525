@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { logger } from "./logger";
-import { startLatencyMonitor, stopLatencyMonitor, recordLatency, getDynamicParams } from "./latency";
+import { startLatencyMonitor, stopLatencyMonitor, recordLatency, getDynamicParams, getLatencySnapshot } from "./latency";
 import { getExecutionTelemetry, recordExecutionLatency, resetExecutionTelemetry } from "./telemetry";
 import { getCurrentRound15m, prefetchNextRound, Round15m } from "./market";
 import {
@@ -120,6 +120,12 @@ export interface Hedge15mState {
   sessionROI: number;
   latencyP50: number;
   latencyP90: number;
+  latencyPingP50: number;
+  latencyPingP90: number;
+  latencyHttpP50: number;
+  latencyHttpP90: number;
+  latencyCacheP50: number;
+  latencyCacheP90: number;
   diagnostics: {
     marketWsConnected: boolean;
     userWsConnected: boolean;
@@ -196,9 +202,17 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 async function getHotBestPrices(trader: Trader, tokenId: string): Promise<{ bid: number | null; ask: number | null; spread: number; askDepth: number; bidDepth: number } | null> {
+  const startedAt = Date.now();
   const cached = trader.peekBestPrices(tokenId);
-  if (cached) return cached;
-  return withTimeout(trader.getBestPrices(tokenId), getDynamicParams().orderbookTimeoutMs);
+  if (cached) {
+    recordLatency(Math.max(1, Date.now() - startedAt), "cache");
+    return cached;
+  }
+  const result = await withTimeout(trader.getBestPrices(tokenId), getDynamicParams().orderbookTimeoutMs);
+  if (result) {
+    recordLatency(Math.max(1, Date.now() - startedAt), "http");
+  }
+  return result;
 }
 
 function getDefaultTraderDiagnostics(): TraderDiagnostics {
@@ -529,6 +543,7 @@ export class Hedge15mEngine {
 
   getState(): Hedge15mState {
     const dp = getDynamicParams();
+    const latency = getLatencySnapshot();
     const exec = getExecutionTelemetry();
     const traderDiag = this.trader ? this.trader.getDiagnostics() : getDefaultTraderDiagnostics();
     const secondsLeft = Math.max(0, Math.min(ROUND_DURATION, this.secondsLeft));
@@ -579,6 +594,12 @@ export class Hedge15mEngine {
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
+      latencyPingP50: latency.pingP50,
+      latencyPingP90: latency.pingP90,
+      latencyHttpP50: latency.httpP50,
+      latencyHttpP90: latency.httpP90,
+      latencyCacheP50: latency.cacheP50,
+      latencyCacheP90: latency.cacheP90,
       diagnostics: {
         ...traderDiag,
         execSignalToSubmitP50: exec.signalToSubmit.p50,
@@ -875,7 +896,7 @@ export class Hedge15mEngine {
           ]);
           if (!this.isActiveRun(runId)) break;
           const callMs = Date.now() - t0;
-          if (upRes && dnRes) recordLatency(callMs); // 仅成功调用计入延迟样本
+          void callMs;
           this.upAsk = upRes?.ask ?? 0;
           this.downAsk = dnRes?.ask ?? 0;
         } catch (e: any) {
