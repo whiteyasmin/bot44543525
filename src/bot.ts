@@ -111,6 +111,10 @@ const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向�
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
 const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
+const DUAL_SIDE_MAX_ASK_PROTECTED = 0.25;  // 亏损保护模式: 只接受极低价入场
+const DRAWDOWN_PROTECT_THRESHOLD = 0.10;   // 滚动4h亏损≥10%余额 → 收紧入场
+const DRAWDOWN_RECOVER_THRESHOLD = 0.05;   // 滚动4h亏损<5%余额 → 恢复正常
+const DRAWDOWN_WINDOW_MS = 4 * 3600_000;   // 滚动窗口 4小时
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -159,6 +163,9 @@ export interface Hedge15mState {
   strategyPolicy: string;
   trendBias: string;
   sessionROI: number;
+  rolling4hPnL: number;
+  drawdownProtected: boolean;
+  effectiveMaxAsk: number;
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
@@ -393,6 +400,8 @@ export class Hedge15mEngine {
   private leg2GtcLastReprice = 0;            // Leg2 GTC 上次重新定价时间
   private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
+  private rollingPnL: Array<{ ts: number; profit: number }> = []; // 滚动P/L记录
+  private drawdownProtected = false;        // 当前是否在亏损保护模式
 
   // Market state layer
   private marketState = new RoundMarketState();
@@ -636,6 +645,26 @@ export class Hedge15mEngine {
     return LEG1_STOP_LOSS;
   }
 
+  /** 记录一笔盈亏到滚动窗口 */
+  private recordRollingPnL(profit: number): void {
+    this.rollingPnL.push({ ts: Date.now(), profit });
+    this.getRolling4hPnL();
+    this.savePaperRuntimeSnapshot();
+  }
+
+  /** 计算最近4小时的累计盈亏 */
+  private getRolling4hPnL(): number {
+    const cutoff = Date.now() - DRAWDOWN_WINDOW_MS;
+    // 清理过期记录
+    this.rollingPnL = this.rollingPnL.filter(r => r.ts >= cutoff);
+    return this.rollingPnL.reduce((sum, r) => sum + r.profit, 0);
+  }
+
+  /** 获取当前有效的 MAX_ASK（亏损保护时收紧） */
+  private getEffectiveMaxAsk(): number {
+    return this.drawdownProtected ? DUAL_SIDE_MAX_ASK_PROTECTED : DUAL_SIDE_MAX_ASK;
+  }
+
   private getBaseSumTarget(): number {
     return this.tradingMode === "paper" ? this.adaptiveBaseSumTarget : SUM_TARGET;
   }
@@ -645,7 +674,8 @@ export class Hedge15mEngine {
   }
 
   private getMaxEntryAsk(): number {
-    return this.tradingMode === "paper" ? this.adaptiveMaxEntryAsk : MAX_ENTRY_ASK;
+    const adaptiveCap = this.tradingMode === "paper" ? this.adaptiveMaxEntryAsk : MAX_ENTRY_ASK;
+    return Math.min(adaptiveCap, this.getEffectiveMaxAsk());
   }
 
   private getLeg2Target(secs: number): number {
@@ -681,12 +711,11 @@ export class Hedge15mEngine {
     if (!this.running) return "已停止";
     if (this.hedgeState === "off") return this.status || "等待首轮市场数据";
     if (this.status.startsWith("跳过:")) return this.status;
-    if (this.status.startsWith("冷却中")) return this.status;
     if (this.status === "窗口到期,无砸盘") return this.status;
     if (this.pendingSellOrderId) return "已挂GTC卖单, 等待成交";
     if (this.hedgeState === "leg1_pending") return "Leg1 下单中";
     if (this.hedgeState === "leg2_filled") return "双腿已锁定, 等退出/结算";
-    if (this.hedgeState === "leg1_filled") return "已成交Leg1, 等Leg2或退出";
+    if (this.hedgeState === "leg1_filled") return "已成交Leg1, 持有到结算";
     if (this.hedgeState === "watching") return this.secondsLeft >= MIN_ENTRY_SECS ? "本轮仍在观察窗口" : "本轮入场窗已关闭";
     return this.status || "等待中";
   }
@@ -713,7 +742,7 @@ export class Hedge15mEngine {
       roundElapsed,
       roundProgressPct,
       entryWindowLeft,
-      canOpenNewPosition: this.running && this.hedgeState === "watching" && secondsLeft >= MIN_ENTRY_SECS && this.consecutiveLosses < 3,
+      canOpenNewPosition: this.running && this.hedgeState === "watching" && secondsLeft >= MIN_ENTRY_SECS,
       nextRoundIn: secondsLeft,
       currentMarket: this.currentMarket,
       upAsk: this.upAsk,
@@ -742,6 +771,9 @@ export class Hedge15mEngine {
       strategyPolicy: STRATEGY_POLICY,
       trendBias: this.currentTrendBias,
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
+      rolling4hPnL: this.getRolling4hPnL(),
+      drawdownProtected: this.drawdownProtected,
+      effectiveMaxAsk: this.getEffectiveMaxAsk(),
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
@@ -807,10 +839,12 @@ export class Hedge15mEngine {
   private savePaperRuntimeSnapshot(): void {
     if (this.tradingMode !== "paper" || this.paperSessionMode !== "persistent") return;
     try {
+      this.getRolling4hPnL();
       savePaperRuntimeState({
         balance: this.balance,
         initialBankroll: this.initialBankroll,
         sessionProfit: this.sessionProfit,
+        rollingPnL: this.rollingPnL,
         updatedAt: new Date().toISOString(),
       });
     } catch (e: any) {
@@ -912,8 +946,12 @@ export class Hedge15mEngine {
     this.sessionProfit = persistedPaperState && this.tradingMode === "paper" && this.paperSessionMode === "persistent"
       ? persistedPaperState.sessionProfit
       : 0;
+    this.rollingPnL = persistedPaperState && this.tradingMode === "paper" && this.paperSessionMode === "persistent"
+      ? persistedPaperState.rollingPnL.filter((item) => item.ts >= Date.now() - DRAWDOWN_WINDOW_MS)
+      : [];
     this.history = [];
     this.loadHistory();
+    this.drawdownProtected = this.balance > 0 && -this.getRolling4hPnL() >= this.balance * DRAWDOWN_PROTECT_THRESHOLD;
     this.savePaperRuntimeSnapshot();
 
     logger.info(`Hedge15m started (${this.tradingMode}), balance=$${this.balance.toFixed(2)}`);
@@ -1024,11 +1062,14 @@ export class Hedge15mEngine {
 
     while (this.isActiveRun(runId)) {
       try {
-        // Stop loss: 本次会话亏损超 10% 初始余额
-        if (this.initialBankroll > 0 && -this.sessionProfit >= this.initialBankroll * 0.10) {
-          this.status = `止损: 本次会话亏损超10%`;
-          this.running = false;
-          break;
+        // ── 滚动4h亏损保护: 不停止bot, 只收紧入场条件 ──
+        const rolling4hLoss = this.getRolling4hPnL();
+        if (!this.drawdownProtected && this.balance > 0 && -rolling4hLoss >= this.balance * DRAWDOWN_PROTECT_THRESHOLD) {
+          this.drawdownProtected = true;
+          logger.warn(`DRAWDOWN PROTECT ON: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} >= ${(DRAWDOWN_PROTECT_THRESHOLD*100).toFixed(0)}% of balance $${this.balance.toFixed(2)}, tightening MAX_ASK to $${DUAL_SIDE_MAX_ASK_PROTECTED}`);
+        } else if (this.drawdownProtected && this.balance > 0 && -rolling4hLoss < this.balance * DRAWDOWN_RECOVER_THRESHOLD) {
+          this.drawdownProtected = false;
+          logger.info(`DRAWDOWN PROTECT OFF: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} < ${(DRAWDOWN_RECOVER_THRESHOLD*100).toFixed(0)}% of balance, restoring MAX_ASK to $${DUAL_SIDE_MAX_ASK}`);
         }
 
         const rnd = await getCurrentRound15m();
@@ -1312,6 +1353,7 @@ export class Hedge15mEngine {
               const partialProfit = recovered - soldCostBasis;
               this.totalProfit += partialProfit;
               this.sessionProfit += partialProfit;
+              this.recordRollingPnL(partialProfit);
               this.leg1Shares -= gtcDetails.filled;
               this.totalCost = this.leg1Shares > 0 ? this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee) : 0;
               this.balance += recovered;
@@ -1373,7 +1415,7 @@ export class Hedge15mEngine {
       await this.cancelDualSideOrders(trader);
     }
 
-    // ── Leg1价格上限: 过高入场对冲空间不足 ──
+    // ── Leg1价格上限: 方向性策略只接受足够低价的EV+入场 ──
     const maxEntryAsk = this.getMaxEntryAsk();
     const oppCurrentAsk = dir === "up" ? this.downAsk : this.upAsk;
     const maxSumTarget = this.getMaxSumTarget();
@@ -1661,7 +1703,8 @@ export class Hedge15mEngine {
     const needRefresh = now - this.preOrderLastRefresh >= DUAL_SIDE_REFRESH_MS;
 
     // ── UP 侧挂单管理 (趋势down时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= DUAL_SIDE_MAX_ASK) {
+    const effectiveMaxAsk = this.getEffectiveMaxAsk();
+    if (!lowLiquidity && trend !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= effectiveMaxAsk) {
       const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1707,7 +1750,7 @@ export class Hedge15mEngine {
     }
 
     // ── DOWN 侧挂单管理 (趋势up时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= DUAL_SIDE_MAX_ASK) {
+    if (!lowLiquidity && trend !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= effectiveMaxAsk) {
       const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
@@ -2243,6 +2286,7 @@ export class Hedge15mEngine {
         const excessPnl = sellRecovered - soldCostBasis;
         this.totalProfit += excessPnl;
         this.sessionProfit += excessPnl;
+        this.recordRollingPnL(excessPnl);
         this.balance += sellRecovered;
         this.totalCost = Math.max(0, this.totalCost - soldCostBasis);
         this.leg1Shares = this.leg1Shares - actualSold;
@@ -2382,6 +2426,7 @@ export class Hedge15mEngine {
         const excessPnl = sellRecovered - soldCostBasis;
         this.totalProfit += excessPnl;
         this.sessionProfit += excessPnl;
+        this.recordRollingPnL(excessPnl);
         this.balance += sellRecovered;
         this.totalCost = Math.max(0, this.totalCost - soldCostBasis);
         this.leg1Shares -= actualSold;
@@ -2506,6 +2551,7 @@ export class Hedge15mEngine {
       else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
       this.totalProfit += profit;
       this.sessionProfit += profit;
+      this.recordRollingPnL(profit);
       this.balance += recovered;
       this.history.push({
         time: timeStr(), result, leg1Dir: this.leg1Dir.toUpperCase(),
@@ -2574,6 +2620,7 @@ export class Hedge15mEngine {
               else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
               this.totalProfit += profit;
               this.sessionProfit += profit;
+              this.recordRollingPnL(profit);
               this.balance += recovered;
               const isEstimated = det.avgPrice <= 0;
               this.history.push({
@@ -2746,6 +2793,7 @@ export class Hedge15mEngine {
       else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
       this.totalProfit += profit;
       this.sessionProfit += profit;
+      this.recordRollingPnL(profit);
       this.balance += recovered;
 
       const exitType = reason === "止盈" ? "take-profit" : reason === "超时割肉" || reason === "对冲超时" ? "force-exit" : "stop-loss";
@@ -2826,13 +2874,45 @@ export class Hedge15mEngine {
     // 结算方向判断: 优先 Chainlink (链上结算数据源), 回退到 BTC 价格对比
     const clFresh = isChainlinkFresh() && getChainlinkPrice() > 0;
     const btcNow = getBtcPrice();
-    const actualDir = clFresh
-      ? getChainlinkDirection()
-      : (this.roundStartBtcPrice > 0 && btcNow > 0
-          ? (btcNow >= this.roundStartBtcPrice ? "up" : "down")
-          : "up"); // 两个数据源都不可用, 保守猜 up
-    if (!clFresh) {
+    let actualDir: "up" | "down";
+    let dirSource = "CL";
+    if (clFresh) {
+      actualDir = getChainlinkDirection() === "down" ? "down" : "up";
+    } else if (this.roundStartBtcPrice > 0 && btcNow > 0) {
+      actualDir = btcNow >= this.roundStartBtcPrice ? "up" : "down";
+      dirSource = "BTC";
       logger.warn(`HEDGE15M SETTLE: Chainlink not fresh, using BTC price fallback (start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir})`);
+    } else {
+      dirSource = "BOOK";
+      let leg1Score = 0;
+      let leg2Score = 0;
+      if (this.trader && this.leg1Token) {
+        const [leg1Book, leg2Book] = await Promise.all([
+          getHotBestPrices(this.trader, this.leg1Token).catch(() => null),
+          this.leg2Token ? getHotBestPrices(this.trader, this.leg2Token).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (leg1Book) {
+          const leg1Bid = leg1Book.bid ?? 0;
+          const leg1Ask = leg1Book.ask ?? 0;
+          leg1Score = leg1Bid > 0 ? leg1Bid : leg1Ask;
+        }
+        if (leg2Book) {
+          const leg2Bid = leg2Book.bid ?? 0;
+          const leg2Ask = leg2Book.ask ?? 0;
+          leg2Score = leg2Bid > 0 ? leg2Bid : leg2Ask;
+        }
+      }
+
+      if (leg1Score > 0 || leg2Score > 0) {
+        const leg1Dir = this.leg1Dir === "down" ? "down" : "up";
+        const oppDir = leg1Dir === "up" ? "down" : "up";
+        actualDir = leg1Score >= leg2Score ? leg1Dir : oppDir;
+        logger.error(`HEDGE15M SETTLE: Chainlink/BTC unavailable, using orderbook fallback (L1=${leg1Score.toFixed(2)} L2=${leg2Score.toFixed(2)} → ${actualDir})`);
+      } else {
+        actualDir = this.leg1Dir === "down" ? "down" : "up";
+        dirSource = "LEG1_FALLBACK";
+        logger.error(`HEDGE15M SETTLE: unable to determine direction from Chainlink/BTC/orderbook, falling back to leg1Dir=${actualDir}`);
+      }
     }
 
     let returnVal = 0;
@@ -2853,10 +2933,10 @@ export class Hedge15mEngine {
     else { this.losses++; this.consecutiveLosses++; this.tightenAdaptivePaperAfterLoss(); }
     this.totalProfit += profit;
     this.sessionProfit += profit;
+    this.recordRollingPnL(profit);
     this.balance += returnVal;
     this.trader?.creditSettlement(returnVal);
 
-    const dirSource = isChainlinkFresh() ? "CL" : "BTC";
     const winLeg = this.leg1Dir === actualDir ? 'Leg1' : (this.leg2Shares > 0 ? 'Leg2' : '无');
     const settlementReason = this.leg2Shares > 0
       ? `双腱结算: BTC ${actualDir.toUpperCase()}(${dirSource}), ${winLeg}赢得$${returnVal.toFixed(2)}`

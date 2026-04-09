@@ -201,9 +201,9 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
       <div class="row"><span class="k">砸盘检测</span><span class="v" id="h-dump">--</span></div>
       <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
-      <div class="row"><span class="k">Leg2</span><span class="v" id="h-leg2">--</span></div>
+      <div class="row"><span class="k">回撤保护</span><span class="v" id="h-leg2">--</span></div>
       <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
-      <div class="row"><span class="k">预期利润</span><span class="v" id="h-expected">--</span></div>
+      <div class="row"><span class="k">有效入场上限</span><span class="v" id="h-expected">--</span></div>
       <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
       <div class="row"><span class="k">Maker成交</span><span class="v" id="h-maker">--</span></div>
       </div>
@@ -227,7 +227,7 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">发单→回报</span><span class="v" id="h-exec-s2a">--</span></div>
       <div class="row"><span class="k">回报→成交</span><span class="v" id="h-exec-a2f">--</span></div>
       <div class="row"><span class="k">信号→成交</span><span class="v" id="h-exec-s2f">--</span></div>
-      <div class="row"><span class="k">Leg2→成交</span><span class="v" id="h-exec-leg2">--</span></div>
+      <div class="row"><span class="k">方向入场→成交</span><span class="v" id="h-exec-leg2">--</span></div>
       <div class="row"><span class="k">卖出→成交</span><span class="v" id="h-exec-exit">--</span></div>
       <div class="row"><span class="k">GTC等待成交</span><span class="v" id="h-exec-gtc">--</span></div>
       <div class="row"><span class="k">Market断流/重连</span><span class="v" id="h-market-ws-stats">--</span></div>
@@ -248,7 +248,7 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">流动性过滤</span><span class="v">UP+DOWN ask之和 ≥ 1.10 时不挂单</span></div>
       <div class="row"><span class="k">中途退出</span><span class="v">无 — 纯持有等结算, 卖出付2% fee是EV-</span></div>
       <div class="row"><span class="k">结算结果</span><span class="v">方向对=$1/share, 方向错=$0</span></div>
-      <div class="row"><span class="k">日亏损上限</span><span class="v">session亏损 ≥ 初始余额10% 自动停止</span></div>
+      <div class="row"><span class="k">日亏损保护</span><span class="v">4h滚动亏损≥10%余额→收紧MAX_ASK至$0.25; &lt;5%自动恢复</span></div>
       <div class="row"><span class="k">砸盘阈值</span><span class="v">10% (触发入场检测)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
       <div class="row"><span class="k">手续费</span><span class="v">入场 maker 0% / 结算 0%</span></div>
@@ -492,10 +492,10 @@ function render(s) {
   entryEl.style.color = s.canOpenNewPosition ? '#3fb950' : '#f85149';
   const decisionEl = document.getElementById('round-decision');
   decisionEl.textContent = s.roundDecision || '--';
-  decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') || (s.roundDecision || '').startsWith('冷却中') ? '#f85149' : '#e6edf3';
+  decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') ? '#f85149' : '#e6edf3';
 
   // Hedge status
-  const stateMap = {off:'待命',watching:'监控中',leg1_filled:'Leg1已成交',leg2_filled:'双腿锁定',done:'完成'};
+  const stateMap = {off:'待命',watching:'监控中',leg1_filled:'已持仓待结算',leg2_filled:'历史兼容状态',done:'完成'};
   const stateEl = document.getElementById('h-state');
   const renderedStatus = fmtSkipStatus(s.status || stateMap[s.hedgeState] || s.hedgeState);
   stateEl.textContent = renderedStatus;
@@ -549,20 +549,16 @@ function render(s) {
   } else {
     document.getElementById('h-leg1').textContent = '--';
   }
-  if (s.hedgeLeg2Price > 0) {
-    const l2dir = s.hedgeLeg1Dir === 'UP' ? 'DOWN' : 'UP';
-    document.getElementById('h-leg2').innerHTML = '<span class="tag tag-p">'+l2dir+' @$'+s.hedgeLeg2Price.toFixed(2)+'</span>';
+  const drawdownEl = document.getElementById('h-leg2');
+  if (s.drawdownProtected) {
+    drawdownEl.innerHTML = '<span class="tag tag-r">保护中 4h P/L $'+s.rolling4hPnL.toFixed(2)+'</span>';
   } else {
-    document.getElementById('h-leg2').textContent = '--';
+    drawdownEl.innerHTML = '<span class="tag tag-g">正常 4h P/L $'+s.rolling4hPnL.toFixed(2)+'</span>';
   }
   document.getElementById('h-cost').textContent = s.hedgeTotalCost > 0 ? '$'+s.hedgeTotalCost.toFixed(2) : '--';
   const expEl = document.getElementById('h-expected');
-  if (s.expectedProfit !== 0) {
-    expEl.textContent = (s.expectedProfit>=0?'+':'')+('$'+s.expectedProfit.toFixed(2));
-    expEl.style.color = s.expectedProfit>=0?'#3fb950':'#f85149';
-  } else {
-    expEl.textContent = '--'; expEl.style.color = '';
-  }
+  expEl.textContent = '$'+s.effectiveMaxAsk.toFixed(2);
+  expEl.style.color = s.drawdownProtected ? '#f0883e' : '#3fb950';
 
   // Dual-side pre-order status
   const preEl = document.getElementById('h-preorder');
@@ -649,8 +645,8 @@ function render(s) {
   execS2FEl.textContent = diagnostics.execSignalToFillP50 > 0 ? diagnostics.execSignalToFillP50 + 'ms / P90 ' + (diagnostics.execSignalToFillP90 || 0) + 'ms' : '--';
   execS2FEl.style.color = latColor(diagnostics.execSignalToFillP50 || 0);
   const execLeg2El = document.getElementById('h-exec-leg2');
-  execLeg2El.textContent = diagnostics.execLeg2SignalToFillP50 > 0 ? diagnostics.execLeg2SignalToFillP50 + 'ms / P90 ' + (diagnostics.execLeg2SignalToFillP90 || 0) + 'ms' : '--';
-  execLeg2El.style.color = latColor(diagnostics.execLeg2SignalToFillP50 || 0);
+  execLeg2El.textContent = diagnostics.execSignalToFillP50 > 0 ? diagnostics.execSignalToFillP50 + 'ms / P90 ' + (diagnostics.execSignalToFillP90 || 0) + 'ms' : '--';
+  execLeg2El.style.color = latColor(diagnostics.execSignalToFillP50 || 0);
   const execExitEl = document.getElementById('h-exec-exit');
   execExitEl.textContent = diagnostics.execExitSignalToFillP50 > 0 ? diagnostics.execExitSignalToFillP50 + 'ms / P90 ' + (diagnostics.execExitSignalToFillP90 || 0) + 'ms' : '--';
   execExitEl.style.color = latColor(diagnostics.execExitSignalToFillP50 || 0);

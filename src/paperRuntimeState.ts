@@ -6,6 +6,7 @@ export interface PaperRuntimeState {
   balance: number;
   initialBankroll: number;
   sessionProfit: number;
+  rollingPnL: Array<{ ts: number; profit: number }>;
   updatedAt: string;
 }
 
@@ -20,6 +21,14 @@ export function loadPaperRuntimeState(): PaperRuntimeState | null {
       balance: Number(raw.balance) || 0,
       initialBankroll: Number(raw.initialBankroll) || 0,
       sessionProfit: Number(raw.sessionProfit) || 0,
+      rollingPnL: Array.isArray(raw.rollingPnL)
+        ? raw.rollingPnL
+            .map((item: any) => ({
+              ts: Number(item?.ts) || 0,
+              profit: Number(item?.profit) || 0,
+            }))
+            .filter((item: { ts: number; profit: number }) => item.ts > 0)
+        : [],
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
     };
   } catch {
