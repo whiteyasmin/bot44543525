@@ -82,7 +82,9 @@ const THIN_EDGE_HEDGE_SUM_BUFFER = 0.01;
 const THIN_EDGE_STOP_LOSS = 0.88;            // 边缘入场更紧止损 (正常0.82)
 const THIN_EDGE_MIN_PROFIT_PER_SHARE = 0.008; // 边缘入场每股至少0.8分利润, 否则拒绝
 const EARLY_EXIT_AFTER_MS = 60_000;
-const EARLY_EXIT_SUM_BUFFER = 0.06;
+const EARLY_EXIT_SUM_BUFFER_BASE = 0.06;    // 低价入场(≤0.35)最宽松
+const EARLY_EXIT_SUM_BUFFER_HIGH = 0.02;    // 高价入场(≥0.45)最严格
+const NAKED_HARD_TIMEOUT_MS = 120_000;      // 裸仓硬性时限: 120s无条件平仓
 const LIMIT_RACE_ENABLED = true;           // 启用 Limit+FAK 赛跑
 const LIMIT_RACE_OFFSET = 0.01;            // limit 挂单价 = ask - offset
 const LIMIT_RACE_FAST_OFFSET = 0.02;       // dump 快速时更激进
@@ -102,7 +104,7 @@ const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
 const DUAL_SIDE_BUDGET_PCT = 0.15;         // 预挂单仓位 (单侧)
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
-const DUAL_SIDE_MAX_ASK = 0.50;            // 挂单价上限
+const DUAL_SIDE_MAX_ASK = 0.43;            // 挂单价上限 (≤0.43避免50/50逆向选择)
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
@@ -1332,10 +1334,26 @@ export class Hedge15mEngine {
               ) {
                 const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
                 const adaptiveSum = fillPrice + oppAsk;
-                if (adaptiveSum > this.getMaxSumTarget() + EARLY_EXIT_SUM_BUFFER) {
-                  logger.info(`HEDGE15M EARLY EXIT: held naked ${(Date.now() - this.leg1FilledAt) / 1000}s, sum=${adaptiveSum.toFixed(2)} still too high`);
+                // 入场价越高 buffer 越小: 0.35→0.06, 0.45→0.02, 线性插值
+                const earlyBuf = Math.max(EARLY_EXIT_SUM_BUFFER_HIGH,
+                  Math.min(EARLY_EXIT_SUM_BUFFER_BASE,
+                    EARLY_EXIT_SUM_BUFFER_BASE - (fillPrice - 0.35) * ((EARLY_EXIT_SUM_BUFFER_BASE - EARLY_EXIT_SUM_BUFFER_HIGH) / 0.10)));
+                if (adaptiveSum > this.getMaxSumTarget() + earlyBuf) {
+                  logger.info(`HEDGE15M EARLY EXIT: held naked ${(Date.now() - this.leg1FilledAt) / 1000}s, sum=${adaptiveSum.toFixed(2)} > maxSum+${earlyBuf.toFixed(3)}, exit`);
                   await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
                 }
+              }
+
+              // ── 硬性裸仓时限: 120s无条件平仓 ──
+              if (
+                !this.pendingSellOrderId &&
+                this.hedgeState === "leg1_filled" &&
+                this.leg1FilledAt > 0 &&
+                Date.now() - this.leg1FilledAt >= NAKED_HARD_TIMEOUT_MS
+              ) {
+                const heldSecs = (Date.now() - this.leg1FilledAt) / 1000;
+                logger.info(`HEDGE15M NAKED HARD TIMEOUT: held ${heldSecs.toFixed(0)}s >= ${NAKED_HARD_TIMEOUT_MS/1000}s, forced exit`);
+                await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
               }
               }
             }
