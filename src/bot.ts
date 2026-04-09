@@ -251,6 +251,8 @@ export interface HedgeHistoryEntry {
   estimated?: boolean;      // 是否含估算数据 (无orderId时通过余额推断)
   profitBreakdown?: string; // 盈亏计算明细: "回收$X - 成本$Y = 盈亏$Z"
   strategyMode?: string;    // "mispricing" | "trend"
+  entrySource?: string;     // dual-side-preorder | reactive-mispricing | reactive-trend
+  entryTrendBias?: string;  // up | down | flat
 }
 
 function sleep(ms: number): Promise<void> {
@@ -398,6 +400,8 @@ export class Hedge15mEngine {
   private leg2GtcToken = "";                 // Leg2 GTC token
   private leg2GtcPlacedAt = 0;               // Leg2 GTC 挂单时间
   private leg2GtcLastReprice = 0;            // Leg2 GTC 上次重新定价时间
+  private leg1EntrySource = "";
+  private leg1EntryTrendBias: "up" | "down" | "flat" = "flat";
   private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
   private rollingPnL: Array<{ ts: number; profit: number }> = []; // 滚动P/L记录
@@ -1033,6 +1037,8 @@ export class Hedge15mEngine {
     this.currentDumpDrop = 0;
     this.leg1MakerFill = false;
     this.leg2MakerFill = false;
+    this.leg1EntrySource = "";
+    this.leg1EntryTrendBias = "flat";
     this.preOrderUpId = "";
     this.preOrderDownId = "";
     this.preOrderUpPrice = 0;
@@ -1820,6 +1826,8 @@ export class Hedge15mEngine {
     this.leg1Token = leg1Token;
     this.leg2Token = leg2Token;
     this.leg1MakerFill = true; // 预挂单永远是 maker
+    this.leg1EntrySource = "dual-side-preorder";
+    this.leg1EntryTrendBias = this.currentTrendBias;
     this.leg1AttemptedThisRound = true;
     this.totalCost = filledShares * fillPrice; // maker fee = 0
     // paper 模式下 placeGtcBuy 已预扣 paperBalance, 不要重复扣; 直接同步
@@ -2083,6 +2091,8 @@ export class Hedge15mEngine {
       this.leg1Token = buyToken;
       this.leg2Token = oppToken;
       this.leg1MakerFill = isMaker;
+      this.leg1EntrySource = strategyMode === "trend" ? "reactive-trend" : "reactive-mispricing";
+      this.leg1EntryTrendBias = this.currentTrendBias;
       this.totalCost = filledShares * realFillPrice * (1 + actualFee);
       this.balance -= this.totalCost;
       this.onLeg1Opened();
@@ -2567,6 +2577,8 @@ export class Hedge15mEngine {
         sellOrderId: this.pendingSellOrderId.slice(0, 12),
         estimated: gtcDetails.avgPrice <= 0,
         strategyMode: this.activeStrategyMode,
+        entrySource: this.leg1EntrySource,
+        entryTrendBias: this.leg1EntryTrendBias,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
@@ -2637,6 +2649,8 @@ export class Hedge15mEngine {
                 sellOrderId: sellId.slice(0, 12),
                 estimated: isEstimated,
                 strategyMode: this.activeStrategyMode,
+                entrySource: this.leg1EntrySource,
+                entryTrendBias: this.leg1EntryTrendBias,
               });
               if (this.history.length > 200) this.history.shift();
               this.saveHistory();
@@ -2826,6 +2840,8 @@ export class Hedge15mEngine {
         sellOrderId: orderId.slice(0, 12),
         estimated: isEstimated,
         strategyMode: this.activeStrategyMode,
+        entrySource: this.leg1EntrySource,
+        entryTrendBias: this.leg1EntryTrendBias,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
@@ -2961,6 +2977,8 @@ export class Hedge15mEngine {
       orderId: this.leg1OrderId,
       estimated: this.leg1Estimated || this.leg2Estimated,
       strategyMode: this.activeStrategyMode,
+      entrySource: this.leg1EntrySource,
+      entryTrendBias: this.leg1EntryTrendBias,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();

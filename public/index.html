@@ -5,274 +5,432 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>15分钟方向性机器人</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,system-ui,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0a0e14;color:#e6edf3;min-height:100vh}
+:root{
+  --bg:#09111b;
+  --bg-2:#0f1a29;
+  --panel:#101a28cc;
+  --panel-strong:#152235;
+  --line:#25364d;
+  --text:#ecf3ff;
+  --muted:#8ea0b8;
+  --green:#42d392;
+  --yellow:#f4c96b;
+  --red:#ff6b6b;
+  --blue:#76b7ff;
+  --cyan:#71e5ff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--text);
+  min-height:100vh;
+  background:
+    radial-gradient(circle at top left, rgba(113,229,255,.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(118,183,255,.16), transparent 24%),
+    linear-gradient(180deg, #08101a 0%, #0b1320 45%, #0b1220 100%);
+}
+button,input,select{font:inherit}
+button{
+  border:none;
+  border-radius:10px;
+  padding:10px 16px;
+  cursor:pointer;
+  transition:transform .18s ease, opacity .18s ease, box-shadow .18s ease;
+}
+button:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(0,0,0,.25)}
+input,select{
+  width:100%;
+  padding:10px 12px;
+  color:var(--text);
+  background:#0a111b;
+  border:1px solid var(--line);
+  border-radius:10px;
+}
+input:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(118,183,255,.12)}
 
-#login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(8px)}
-.login-box{background:linear-gradient(145deg,#141a24,#0f1319);border:1px solid #1e2733;border-radius:16px;padding:36px 32px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
-.login-box h2{text-align:center;margin-bottom:6px;font-size:22px;font-weight:700;background:linear-gradient(135deg,#58a6ff,#3fb950);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.login-box .login-sub{text-align:center;font-size:13px;color:#6e7681;margin-bottom:24px}
+#login-overlay{
+  position:fixed;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(4,10,18,.86);
+  backdrop-filter:blur(10px);
+  z-index:100;
+}
+.login-box{
+  width:min(420px, calc(100vw - 32px));
+  padding:34px;
+  border:1px solid rgba(118,183,255,.18);
+  border-radius:24px;
+  background:linear-gradient(180deg, rgba(16,26,40,.96), rgba(10,18,29,.96));
+  box-shadow:0 28px 80px rgba(0,0,0,.45);
+}
+.login-box h2{margin:0 0 8px;font-size:28px;letter-spacing:.02em}
+.login-sub{margin:0 0 20px;color:var(--muted);font-size:14px}
+label{display:block;margin-top:14px;font-size:13px;color:var(--muted)}
 
-input{width:100%;padding:10px 14px;background:#0a0e14;border:1px solid #1e2733;border-radius:8px;color:#e6edf3;font-size:14px;margin-top:6px;transition:border-color .2s}
-input:focus{outline:none;border-color:#58a6ff;box-shadow:0 0 0 3px rgba(88,166,255,.15)}
-label{font-size:13px;color:#8b949e;display:block;margin-top:14px}
-button{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s}
-button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
-.btn-g{background:linear-gradient(135deg,#238636,#2ea043);color:#fff}
-.btn-r{background:linear-gradient(135deg,#da3633,#f85149);color:#fff}
+header{
+  position:sticky;
+  top:0;
+  z-index:50;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:20px;
+  padding:18px 24px;
+  border-bottom:1px solid rgba(118,183,255,.12);
+  background:linear-gradient(180deg, rgba(8,14,24,.96), rgba(8,14,24,.86));
+  backdrop-filter:blur(12px);
+}
+.title-wrap{display:flex;flex-direction:column;gap:6px}
+header h1{margin:0;font-size:22px;letter-spacing:.04em}
+.header-sub{font-size:13px;color:var(--muted)}
+.hdr-right{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;align-items:center}
+.btn-g{background:linear-gradient(135deg,#1d8f5a,#34c781);color:#fff}
+.btn-r{background:linear-gradient(135deg,#c44747,#f06767);color:#fff}
+.btn-b{background:linear-gradient(135deg,#2e66c8,#65a8ff);color:#fff}
+.btn-y{background:linear-gradient(135deg,#ad7d1a,#efbf54);color:#fff}
 
-header{background:linear-gradient(180deg,#111820,#0d1218);border-bottom:1px solid #1e2733;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
-header h1{font-size:17px;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:8px}
-header h1::before{content:'₿';font-size:20px;color:#f7931a}
-.hdr-right{display:flex;gap:10px;align-items:center}
-.badge{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:.5px;display:flex;align-items:center;gap:4px}
-.badge::before{content:'';width:6px;height:6px;border-radius:50%;display:inline-block}
-.badge-run{background:rgba(35,134,54,.2);color:#3fb950;border:1px solid rgba(35,134,54,.4)}.badge-run::before{background:#3fb950;box-shadow:0 0 6px #3fb950}
-.badge-stop{background:rgba(110,118,129,.15);color:#8b949e;border:1px solid rgba(110,118,129,.3)}.badge-stop::before{background:#6e7681}
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  border:1px solid transparent;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.badge::before{content:"";width:8px;height:8px;border-radius:999px;background:currentColor}
+.badge-run{color:var(--green);background:rgba(66,211,146,.1);border-color:rgba(66,211,146,.22)}
+.badge-stop{color:var(--muted);background:rgba(142,160,184,.1);border-color:rgba(142,160,184,.18)}
 
-.wrap{padding:20px 24px;max-width:1200px;margin:auto}
-.grid{display:grid;gap:16px;grid-template-columns:repeat(12,minmax(0,1fr))}
-.card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px 18px}
-.card h3{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
-.full{grid-column:1/-1}
+.wrap{max-width:1440px;margin:0 auto;padding:24px}
+.summary-bar{
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0,1fr));
+  gap:14px;
+  margin-bottom:18px;
+}
+.stat-card{
+  position:relative;
+  overflow:hidden;
+  padding:18px 18px 16px;
+  border:1px solid rgba(118,183,255,.12);
+  border-radius:20px;
+  background:linear-gradient(180deg, rgba(18,28,44,.9), rgba(10,17,27,.92));
+}
+.stat-card::after{
+  content:"";
+  position:absolute;
+  left:16px;
+  right:16px;
+  top:0;
+  height:3px;
+  border-radius:99px;
+  background:linear-gradient(90deg, var(--cyan), var(--blue));
+}
+.stat-val{font-size:28px;font-weight:700;letter-spacing:.02em}
+.stat-lbl{margin-top:6px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+.card{
+  padding:20px;
+  border:1px solid rgba(118,183,255,.12);
+  border-radius:24px;
+  background:linear-gradient(180deg, rgba(16,26,40,.92), rgba(10,17,27,.94));
+  box-shadow:0 20px 50px rgba(0,0,0,.16);
+}
 .span-4{grid-column:span 4}
+.span-5{grid-column:span 5}
 .span-6{grid-column:span 6}
-.span-8{grid-column:span 8}
-.horizontal-card .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 18px}
+.span-7{grid-column:span 7}
+.full{grid-column:1/-1}
+.card h3{margin:0 0 16px;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:#d8e5f7}
 
-.summary-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
-.stat-card{background:linear-gradient(145deg,#111820,#0d1218);border:1px solid #1e2733;border-radius:12px;padding:16px;position:relative;overflow:hidden}
-.stat-card::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:2px 2px 0 0}
-.stat-card:nth-child(1)::after{background:linear-gradient(90deg,#3fb950,#238636)}
-.stat-card:nth-child(2)::after{background:linear-gradient(90deg,#58a6ff,#1f6feb)}
-.stat-card:nth-child(3)::after{background:linear-gradient(90deg,#d29922,#e3b341)}
-.stat-card:nth-child(4)::after{background:linear-gradient(90deg,#8b949e,#6e7681)}
-.stat-val{font-size:24px;font-weight:700;font-family:'SF Mono',Consolas,monospace;letter-spacing:-.5px}
-.stat-lbl{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+.timer-big{font-size:56px;font-weight:700;line-height:1;letter-spacing:.04em}
+.timer-wrap{display:flex;flex-direction:column;gap:8px}
+.timer-label{font-size:13px;color:var(--muted)}
+.timer-bar{height:8px;border-radius:999px;background:#0a111b;overflow:hidden;margin-top:14px}
+.timer-fill{height:100%;border-radius:999px;transition:width .8s linear}
+.subgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}
+.mini-stat{padding:12px;border-radius:16px;background:rgba(7,14,23,.78);border:1px solid rgba(118,183,255,.08)}
+.mini-stat .lbl{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.mini-stat .val{margin-top:8px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:13px;line-height:1.4}
 
-.timer-wrap{text-align:center;margin:8px 0 4px}
-.timer-big{font-size:36px;font-weight:700;font-family:'SF Mono',Consolas,monospace;letter-spacing:-1px}
-.timer-label{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:1px}
-.timer-bar{height:4px;background:#1e2733;border-radius:2px;overflow:hidden;margin-top:8px}
-.timer-fill{height:100%;border-radius:2px;transition:width .8s linear}
-.subgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
-.mini-stat{padding:10px 12px;background:#0a0e14;border:1px solid #1e2733;border-radius:10px}
-.mini-stat .lbl{font-size:11px;color:#6e7681;text-transform:uppercase;letter-spacing:.6px}
-.mini-stat .val{margin-top:5px;font-size:13px;font-family:'SF Mono',Consolas,monospace;font-weight:600;line-height:1.35}
+.hero-metrics{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0,1fr));
+  gap:12px;
+  margin-bottom:16px;
+}
+.hero-box{
+  padding:14px;
+  border-radius:18px;
+  background:rgba(8,15,24,.76);
+  border:1px solid rgba(118,183,255,.1);
+}
+.hero-box .eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.hero-box .big{margin-top:8px;font-size:22px;font-weight:700;line-height:1.2}
 
-.row{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:5px 0;font-size:13px;border-bottom:1px solid #1e273320}
-.row .k{color:#8b949e;flex:0 0 112px}
-.row .v{font-family:'SF Mono',Consolas,monospace;font-weight:500;flex:1 1 auto;text-align:right;word-break:break-word;line-height:1.35}
-.muted{color:#6e7681}
-.tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
-.tag-g{background:rgba(35,134,54,.15);color:#3fb950;border:1px solid rgba(35,134,54,.3)}
-.tag-r{background:rgba(218,54,51,.1);color:#f85149;border:1px solid rgba(218,54,51,.2)}
-.tag-b{background:rgba(31,111,235,.15);color:#58a6ff;border:1px solid rgba(31,111,235,.3)}
-.tag-y{background:rgba(210,153,34,.15);color:#e3b341;border:1px solid rgba(210,153,34,.3)}
-.tag-p{background:rgba(137,87,229,.15);color:#bc8cff;border:1px solid rgba(137,87,229,.3)}
+.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
+.row{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  padding:10px 0;
+  border-bottom:1px solid rgba(118,183,255,.08);
+  font-size:13px;
+}
+.row .k{color:var(--muted);flex:0 0 108px}
+.row .v{flex:1 1 auto;text-align:right;font-family:"IBM Plex Mono","Consolas",monospace;word-break:break-word;line-height:1.35}
 
-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'SF Mono',Consolas,monospace}
-th{text-align:left;color:#6e7681;font-size:11px;padding:6px 8px;border-bottom:1px solid #1e2733}
-td{padding:6px 8px;border-bottom:1px solid #1e273330}
-tr:hover{background:rgba(88,166,255,.04)}
+.config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.config-grid .full-input{grid-column:1/-1}
+.config-note{margin:10px 0 0;font-size:12px;line-height:1.5;color:var(--muted)}
 
-@media (max-width: 900px){
-  .grid{grid-template-columns:1fr}
-  .span-4,.span-6,.span-8,.full{grid-column:1/-1}
-  .horizontal-card .detail-grid{grid-template-columns:1fr}
+.tag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 8px;
+  border-radius:999px;
+  border:1px solid transparent;
+  font-size:12px;
+  line-height:1;
+}
+.tag-g{background:rgba(66,211,146,.1);color:var(--green);border-color:rgba(66,211,146,.2)}
+.tag-r{background:rgba(255,107,107,.1);color:var(--red);border-color:rgba(255,107,107,.2)}
+.tag-b{background:rgba(118,183,255,.1);color:var(--blue);border-color:rgba(118,183,255,.2)}
+
+.table-wrap{max-height:520px;overflow:auto;border-radius:18px;border:1px solid rgba(118,183,255,.08)}
+table{width:100%;border-collapse:collapse;font-size:12px;font-family:"IBM Plex Mono","Consolas",monospace;background:rgba(7,14,23,.7)}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid rgba(118,183,255,.08);vertical-align:top}
+th{position:sticky;top:0;background:#0f1825;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+tr:hover{background:rgba(118,183,255,.04)}
+
+.compat-hidden{display:none}
+
+@media (max-width: 1180px){
+  .summary-bar{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .span-4,.span-5,.span-6,.span-7{grid-column:1/-1}
+}
+@media (max-width: 760px){
+  header{padding:16px;flex-direction:column}
+  .wrap{padding:16px}
+  .summary-bar{grid-template-columns:1fr}
+  .detail-grid,.config-grid,.hero-metrics,.subgrid{grid-template-columns:1fr}
+  .row{flex-direction:column;gap:6px}
+  .row .k,.row .v{text-align:left;flex:auto}
+  .timer-big{font-size:44px}
 }
 </style>
 </head>
 <body>
 
-<!-- Login -->
 <div id="login-overlay">
   <div class="login-box">
     <h2>15分钟方向性机器人</h2>
-    <p class="login-sub">BTC 15min 方向性持有策略</p>
-    <label>密码<input type="password" id="pwd" autocomplete="current-password"></label>
+    <p class="login-sub">BTC 15min 方向性持有策略，面板只保留盈利质量、持仓状态和运行质量。</p>
+    <label>密码</label>
+    <input type="password" id="pwd" autocomplete="current-password">
     <div style="margin-top:20px;text-align:center">
       <button class="btn-g" onclick="doLogin()" style="width:100%">登录</button>
     </div>
-    <p id="login-err" style="color:#f85149;text-align:center;font-size:13px;margin-top:10px;display:none"></p>
+    <p id="login-err" style="color:var(--red);text-align:center;font-size:13px;margin-top:10px;display:none"></p>
   </div>
 </div>
 
-<!-- Dashboard -->
 <div id="app" style="display:none">
-<header>
-  <h1>15分钟方向性机器人</h1>
-  <div class="hdr-right">
-    <span id="badge" class="badge badge-stop">已停止</span>
-    <button class="btn-g" onclick="downloadLogs()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#1f6feb,#58a6ff)">下载日志</button>
-    <button class="btn-g" onclick="downloadHistory()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#8957e5,#bc8cff)">下载历史</button>
-    <button class="btn-g" onclick="downloadDecisionAudit()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#d29922,#e3b341)">下载决策审计</button>
-    <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
-    <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
-    <button class="btn-r" onclick="doLogout()" style="font-size:12px;padding:6px 12px">退出</button>
+  <header>
+    <div class="title-wrap">
+      <h1>15分钟方向性机器人</h1>
+      <div class="header-sub">方向性入场，持有到结算，重点观察 fill quality 与回撤保护是否生效。</div>
+    </div>
+    <div class="hdr-right">
+      <span id="badge" class="badge badge-stop">已停止</span>
+      <button class="btn-b" onclick="downloadLogs()">下载日志</button>
+      <button class="btn-b" onclick="downloadHistory()">下载历史</button>
+      <button class="btn-y" onclick="downloadDecisionAudit()">下载决策审计</button>
+      <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
+      <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
+      <button class="btn-r" onclick="doLogout()">退出</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="summary-bar">
+      <div class="stat-card"><div class="stat-val" id="s-profit">$0.00</div><div class="stat-lbl">总盈亏</div></div>
+      <div class="stat-card"><div class="stat-val" id="s-balance">$0.00</div><div class="stat-lbl">余额</div></div>
+      <div class="stat-card"><div class="stat-val" id="s-sum">--</div><div class="stat-lbl">实时 SUM</div></div>
+      <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩 / ROI</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card span-4">
+        <h3>回合节奏</h3>
+        <div class="timer-wrap">
+          <div class="timer-big" id="timer">--:--</div>
+          <div class="timer-label" id="market-q">等待市场...</div>
+        </div>
+        <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:var(--blue)"></div></div>
+        <div class="subgrid">
+          <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
+          <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
+          <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
+          <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <h3>盈利质量</h3>
+        <div class="hero-metrics">
+          <div class="hero-box"><div class="eyebrow">结算样本</div><div class="big" id="a-trades">--</div></div>
+          <div class="hero-box"><div class="eyebrow">实现边际</div><div class="big" id="a-est">--</div></div>
+          <div class="hero-box"><div class="eyebrow">盈利判断</div><div class="big" id="a-warning">--</div></div>
+        </div>
+        <div class="detail-grid">
+          <div class="row"><span class="k">价格分桶</span><span class="v" id="a-winrate">--</span></div>
+          <div class="row"><span class="k">趋势分桶</span><span class="v" id="a-pf">--</span></div>
+          <div class="row"><span class="k">入场来源</span><span class="v" id="a-dd">--</span></div>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <h3>启动配置</h3>
+        <div class="config-grid">
+          <div>
+            <label>运行模式</label>
+            <select id="cfg-mode">
+              <option value="paper">仿真盘</option>
+              <option value="live">实盘</option>
+            </select>
+          </div>
+          <div>
+            <label>仿真会话</label>
+            <select id="cfg-paper-session-mode">
+              <option value="persistent" selected>线上累计</option>
+              <option value="session">单次测试</option>
+            </select>
+          </div>
+          <div>
+            <label>仿真初始余额</label>
+            <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
+          </div>
+          <div>
+            <label>资金地址</label>
+            <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
+          </div>
+          <div class="full-input">
+            <label>私钥</label>
+            <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off">
+          </div>
+        </div>
+        <p class="config-note">仿真盘不发真实订单。线上累计模式会保留余额、累计盈亏和滚动样本，适合持续观察真实盈利质量。</p>
+      </div>
+
+      <div class="card span-7">
+        <h3>持仓与盘口</h3>
+        <div class="detail-grid">
+          <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
+          <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+          <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
+          <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
+          <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
+          <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
+          <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
+          <div class="row"><span class="k">当前持仓</span><span class="v" id="h-leg1">--</span></div>
+          <div class="row"><span class="k">回撤保护</span><span class="v" id="h-leg2">--</span></div>
+          <div class="row"><span class="k">有效入场上限</span><span class="v" id="h-expected">--</span></div>
+          <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
+          <div class="row"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
+        </div>
+      </div>
+
+      <div class="card span-5">
+        <h3>运行质量</h3>
+        <div class="detail-grid">
+          <div class="row"><span class="k">网络延迟</span><span class="v" id="h-lat-p50">--</span></div>
+          <div class="row"><span class="k">WS 状态</span><span class="v" id="h-market-ws">--</span></div>
+          <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
+          <div class="row"><span class="k">本地 Book</span><span class="v" id="h-local-book">--</span></div>
+          <div class="row"><span class="k">Book 风险</span><span class="v" id="h-local-book-issues">--</span></div>
+          <div class="row"><span class="k">信号到成交</span><span class="v" id="h-exec-s2f">--</span></div>
+          <div class="row"><span class="k">回退统计</span><span class="v" id="h-fallback-stats">--</span></div>
+        </div>
+      </div>
+
+      <div class="card full">
+        <h3>策略护栏</h3>
+        <div class="detail-grid">
+          <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算，入场后不做中途卖出</span></div>
+          <div class="row"><span class="k">主要入场</span><span class="v">双侧 GTC 预挂单，maker 0% 手续费</span></div>
+          <div class="row"><span class="k">预算规则</span><span class="v" id="p-budget">余额 × 25%</span></div>
+          <div class="row"><span class="k">SUM 目标</span><span class="v" id="p-sum">--</span></div>
+          <div class="row"><span class="k">高风险恢复</span><span class="v">4h 滚动亏损 ≥ 10% 时收紧入场价，上穿 5% 自动恢复</span></div>
+          <div class="row"><span class="k">费用结构</span><span class="v">入场 maker 0% / 结算 0%</span></div>
+        </div>
+      </div>
+
+      <div class="card full">
+        <h3>交易历史</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>结果</th>
+                <th>退出</th>
+                <th>方向</th>
+                <th>L1买入</th>
+                <th>L2买入</th>
+                <th>卖出价</th>
+                <th>份数</th>
+                <th>成本</th>
+                <th>盈亏</th>
+                <th>累计</th>
+                <th style="min-width:180px">理由</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="compat-hidden" aria-hidden="true">
+      <span id="h-strategy-policy"></span>
+      <span id="h-paper-tuning"></span>
+      <span id="h-paper-adjust"></span>
+      <span id="h-cost"></span>
+      <span id="h-maker"></span>
+      <span id="h-lat-p90"></span>
+      <span id="h-lat-live"></span>
+      <span id="h-lat-ping"></span>
+      <span id="h-lat-http"></span>
+      <span id="h-lat-cache"></span>
+      <span id="h-user-ws"></span>
+      <span id="h-exec-s2s"></span>
+      <span id="h-exec-s2a"></span>
+      <span id="h-exec-a2f"></span>
+      <span id="h-exec-leg2"></span>
+      <span id="h-exec-exit"></span>
+      <span id="h-exec-gtc"></span>
+      <span id="h-market-ws-stats"></span>
+      <span id="h-user-ws-stats"></span>
+    </div>
   </div>
-</header>
-
-<div class="wrap">
-  <!-- Summary -->
-  <div class="summary-bar">
-    <div class="stat-card"><div class="stat-val" id="s-profit">$0.00</div><div class="stat-lbl">总盈亏</div></div>
-    <div class="stat-card"><div class="stat-val" id="s-balance">$0.00</div><div class="stat-lbl">余额</div></div>
-    <div class="stat-card"><div class="stat-val" id="s-sum">--</div><div class="stat-lbl">实时 SUM</div></div>
-    <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩 / ROI</div></div>
-  </div>
-
-  <div class="grid">
-    <!-- Timer -->
-    <div class="card span-4">
-      <h3>⏱ 回合计时器</h3>
-      <div class="timer-wrap">
-        <div class="timer-big" id="timer">--:--</div>
-        <div class="timer-label" id="market-q">等待市场...</div>
-      </div>
-      <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:#58a6ff"></div></div>
-      <div class="subgrid">
-        <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
-        <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
-        <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
-        <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
-      </div>
-    </div>
-
-    <!-- Wallet Config -->
-    <div class="card span-4">
-      <h3>🔑 账户配置</h3>
-      <div style="margin-bottom:8px">
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">运行模式</label>
-        <select id="cfg-mode" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
-          <option value="paper">仿真盘 (真实行情, 不发单)</option>
-          <option value="live">实盘</option>
-        </select>
-      </div>
-      <div style="margin-bottom:8px">
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真测试模式</label>
-        <select id="cfg-paper-session-mode" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px">
-          <option value="persistent" selected>线上累计测试: 重启后继续沿用余额和累计结果</option>
-          <option value="session">单次临时测试: 只按本次输入余额启动</option>
-        </select>
-      </div>
-      <div style="margin-bottom:8px">
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">仿真初始余额 (仅仿真盘)</label>
-        <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
-      </div>
-      <p style="font-size:11px;color:#6e7681;margin-top:6px">仿真盘不发真实订单也不需要私钥；线上累计测试会持续保存纸面余额、会话盈亏和累计历史，适合挂到线上慢慢跑。</p>
-      <div style="margin-bottom:8px">
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">私钥 (PRIVATE_KEY)</label>
-        <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
-      </div>
-      <div style="margin-bottom:8px">
-        <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">资金地址 (FUNDER_ADDRESS)</label>
-        <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off" style="width:100%;padding:8px 10px;background:#0a0e14;border:1px solid #1e2733;border-radius:6px;color:#e6edf3;font-size:13px;font-family:monospace">
-      </div>
-      <p style="font-size:11px;color:#6e7681;margin-top:6px">仿真盘不发真实订单也不需要私钥；实盘仍需填写私钥和资金地址。</p>
-    </div>
-
-    <!-- Parameters -->
-    <div class="card span-4 horizontal-card">
-      <h3>审计</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">历史笔数</span><span class="v" id="a-trades">--</span></div>
-      <div class="row"><span class="k">胜率</span><span class="v" id="a-winrate">--</span></div>
-      <div class="row"><span class="k">Profit Factor</span><span class="v" id="a-pf">--</span></div>
-      <div class="row"><span class="k">最大回撤</span><span class="v" id="a-dd">--</span></div>
-      <div class="row"><span class="k">估算成交占比</span><span class="v" id="a-est">--</span></div>
-      <div class="row"><span class="k">警告</span><span class="v" id="a-warning">--</span></div>
-      </div>
-    </div>
-
-    <!-- Hedge Status -->
-    <div class="card full horizontal-card">
-      <h3>� 持仓状态</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
-      <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
-      <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
-      <div class="row"><span class="k">策略优先级</span><span class="v" id="h-strategy-policy">--</span></div>
-      <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
-      <div class="row"><span class="k">纸面调参</span><span class="v" id="h-paper-tuning">--</span></div>
-      <div class="row"><span class="k">最近调参</span><span class="v" id="h-paper-adjust">--</span></div>
-      <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
-      <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
-      <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
-      <div class="row"><span class="k">砸盘检测</span><span class="v" id="h-dump">--</span></div>
-      <div class="row"><span class="k">Leg1</span><span class="v" id="h-leg1">--</span></div>
-      <div class="row"><span class="k">回撤保护</span><span class="v" id="h-leg2">--</span></div>
-      <div class="row"><span class="k">总成本</span><span class="v" id="h-cost">--</span></div>
-      <div class="row"><span class="k">有效入场上限</span><span class="v" id="h-expected">--</span></div>
-      <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
-      <div class="row"><span class="k">Maker成交</span><span class="v" id="h-maker">--</span></div>
-      </div>
-    </div>
-
-    <!-- Latency / Diagnostics -->
-    <div class="card full horizontal-card">
-      <h3>📡 延迟 / 执行诊断</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">有效网络延迟 P50</span><span class="v" id="h-lat-p50">--</span></div>
-      <div class="row"><span class="k">有效网络延迟 P90</span><span class="v" id="h-lat-p90">--</span></div>
-      <div class="row"><span class="k">最近网络样本</span><span class="v" id="h-lat-live">--</span></div>
-      <div class="row"><span class="k">CLOB Ping</span><span class="v" id="h-lat-ping">--</span></div>
-      <div class="row"><span class="k">HTTP订单簿</span><span class="v" id="h-lat-http">--</span></div>
-      <div class="row"><span class="k">本地缓存命中</span><span class="v" id="h-lat-cache">--</span></div>
-      <div class="row"><span class="k">Market WS</span><span class="v" id="h-market-ws">--</span></div>
-      <div class="row"><span class="k">User WS</span><span class="v" id="h-user-ws">--</span></div>
-      <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
-      <div class="row"><span class="k">本地Book</span><span class="v" id="h-local-book">--</span></div>
-      <div class="row"><span class="k">信号→发单</span><span class="v" id="h-exec-s2s">--</span></div>
-      <div class="row"><span class="k">发单→回报</span><span class="v" id="h-exec-s2a">--</span></div>
-      <div class="row"><span class="k">回报→成交</span><span class="v" id="h-exec-a2f">--</span></div>
-      <div class="row"><span class="k">信号→成交</span><span class="v" id="h-exec-s2f">--</span></div>
-      <div class="row"><span class="k">方向入场→成交</span><span class="v" id="h-exec-leg2">--</span></div>
-      <div class="row"><span class="k">卖出→成交</span><span class="v" id="h-exec-exit">--</span></div>
-      <div class="row"><span class="k">GTC等待成交</span><span class="v" id="h-exec-gtc">--</span></div>
-      <div class="row"><span class="k">Market断流/重连</span><span class="v" id="h-market-ws-stats">--</span></div>
-      <div class="row"><span class="k">User断流/重连</span><span class="v" id="h-user-ws-stats">--</span></div>
-      <div class="row"><span class="k">HTTP回退次数</span><span class="v" id="h-fallback-stats">--</span></div>
-      <div class="row"><span class="k">Book陈旧/交叉</span><span class="v" id="h-local-book-issues">--</span></div>
-      </div>
-    </div>
-
-    <div class="card full horizontal-card">
-      <h3>⚙ 参数</h3>
-      <div class="detail-grid">
-      <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算 — 入场后零操作, 赚$1结算差价</span></div>
-      <div class="row"><span class="k">入场方式</span><span class="v">双侧GTC预挂单 (maker 0%手续费)</span></div>
-      <div class="row"><span class="k">入场价上限</span><span class="v">ask ≤ $0.35 (50%胜率EV+$0.15/share)</span></div>
-      <div class="row"><span class="k">单侧仓位</span><span class="v">余额 × 25%</span></div>
-      <div class="row"><span class="k">趋势过滤</span><span class="v">有趋势时只挂顺势侧, 避免逆势入场</span></div>
-      <div class="row"><span class="k">流动性过滤</span><span class="v">UP+DOWN ask之和 ≥ 1.10 时不挂单</span></div>
-      <div class="row"><span class="k">中途退出</span><span class="v">无 — 纯持有等结算, 卖出付2% fee是EV-</span></div>
-      <div class="row"><span class="k">结算结果</span><span class="v">方向对=$1/share, 方向错=$0</span></div>
-      <div class="row"><span class="k">日亏损保护</span><span class="v">4h滚动亏损≥10%余额→收紧MAX_ASK至$0.25; &lt;5%自动恢复</span></div>
-      <div class="row"><span class="k">砸盘阈值</span><span class="v">10% (触发入场检测)</span></div>
-      <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
-      <div class="row"><span class="k">手续费</span><span class="v">入场 maker 0% / 结算 0%</span></div>
-      </div>
-    </div>
-
-    <!-- History -->
-    <div class="card full">
-      <h3>交易历史</h3>
-      <div style="max-height:500px;overflow-y:auto">
-        <table>
-          <thead><tr><th>时间</th><th>结果</th><th>退出</th><th>方向</th><th>L1买入</th><th>L2买入</th><th>卖出价</th><th>份数</th><th>成本</th><th>盈亏</th><th>累计</th><th style="min-width:180px">理由</th></tr></thead>
-          <tbody id="history-body"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
 </div>
 
 <script>
 const API = '';
 let ws = null;
 let auditTimer = null;
+let latestState = null;
 
 function fmtSecs(totalSecs) {
   const secs = Math.max(0, Math.floor(totalSecs || 0));
@@ -366,6 +524,13 @@ async function stopBot() {
 
 async function refreshAudit() {
   try {
+    if (latestState) {
+      renderDirectionalAudit(latestState.history || []);
+      if (!auditTimer) {
+        auditTimer = setInterval(refreshAudit, 15000);
+      }
+      return;
+    }
     const r = await fetch(API+'/api/audit',{credentials:'include'});
     if (!r.ok) return;
     const a = await r.json();
@@ -374,18 +539,79 @@ async function refreshAudit() {
     document.getElementById('a-pf').textContent = a.profitFactor == null ? 'inf' : Number(a.profitFactor).toFixed(2);
     const ddEl = document.getElementById('a-dd');
     ddEl.textContent = '$' + Number(a.maxDrawdown || 0).toFixed(2);
-    ddEl.style.color = (a.maxDrawdown || 0) > 0 ? '#f85149' : '';
+    ddEl.style.color = (a.maxDrawdown || 0) > 0 ? '#ff6b6b' : '';
     const estEl = document.getElementById('a-est');
     estEl.textContent = (a.estimatedTradePct ?? 0).toFixed(1) + '%';
-    estEl.style.color = (a.estimatedTradePct || 0) > 20 ? '#f85149' : (a.estimatedTradePct || 0) > 0 ? '#e3b341' : '';
+    estEl.style.color = (a.estimatedTradePct || 0) > 20 ? '#ff6b6b' : (a.estimatedTradePct || 0) > 0 ? '#f4c96b' : '';
     const warningEl = document.getElementById('a-warning');
     warningEl.textContent = a.warnings && a.warnings.length ? a.warnings[0] : '无';
     warningEl.title = a.warnings && a.warnings.length ? a.warnings.join('\n') : '';
-    warningEl.style.color = a.warnings && a.warnings.length ? '#f85149' : '#3fb950';
+    warningEl.style.color = a.warnings && a.warnings.length ? '#ff6b6b' : '#42d392';
     if (!auditTimer) {
       auditTimer = setInterval(refreshAudit, 15000);
     }
   } catch {}
+}
+
+function summarizeWinRate(items) {
+  if (!items.length) return '--';
+  const wins = items.filter(x => x.result === 'WIN').length;
+  return (wins / items.length * 100).toFixed(1) + '%(' + wins + '/' + items.length + ')';
+}
+
+function renderDirectionalAudit(history) {
+  const settled = (history || []).filter(h => h.exitType === 'settlement' && (h.leg1FillPrice || h.leg1Price || 0) > 0);
+  document.getElementById('a-trades').textContent = settled.length;
+  if (!settled.length) {
+    document.getElementById('a-winrate').textContent = '--';
+    document.getElementById('a-pf').textContent = '--';
+    document.getElementById('a-dd').textContent = '--';
+    document.getElementById('a-est').textContent = '--';
+    const warningEl = document.getElementById('a-warning');
+    warningEl.textContent = '样本不足';
+    warningEl.style.color = '#f4c96b';
+    return;
+  }
+
+  const byPrice = {
+    low: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) <= 0.25),
+    mid: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.25 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.30),
+    high: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.30 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.35),
+  };
+  document.getElementById('a-winrate').textContent = '≤0.25 ' + summarizeWinRate(byPrice.low) + ' / 0.25-0.30 ' + summarizeWinRate(byPrice.mid) + ' / 0.30-0.35 ' + summarizeWinRate(byPrice.high);
+
+  const trendGroups = {
+    up: settled.filter(h => h.entryTrendBias === 'up'),
+    down: settled.filter(h => h.entryTrendBias === 'down'),
+    flat: settled.filter(h => !h.entryTrendBias || h.entryTrendBias === 'flat'),
+  };
+  document.getElementById('a-pf').textContent = 'UP ' + summarizeWinRate(trendGroups.up) + ' / DOWN ' + summarizeWinRate(trendGroups.down) + ' / FLAT ' + summarizeWinRate(trendGroups.flat);
+
+  const sourceGroups = {
+    preorder: settled.filter(h => h.entrySource === 'dual-side-preorder'),
+    mispricing: settled.filter(h => h.entrySource === 'reactive-mispricing'),
+    trend: settled.filter(h => h.entrySource === 'reactive-trend'),
+  };
+  document.getElementById('a-dd').textContent = '预挂 ' + summarizeWinRate(sourceGroups.preorder) + ' / 砸盘 ' + summarizeWinRate(sourceGroups.mispricing) + ' / 趋势 ' + summarizeWinRate(sourceGroups.trend);
+
+  const avgEdge = settled.reduce((sum, h) => sum + ((h.result === 'WIN' ? 1 : 0) - (h.leg1FillPrice || h.leg1Price || 0)), 0) / settled.length;
+  const edgeEl = document.getElementById('a-est');
+  edgeEl.textContent = (avgEdge >= 0 ? '+' : '') + '$' + avgEdge.toFixed(3) + '/share';
+  edgeEl.style.color = avgEdge > 0 ? '#42d392' : avgEdge < 0 ? '#ff6b6b' : '#f4c96b';
+
+  const hiBucket = byPrice.high;
+  const hiBucketWinRate = hiBucket.length ? hiBucket.filter(h => h.result === 'WIN').length / hiBucket.length : null;
+  const warningEl = document.getElementById('a-warning');
+  if (avgEdge > 0 && (hiBucketWinRate == null || hiBucketWinRate >= 0.35)) {
+    warningEl.textContent = '有正边际，继续观察 fill quality';
+    warningEl.style.color = '#42d392';
+  } else if (avgEdge <= 0) {
+    warningEl.textContent = '当前样本未证明盈利';
+    warningEl.style.color = '#ff6b6b';
+  } else {
+    warningEl.textContent = '高价桶胜率偏低，注意逆向选择';
+    warningEl.style.color = '#f4c96b';
+  }
 }
 
 function connectWS() {
@@ -402,18 +628,13 @@ function connectWS() {
 }
 
 function render(s) {
+  latestState = s;
   const now = Date.now();
-  const escapeHtml = (value) => String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
   const fmtLatencyAge = (at) => {
     if (!at) return '--';
     const age = Math.max(0, now - at);
     if (age < 1000) return age + 'ms前';
-    return (age / 1000).toFixed(age < 10_000 ? 1 : 0) + 's前';
+    return (age / 1000).toFixed(age < 10000 ? 1 : 0) + 's前';
   };
   const fmtLatencyDetail = (p50, p90, count, lastMs, lastAt, staleAfterMs = 10000) => {
     if (!count) return '--';
@@ -432,9 +653,9 @@ function render(s) {
     return status;
   };
   const fmtWsStatus = (connected, ageMs, disconnects, reconnects) => {
-    if (connected) return { text: '在线 · 延迟 ' + (ageMs || 0) + 'ms', color: (ageMs || 0) < 1000 ? '#3fb950' : '#e3b341' };
-    if ((disconnects || 0) === 0 && (reconnects || 0) === 0) return { text: '未接通', color: '#8b949e' };
-    return { text: '断开', color: '#f85149' };
+    if (connected) return { text: '在线 · 延迟 ' + (ageMs || 0) + 'ms', color: (ageMs || 0) < 1000 ? '#42d392' : '#f4c96b' };
+    if ((disconnects || 0) === 0 && (reconnects || 0) === 0) return { text: '未接通', color: '#8ea0b8' };
+    return { text: '断开', color: '#ff6b6b' };
   };
   const fmtBookSource = (source, fallbackActive) => {
     if (source === 'ws') return fallbackActive ? 'WS主路 / 回退待命' : 'WS主路';
@@ -448,7 +669,6 @@ function render(s) {
     return '陈旧 ' + stale + ' / 交叉 ' + crossed;
   };
 
-  // Badge
   const badge = document.getElementById('badge');
   if (s.botRunning) {
     badge.className = 'badge badge-run'; badge.textContent = s.tradingMode === 'paper' ? '仿真盘' : '运行中';
@@ -460,20 +680,18 @@ function render(s) {
     document.getElementById('btn-stop').style.display='none';
   }
 
-  // Summary
   const pEl = document.getElementById('s-profit');
   pEl.textContent = (s.totalProfit>=0?'+':'')+('$'+s.totalProfit.toFixed(2));
-  pEl.style.color = s.totalProfit>=0?'#3fb950':'#f85149';
+  pEl.style.color = s.totalProfit>=0?'#42d392':'#ff6b6b';
   document.getElementById('s-balance').textContent = '$'+s.balance.toFixed(2);
   const sumVal = (s.upAsk > 0 && s.downAsk > 0) ? s.upAsk + s.downAsk : 0;
   const sumEl = document.getElementById('s-sum');
   if (sumEl) {
     sumEl.textContent = sumVal > 0 ? sumVal.toFixed(3) : '--';
-    sumEl.style.color = sumVal > 0 ? (sumVal <= 0.96 ? '#3fb950' : sumVal <= 0.98 ? '#e3b341' : '#f85149') : '';
+    sumEl.style.color = sumVal > 0 ? (sumVal <= 0.96 ? '#42d392' : sumVal <= 0.98 ? '#f4c96b' : '#ff6b6b') : '';
   }
   document.getElementById('s-record').textContent = s.wins+'W / '+s.losses+'L · '+s.sessionROI.toFixed(1)+'%';
 
-  // Timer
   const secs = Math.max(0, Math.floor(s.secondsLeft));
   const mm = String(Math.floor(secs/60)).padStart(2,'0');
   const ss = String(secs%60).padStart(2,'0');
@@ -482,25 +700,24 @@ function render(s) {
   const pct = Math.max(0, Math.min(100, secs/900*100));
   const fill = document.getElementById('timer-fill');
   fill.style.width = pct+'%';
-  fill.style.background = pct>50?'#58a6ff':pct>20?'#d29922':'#f85149';
+  fill.style.background = pct>50?'#76b7ff':pct>20?'#f4c96b':'#ff6b6b';
   document.getElementById('round-progress').textContent = Math.round(s.roundProgressPct || 0) + '% / 已过 ' + fmtSecs(s.roundElapsed || 0);
   const nextRoundEl = document.getElementById('next-round');
   nextRoundEl.textContent = s.nextRoundIn > 0 ? fmtSecs(s.nextRoundIn) + ' 后' : '--';
-  nextRoundEl.style.color = (s.nextRoundIn || 0) <= 120 && (s.nextRoundIn || 0) > 0 ? '#e3b341' : '';
+  nextRoundEl.style.color = (s.nextRoundIn || 0) <= 120 && (s.nextRoundIn || 0) > 0 ? '#f4c96b' : '';
   const entryEl = document.getElementById('entry-window');
   entryEl.textContent = s.canOpenNewPosition ? '开启中 / 还剩 ' + fmtSecs(s.entryWindowLeft || 0) : '已关闭';
-  entryEl.style.color = s.canOpenNewPosition ? '#3fb950' : '#f85149';
+  entryEl.style.color = s.canOpenNewPosition ? '#42d392' : '#ff6b6b';
   const decisionEl = document.getElementById('round-decision');
   decisionEl.textContent = s.roundDecision || '--';
-  decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') ? '#f85149' : '#e6edf3';
+  decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') ? '#ff6b6b' : '#ecf3ff';
 
-  // Hedge status
   const stateMap = {off:'待命',watching:'监控中',leg1_filled:'已持仓待结算',leg2_filled:'历史兼容状态',done:'完成'};
   const stateEl = document.getElementById('h-state');
   const renderedStatus = fmtSkipStatus(s.status || stateMap[s.hedgeState] || s.hedgeState);
   stateEl.textContent = renderedStatus;
   stateEl.title = s.status || stateMap[s.hedgeState] || s.hedgeState || '';
-  stateEl.style.color = (s.status || '').startsWith('跳过:') ? '#e3b341' : '';
+  stateEl.style.color = (s.status || '').startsWith('跳过:') ? '#f4c96b' : '';
   document.getElementById('h-mode').textContent = s.tradingMode === 'paper'
     ? '仿真盘 / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
     : '实盘';
@@ -508,22 +725,22 @@ function render(s) {
   tuningEl.textContent = s.tuningEnabled
     ? 'sum ' + Number(s.baseSumTarget || 0).toFixed(2) + '→' + Number(s.maxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.maxEntryAsk || 0).toFixed(2)
     : '固定参数';
-  tuningEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '';
+  tuningEl.style.color = s.adjustmentCount > 0 ? '#f4c96b' : '';
   const adjustEl = document.getElementById('h-paper-adjust');
   adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '动态调参关闭') : '--');
-  adjustEl.style.color = s.adjustmentCount > 0 ? '#e3b341' : '#8b949e';
+  adjustEl.style.color = s.adjustmentCount > 0 ? '#f4c96b' : '#8ea0b8';
   const strategyEl = document.getElementById('h-strategy-mode');
   const strategyModeMap = {none:'待机',mispricing:'错价',trend:'趋势'};
   strategyEl.textContent = strategyModeMap[s.activeStrategyMode] || s.activeStrategyMode || '--';
-  strategyEl.style.color = s.activeStrategyMode === 'trend' ? '#bc8cff' : s.activeStrategyMode === 'mispricing' ? '#58a6ff' : '';
+  strategyEl.style.color = s.activeStrategyMode === 'trend' ? '#71e5ff' : s.activeStrategyMode === 'mispricing' ? '#76b7ff' : '';
   const policyEl = document.getElementById('h-strategy-policy');
   const policyMap = {'mispricing-first':'错价优先，趋势补充'};
   policyEl.textContent = policyMap[s.strategyPolicy] || s.strategyPolicy || '--';
-  policyEl.style.color = '#8b949e';
+  policyEl.style.color = '#8ea0b8';
   const trendEl = document.getElementById('h-trend-bias');
   const trendBiasMap = {flat:'中性',up:'看涨',down:'看跌'};
   trendEl.textContent = trendBiasMap[s.trendBias] || s.trendBias || '--';
-  trendEl.style.color = s.trendBias === 'up' ? '#3fb950' : s.trendBias === 'down' ? '#f85149' : '';
+  trendEl.style.color = s.trendBias === 'up' ? '#42d392' : s.trendBias === 'down' ? '#ff6b6b' : '';
   const paramBudgetEl = document.getElementById('p-budget');
   if (paramBudgetEl) {
     paramBudgetEl.textContent = s.activeStrategyMode === 'trend'
@@ -558,9 +775,8 @@ function render(s) {
   document.getElementById('h-cost').textContent = s.hedgeTotalCost > 0 ? '$'+s.hedgeTotalCost.toFixed(2) : '--';
   const expEl = document.getElementById('h-expected');
   expEl.textContent = '$'+s.effectiveMaxAsk.toFixed(2);
-  expEl.style.color = s.drawdownProtected ? '#f0883e' : '#3fb950';
+  expEl.style.color = s.drawdownProtected ? '#f4c96b' : '#42d392';
 
-  // Dual-side pre-order status
   const preEl = document.getElementById('h-preorder');
   if (preEl) {
     const upP = s.preOrderUpPrice || 0;
@@ -570,13 +786,12 @@ function render(s) {
       if (upP > 0) parts.push('UP@$' + upP.toFixed(2));
       if (dnP > 0) parts.push('DN@$' + dnP.toFixed(2));
       preEl.textContent = parts.join(' / ');
-      preEl.style.color = '#58a6ff';
+      preEl.style.color = '#76b7ff';
     } else {
       preEl.textContent = s.hedgeState === 'watching' ? '待挂' : '--';
-      preEl.style.color = '#6e7681';
+      preEl.style.color = '#8ea0b8';
     }
   }
-  // Maker fill status
   const makerEl = document.getElementById('h-maker');
   if (makerEl) {
     if (s.hedgeState === 'leg1_filled' || s.hedgeState === 'leg2_filled') {
@@ -584,17 +799,16 @@ function render(s) {
       parts.push('L1:' + (s.leg1Maker ? '✅maker' : 'taker'));
       if (s.hedgeState === 'leg2_filled') parts.push('L2:' + (s.leg2Maker ? '✅maker' : 'taker'));
       makerEl.textContent = parts.join(' / ');
-      makerEl.style.color = (s.leg1Maker || s.leg2Maker) ? '#3fb950' : '#8b949e';
+      makerEl.style.color = (s.leg1Maker || s.leg2Maker) ? '#42d392' : '#8ea0b8';
     } else {
       makerEl.textContent = '--';
       makerEl.style.color = '';
     }
   }
 
-  // Latency
   const lat50 = s.latencyP50 || 0;
   const lat90 = s.latencyP90 || 0;
-  const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#3fb950' : ms < 150 ? '#e3b341' : '#f85149';
+  const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#42d392' : ms < 150 ? '#f4c96b' : '#ff6b6b';
   const latEl50 = document.getElementById('h-lat-p50');
   latEl50.textContent = lat50 > 0 ? lat50 + 'ms · ' + ((s.latencyNetworkSource || 'ping').toUpperCase()) : '--';
   latEl50.style.color = latColor(lat50);
@@ -612,10 +826,10 @@ function render(s) {
   const httpEl = document.getElementById('h-lat-http');
   const httpAgeMs = s.latencyHttpLastAt ? Math.max(0, now - s.latencyHttpLastAt) : 0;
   httpEl.textContent = fmtLatencyDetail(s.latencyHttpP50 || 0, s.latencyHttpP90 || 0, s.latencyHttpCount || 0, s.latencyHttpLastMs || 0, s.latencyHttpLastAt || 0, 10000);
-  httpEl.style.color = httpAgeMs > 10000 ? '#8b949e' : latColor(s.latencyHttpP50 || 0);
+  httpEl.style.color = httpAgeMs > 10000 ? '#8ea0b8' : latColor(s.latencyHttpP50 || 0);
   const cacheEl = document.getElementById('h-lat-cache');
   cacheEl.textContent = fmtLatencyDetail(s.latencyCacheP50 || 0, s.latencyCacheP90 || 0, s.latencyCacheCount || 0, s.latencyCacheLastMs || 0, s.latencyCacheLastAt || 0, 2000);
-  cacheEl.style.color = s.latencyCacheP50 > 0 ? '#58a6ff' : '';
+  cacheEl.style.color = s.latencyCacheP50 > 0 ? '#76b7ff' : '';
 
   const diagnostics = s.diagnostics || {};
   const marketWsEl = document.getElementById('h-market-ws');
@@ -628,10 +842,10 @@ function render(s) {
   userWsEl.style.color = userWs.color;
   const bookSourceEl = document.getElementById('h-book-source');
   bookSourceEl.textContent = fmtBookSource(diagnostics.orderbookSource, diagnostics.fallbackActive);
-  bookSourceEl.style.color = diagnostics.orderbookSource === 'ws' ? '#3fb950' : diagnostics.orderbookSource === 'http' ? '#e3b341' : '';
+  bookSourceEl.style.color = diagnostics.orderbookSource === 'ws' ? '#42d392' : diagnostics.orderbookSource === 'http' ? '#f4c96b' : '';
   const localBookEl = document.getElementById('h-local-book');
   localBookEl.textContent = (diagnostics.localBookReady ? '就绪' : '未就绪') + ' · ' + (diagnostics.localBookTokenCount || 0) + '/' + (diagnostics.trackedTokenCount || 0);
-  localBookEl.style.color = diagnostics.localBookReady && !(diagnostics.localBookStaleCount || 0) && !(diagnostics.localBookCrossedCount || 0) ? '#3fb950' : '#e3b341';
+  localBookEl.style.color = diagnostics.localBookReady && !(diagnostics.localBookStaleCount || 0) && !(diagnostics.localBookCrossedCount || 0) ? '#42d392' : '#f4c96b';
   const execS2SEl = document.getElementById('h-exec-s2s');
   execS2SEl.textContent = diagnostics.execSignalToSubmitP50 > 0 ? diagnostics.execSignalToSubmitP50 + 'ms' : '--';
   execS2SEl.style.color = latColor(diagnostics.execSignalToSubmitP50 || 0);
@@ -655,18 +869,17 @@ function render(s) {
   execGtcEl.style.color = latColor(diagnostics.execGtcWaitToFillP50 || 0);
   const marketWsStatsEl = document.getElementById('h-market-ws-stats');
   marketWsStatsEl.textContent = '断流 ' + (diagnostics.marketWsDisconnects || 0) + ' · 重连 ' + (diagnostics.marketWsReconnects || 0);
-  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#e3b341' : '#8b949e';
+  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#f4c96b' : '#8ea0b8';
   const userWsStatsEl = document.getElementById('h-user-ws-stats');
   userWsStatsEl.textContent = '断流 ' + (diagnostics.userWsDisconnects || 0) + ' · 重连 ' + (diagnostics.userWsReconnects || 0);
-  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#e3b341' : '#8b949e';
+  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#f4c96b' : '#8ea0b8';
   const fallbackStatsEl = document.getElementById('h-fallback-stats');
   fallbackStatsEl.textContent = '回退 ' + (diagnostics.fallbackTransitions || 0) + ' 次 · 深度 ' + (diagnostics.localBookMaxDepth || 0) + ' 档';
-  fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#e3b341' : '#8b949e';
+  fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#f4c96b' : '#8ea0b8';
   const localBookIssuesEl = document.getElementById('h-local-book-issues');
   localBookIssuesEl.textContent = fmtIssueCount(diagnostics.localBookStaleCount, diagnostics.localBookCrossedCount);
-  localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#e3b341' : '#3fb950';
+  localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#f4c96b' : '#42d392';
 
-  // History
   const tbody = document.getElementById('history-body');
   const rows = (s.history||[]).slice().reverse().slice(0,50);
   const exitLabels = {'settlement':'结算','take-profit':'止盈','stop-loss':'止损','force-exit':'割肉','gtc-fill':'GTC'};
@@ -678,26 +891,27 @@ function render(s) {
     const l2fill = h.leg2FillPrice>0?'$'+h.leg2FillPrice.toFixed(2):(h.leg2Price>0?'$'+h.leg2Price.toFixed(2):'-');
     const sell = h.sellPrice>0?'$'+h.sellPrice.toFixed(2):(h.exitType==='settlement'?'$1.00':'-');
     const shares = h.sellShares>0?h.sellShares.toFixed(0):(h.leg1Shares>0?h.leg1Shares.toFixed(0):'-');
-    const estMark = h.estimated ? '<span title="含估算数据" style="color:#d29922;cursor:help"> ⚠</span>' : '';
+    const estMark = h.estimated ? '<span title="含估算数据" style="color:#f4c96b;cursor:help"> ⚠</span>' : '';
     const reasonText = h.exitReason || '-';
     const breakdown = h.profitBreakdown ? ' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"' : '';
     return '<tr><td>'+h.time+'</td>'
       +'<td><span class="tag '+cls+'">'+h.result+'</span>'+estMark+'</td>'
       +'<td><span class="tag tag-b">'+exit+'</span></td>'
       +'<td>'+h.leg1Dir+'</td>'
-      +'<td>'+l1fill+(h.leg1Shares>0?' <small style="color:#6e7681">×'+h.leg1Shares.toFixed(0)+'</small>':'')+'</td>'
-      +'<td>'+l2fill+(h.leg2Shares>0?' <small style="color:#6e7681">×'+h.leg2Shares.toFixed(0)+'</small>':'')+'</td>'
-      +'<td>'+sell+(h.sellShares>0?' <small style="color:#6e7681">×'+h.sellShares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+l1fill+(h.leg1Shares>0?' <small style="color:#8ea0b8">×'+h.leg1Shares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+l2fill+(h.leg2Shares>0?' <small style="color:#8ea0b8">×'+h.leg2Shares.toFixed(0)+'</small>':'')+'</td>'
+      +'<td>'+sell+(h.sellShares>0?' <small style="color:#8ea0b8">×'+h.sellShares.toFixed(0)+'</small>':'')+'</td>'
       +'<td>'+shares+'</td>'
       +'<td>$'+(h.totalCost||0).toFixed(2)+'</td>'
-      +'<td style="color:'+(h.profit>=0?'#3fb950':'#f85149')+'"'+breakdown+'>'+pf+'</td>'
-      +'<td style="color:'+(h.cumProfit>=0?'#3fb950':'#f85149')+'">$'+(h.cumProfit||0).toFixed(2)+'</td>'
-      +'<td style="font-size:11px;color:#8b949e;max-width:220px;white-space:normal;line-height:1.3">'+reasonText+'</td>'
+      +'<td style="color:'+(h.profit>=0?'#42d392':'#ff6b6b')+'"'+breakdown+'>'+pf+'</td>'
+      +'<td style="color:'+(h.cumProfit>=0?'#42d392':'#ff6b6b')+'">$'+(h.cumProfit||0).toFixed(2)+'</td>'
+      +'<td style="font-size:11px;color:#8ea0b8;max-width:220px;white-space:normal;line-height:1.3">'+reasonText+'</td>'
       +'</tr>';
   }).join('');
+
+  renderDirectionalAudit(s.history || []);
 }
 
-// Auto-login check
 (async function() {
   try {
     const r = await fetch(API+'/api/status',{credentials:'include'});
