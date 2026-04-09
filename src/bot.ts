@@ -88,6 +88,7 @@ const NAKED_HARD_TIMEOUT_MS = 120_000;      // 裸仓硬性时限: 120s无条件
 const STOP_LOSS_COOLDOWN_MS = 15_000;       // 止损冷却期: 填充后15s内不触发相对止损(绝对止损不受影响)
 const ADVERSE_FILL_EXIT_SUM = 1.05;         // 填充后3s内sum>1.05说明严重逆向选择, 快速退出
 const ADVERSE_FILL_CHECK_MS = 3_000;        // 填充后反向确认窗口 3秒
+const LEG2_GTC_ACTIVE_STOP_LOSS = 0.70;     // Leg2 GTC 挂单期间相对止损放宽到70%(给GTC成交留时间)
 const LIMIT_RACE_ENABLED = true;           // 启用 Limit+FAK 赛跑
 const LIMIT_RACE_OFFSET = 0.01;            // limit 挂单价 = ask - offset
 const LIMIT_RACE_FAST_OFFSET = 0.02;       // dump 快速时更激进
@@ -1292,6 +1293,7 @@ export class Hedge15mEngine {
               else if (leg1Bid != null && secs > 30) {
                 const sinceEntry = this.leg1FilledAt > 0 ? Date.now() - this.leg1FilledAt : 999_999;
                 const inCooldown = sinceEntry < STOP_LOSS_COOLDOWN_MS;
+                let adverseExited = false;
 
                 // ── 填充后反向确认: 3s内sum>1.05说明严重逆向选择, 快速退出 ──
                 if (sinceEntry <= ADVERSE_FILL_CHECK_MS && oppAsk != null && oppAsk > 0) {
@@ -1300,20 +1302,23 @@ export class Hedge15mEngine {
                   if (adverseSum >= ADVERSE_FILL_EXIT_SUM) {
                     logger.info(`HEDGE15M ADVERSE FILL EXIT: ${(sinceEntry/1000).toFixed(1)}s after fill, sum=${adverseSum.toFixed(2)} >= ${ADVERSE_FILL_EXIT_SUM.toFixed(2)}, counter-trend detected`);
                     await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
+                    adverseExited = true;
                   }
                 }
-                // 绝对止损: 不受冷却期影响
-                else if (leg1Bid < LEG1_STOP_ABS) {
+                // 绝对止损: 不受冷却期影响 (逆向确认未触发时也要检查)
+                if (!adverseExited && leg1Bid < LEG1_STOP_ABS) {
                   logger.info(`HEDGE15M LEG1 STOP-LOSS: 绝对止损 bid=${leg1Bid.toFixed(2)}<${LEG1_STOP_ABS}, ${secs.toFixed(0)}s left`);
                   await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
                 }
-                // 相对止损: 冷却期内跳过
-                else if (!inCooldown && (
-                  leg1Bid < this.leg1Price * (this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold())
-                )) {
-                  const stopLossThreshold = this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold();
-                  logger.info(`HEDGE15M LEG1 STOP-LOSS: 中途止损 bid=${leg1Bid.toFixed(2)}<entry*${stopLossThreshold}=${(this.leg1Price*stopLossThreshold).toFixed(2)}, ${secs.toFixed(0)}s left`);
-                  await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
+                // 相对止损: 冷却期内跳过; Leg2 GTC挂单时放宽到70%
+                else if (!adverseExited && !inCooldown) {
+                  const hasLeg2Gtc = !!this.leg2GtcOrderId;
+                  const baseThreshold = this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold();
+                  const stopLossThreshold = hasLeg2Gtc ? Math.min(baseThreshold, LEG2_GTC_ACTIVE_STOP_LOSS) : baseThreshold;
+                  if (leg1Bid < this.leg1Price * stopLossThreshold) {
+                    logger.info(`HEDGE15M LEG1 STOP-LOSS: 中途止损 bid=${leg1Bid.toFixed(2)}<entry*${stopLossThreshold}=${(this.leg1Price*stopLossThreshold).toFixed(2)}, ${secs.toFixed(0)}s left${hasLeg2Gtc ? " (GTC宽松阈值)" : ""}`);
+                    await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
+                  }
                 }
               }
               // ── 渐进式 SUM_TARGET(用真实成交价): 越接近结算越放宽 ──
@@ -1700,6 +1705,7 @@ export class Hedge15mEngine {
           "up", this.preOrderUpToken, rnd.downToken,
           upFill.filled, upFill.avgPrice > 0 ? upFill.avgPrice : this.preOrderUpPrice,
           this.preOrderUpId,
+          (upFill.avgPrice > 0 ? upFill.avgPrice : this.preOrderUpPrice) + downAsk,
         );
         this.preOrderUpId = "";
         this.preOrderUpPrice = 0;
@@ -1741,6 +1747,7 @@ export class Hedge15mEngine {
           "down", this.preOrderDownToken, rnd.upToken,
           dnFill.filled, dnFill.avgPrice > 0 ? dnFill.avgPrice : this.preOrderDownPrice,
           this.preOrderDownId,
+          (dnFill.avgPrice > 0 ? dnFill.avgPrice : this.preOrderDownPrice) + upAsk,
         );
         this.preOrderDownId = "";
         this.preOrderDownPrice = 0;
@@ -1905,6 +1912,7 @@ export class Hedge15mEngine {
     filledShares: number,
     fillPrice: number,
     orderId: string,
+    observedSum = 0,
   ): void {
     this.hedgeState = "leg1_filled";
     this.activeStrategyMode = "mispricing";
@@ -1944,7 +1952,7 @@ export class Hedge15mEngine {
       fee: 0,
       source: "dual-side-preorder",
       thinEdgeEntry: false,
-      observedEntrySum: 0,
+      observedEntrySum: observedSum,
       preferredSum: 0,
       hardMaxSum: 0,
     });
