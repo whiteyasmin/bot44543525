@@ -107,10 +107,10 @@ const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
 const DUAL_SIDE_SUM_CEILING = 0.94;        // 预挂单目标: 双侧sum ≤ 此值 (从0.96收紧到0.94, 提高每笔质量)
 const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少)
 const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
-const DUAL_SIDE_BUDGET_PCT = 0.15;         // 预挂单仓位 (单侧)
+const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
-const DUAL_SIDE_MAX_ASK = 0.43;            // 挂单价上限 (≤0.43避免50/50逆向选择)
+const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -667,7 +667,6 @@ export class Hedge15mEngine {
     if (this.hedgeState === "leg1_pending") return "leg1_pending";
     if (this.hedgeState === "leg1_filled") return "leg1_filled";
     if (this.hedgeState === "watching") {
-      if (this.consecutiveLosses >= 3) return "cooldown";
       if (this.secondsLeft < MIN_ENTRY_SECS) return "waiting_next_round";
       return "watching";
     }
@@ -1025,9 +1024,9 @@ export class Hedge15mEngine {
 
     while (this.isActiveRun(runId)) {
       try {
-        // Stop loss: 本次会话亏损超 30% 初始余额
-        if (this.initialBankroll > 0 && -this.sessionProfit >= this.initialBankroll * 0.30) {
-          this.status = `止损: 本次会话亏损超30%`;
+        // Stop loss: 本次会话亏损超 10% 初始余额
+        if (this.initialBankroll > 0 && -this.sessionProfit >= this.initialBankroll * 0.10) {
+          this.status = `止损: 本次会话亏损超10%`;
           this.running = false;
           break;
         }
@@ -1114,12 +1113,6 @@ export class Hedge15mEngine {
             await this.manageDualSideOrders(trader, rnd, secs);
             if (this.hedgeState !== "watching") {
               // 预挂单成交转入 leg1_filled, 跳过dump检测
-            } else {
-
-            // ── 连亏冷却: 3连亏后跳过1轮 ──
-            if (this.consecutiveLosses >= 3) {
-              this.status = `冷却中 (连亏${this.consecutiveLosses}次, 跳过本轮)`;
-              // 下一轮会重置
             } else {
 
             const dumpBaseline = this.marketState.getDumpBaseline(dumpBaselineMs);
@@ -1224,7 +1217,6 @@ export class Hedge15mEngine {
                 }
               }
             }
-            } // end consecutive loss guard
             } // end dual-side pre-order guard
           }
 
@@ -1239,10 +1231,6 @@ export class Hedge15mEngine {
             this.skips++;
             this.logRoundRejectSummary("window expired without entry");
             this.finalizeAdaptivePaperRound();
-            if (this.consecutiveLosses >= 3) {
-              this.consecutiveLosses = 0;
-              logger.info(`HEDGE15M: cooldown round done, loss streak reset`);
-            }
           }
         }
 
@@ -1270,31 +1258,16 @@ export class Hedge15mEngine {
               }
             }
 
-            // ── 无挂单时: TP/SL/Leg2 逻辑 ──
+            // ── 无挂单时: 纯持有等结算 ──
             if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled") {
-              // ── 方向性策略: 持有到结算, 最小化中途干预 ──
-              // 入场价≤0.43时EV+, 只要方向正确就赚 $1-entry
-              // 止损仅在极端情况: bid<0.05(几乎确定方向错误)
-              // 止盈: bid≥0.90且>300s时锁定利润(防长时间反转)
+              // ── 方向性策略: 纯持有到结算, 零中途干预 ──
+              // 入场价≤0.35, 即使50%随机胜率也EV+$0.15/share
+              // 卖出要付2% taker fee, 持有到结算 0 fee
+              // 因此任何中途卖出都是EV-
               {
               const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-
-              // 更新峰值bid(用于状态显示)
               if (leg1Bid != null && leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
-
-              this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left`;
-
-              // ① 止盈: bid≥0.90 且 >300s → 锁定高胜率利润, 防长周期反转
-              if (leg1Bid != null && leg1Bid >= 0.90 && secs > 300) {
-                logger.info(`HEDGE15M DIRECTIONAL TP: bid=${leg1Bid.toFixed(2)} >= 0.90, locking profit with ${secs.toFixed(0)}s left`);
-                await this.emergencySellLeg1(trader, "止盈", leg1Bid);
-              }
-              // ② 极端止损: bid<0.05 → 方向几乎确定错误, 回收残值
-              else if (leg1Bid != null && leg1Bid < 0.05 && secs > 30) {
-                logger.info(`HEDGE15M DIRECTIONAL SL: bid=${leg1Bid.toFixed(2)} < 0.05, direction wrong, salvaging`);
-                await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
-              }
-              // ③ 其他情况: 持有等结算
+              this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left → 等结算`;
               }
             }
 
@@ -1305,13 +1278,10 @@ export class Hedge15mEngine {
             // 真实EV: 卖出=bid*0.98; 持有=bid (bid是市场概率估计)
             // bid<0.50时方向可能错, 但卖出回收也很低; 只有bid在“不确定区”时割肉才有意义
             // 实际策略: bid<0.35时割肉(方向极可能错, 收回残值>0 优于结算得$0)
-            if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled" && secs <= 30) {
-              if (leg1Bid != null && leg1Bid < 0.35 && leg1Bid >= 0.05) {
-                logger.info(`HEDGE15M FORCE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < 0.35, salvaging residual value`);
-                await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
-              } else if (secs <= 15) {
-                logger.info(`HEDGE15M HOLD TO SETTLE: bid=${(leg1Bid??0).toFixed(2)}, holding for settlement`);
-              }
+            // ── 方向性策略: 纯持有, 不做最后时刻割肉 ──
+            // 卖出回收 bid*0.98 < 持有EV bid, 任何中途卖出都是EV-
+            if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled" && secs <= 15) {
+              logger.info(`HEDGE15M HOLD TO SETTLE: bid=${(leg1Bid??0).toFixed(2)}, holding for settlement`);
             }
           } catch (e: any) {
             logger.warn(`Leg2 monitor error: ${e.message}`);
@@ -1544,7 +1514,7 @@ export class Hedge15mEngine {
       }
       return;
     }
-    if (this.consecutiveLosses >= 3) return; // 冷却中不挂
+    // consecutiveLosses 冷却已移除: 方向性策略每轮独立, 连亏不影响下轮EV
 
     const upAsk = this.upAsk;
     const downAsk = this.downAsk;

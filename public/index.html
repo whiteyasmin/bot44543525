@@ -240,17 +240,18 @@ tr:hover{background:rgba(88,166,255,.04)}
     <div class="card full horizontal-card">
       <h3>⚙ 参数</h3>
       <div class="detail-grid">
-      <div class="row"><span class="k">每腿预算</span><span class="v" id="p-budget">正常18% / 边缘12% / 高价10% (3~100份)</span></div>
-      <div class="row"><span class="k">双腿 sum 上限</span><span class="v" id="p-sum">--</span></div>
-      <div class="row"><span class="k">趋势模式</span><span class="v">强单边时轻仓单腿顺势</span></div>
-      <div class="row"><span class="k">砸盘阈值</span><span class="v">10%</span></div>
-      <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
+      <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算 — 入场后零操作, 赚$1结算差价</span></div>
+      <div class="row"><span class="k">入场方式</span><span class="v">双侧GTC预挂单 (maker 0%手续费)</span></div>
+      <div class="row"><span class="k">入场价上限</span><span class="v">ask ≤ $0.35 (50%胜率EV+$0.15/share)</span></div>
+      <div class="row"><span class="k">单侧仓位</span><span class="v">余额 × 25%</span></div>
+      <div class="row"><span class="k">趋势过滤</span><span class="v">有趋势时只挂顺势侧, 避免逆势入场</span></div>
+      <div class="row"><span class="k">流动性过滤</span><span class="v">UP+DOWN ask之和 ≥ 1.10 时不挂单</span></div>
+      <div class="row"><span class="k">中途退出</span><span class="v">无 — 纯持有等结算, 卖出付2% fee是EV-</span></div>
+      <div class="row"><span class="k">结算结果</span><span class="v">方向对=$1/share, 方向错=$0</span></div>
+      <div class="row"><span class="k">日亏损上限</span><span class="v">session亏损 ≥ 初始余额10% 自动停止</span></div>
+      <div class="row"><span class="k">砸盘阈值</span><span class="v">10% (触发入场检测)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
-      <div class="row"><span class="k">手续费</span><span class="v">taker 2% / maker 0% (Limit赛跑)</span></div>
-      <div class="row"><span class="k">止损</span><span class="v">bid&lt;0.05(极端) / ≤30s且bid&lt;0.35(残值回收)</span></div>
-      <div class="row"><span class="k">止盈</span><span class="v">bid≥0.90且>300s(锁定利润)</span></div>
-      <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算, 不对冲, 赚$1结算差价</span></div>
-      <div class="row"><span class="k">双侧做市</span><span class="v">ask≤0.43 / 流动性过滤 / 趋势过滤 / 入场即持有</span></div>
+      <div class="row"><span class="k">手续费</span><span class="v">入场 maker 0% / 结算 0%</span></div>
       </div>
     </div>
 
