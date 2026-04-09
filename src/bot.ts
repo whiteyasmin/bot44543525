@@ -1344,7 +1344,7 @@ export class Hedge15mEngine {
                 }
               }
 
-              // ── 硬性裸仓时限: 120s无条件平仓 ──
+              // ── 硬性裸仓时限: 120s无条件平仓 (sum接近目标时宽限至150s) ──
               if (
                 !this.pendingSellOrderId &&
                 this.hedgeState === "leg1_filled" &&
@@ -1352,8 +1352,14 @@ export class Hedge15mEngine {
                 Date.now() - this.leg1FilledAt >= NAKED_HARD_TIMEOUT_MS
               ) {
                 const heldSecs = (Date.now() - this.leg1FilledAt) / 1000;
-                logger.info(`HEDGE15M NAKED HARD TIMEOUT: held ${heldSecs.toFixed(0)}s >= ${NAKED_HARD_TIMEOUT_MS/1000}s, forced exit`);
-                await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
+                const fp = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+                const curSum = oppAsk != null && oppAsk > 0 ? fp + oppAsk : 99;
+                const nearHedge = curSum <= this.getMaxSumTarget() + 0.01;
+                // sum接近目标时宽限30s, 否则120s强制退出
+                if (!nearHedge || heldSecs >= NAKED_HARD_TIMEOUT_MS / 1000 + 30) {
+                  logger.info(`HEDGE15M NAKED HARD TIMEOUT: held ${heldSecs.toFixed(0)}s, sum=${curSum.toFixed(2)}, forced exit`);
+                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
+                }
               }
               }
             }
@@ -1700,14 +1706,27 @@ export class Hedge15mEngine {
     const upLimit = Math.round(idealUpLimit * 100) / 100;
     const downLimit = Math.round(idealDownLimit * 100) / 100;
 
+    // ── 趋势方向过滤: 有明确趋势时撤销逆势侧预挂单 ──
+    const trend = this.currentTrendBias;
+    if (trend === "down" && this.preOrderUpId) {
+      await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+      this.preOrderUpId = ""; this.preOrderUpPrice = 0; this.preOrderUpShares = 0;
+      logger.info(`DUAL SIDE: UP cancelled (trendBias=down, avoid counter-trend fill)`);
+    }
+    if (trend === "up" && this.preOrderDownId) {
+      await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+      this.preOrderDownId = ""; this.preOrderDownPrice = 0; this.preOrderDownShares = 0;
+      logger.info(`DUAL SIDE: DOWN cancelled (trendBias=up, avoid counter-trend fill)`);
+    }
+
     // 单侧预算 = 总预算/2, 避免双侧合计锁定过多资金
     const singleSideBudget = this.balance * DUAL_SIDE_BUDGET_PCT * 0.5;
 
     const now = Date.now();
     const needRefresh = now - this.preOrderLastRefresh >= DUAL_SIDE_REFRESH_MS;
 
-    // ── UP 侧挂单管理 ──
-    if (upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= DUAL_SIDE_MAX_ASK) {
+    // ── UP 侧挂单管理 (趋势down时跳过) ──
+    if (trend !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= DUAL_SIDE_MAX_ASK) {
       const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1752,8 +1771,8 @@ export class Hedge15mEngine {
       logger.info(`DUAL SIDE: UP cancelled (limit=${upLimit.toFixed(2)} out of range)`);
     }
 
-    // ── DOWN 侧挂单管理 ──
-    if (downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= DUAL_SIDE_MAX_ASK) {
+    // ── DOWN 侧挂单管理 (趋势up时跳过) ──
+    if (trend !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= DUAL_SIDE_MAX_ASK) {
       const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
