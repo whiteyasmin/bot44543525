@@ -39,7 +39,7 @@ ModuleAny._load = function patchedLoad(request: string, parent: NodeModule | und
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { Hedge15mEngine } = require("./bot") as typeof import("./bot");
+const { Directional15mEngine } = require("./bot") as typeof import("./bot");
 
 type Book = { bid: number | null; ask: number | null; spread: number; askDepth: number; bidDepth: number };
 type FillPlan = { filled: number; avgPrice: number; orderId?: string | null };
@@ -135,14 +135,14 @@ function createRound(): Round15m {
   };
 }
 
-function createEngine(balance = 100): { engine: InstanceType<typeof Hedge15mEngine>; trader: SimTrader; rnd: Round15m } {
-  const engine = new Hedge15mEngine();
+function createEngine(balance = 100): { engine: InstanceType<typeof Directional15mEngine>; trader: SimTrader; rnd: Round15m } {
+  const engine = new Directional15mEngine();
   const trader = new SimTrader();
   const rnd = createRound();
   const e = engine as any;
   e.balance = balance;
   e.initialBankroll = balance;
-  e.hedgeState = "watching";
+  e.positionState = "watching";
   e.currentMarket = rnd.question;
   e.roundStartBtcPrice = 100000;
   e.trader = trader;
@@ -166,14 +166,31 @@ async function scenarioSettlementWin(): Promise<ScenarioResult> {
   const { engine, trader, rnd } = createEngine();
   const e = engine as any;
   trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueBuy({ orderId: "buy-l2", filled: 69, avgPrice: 0.55 });
   await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.buyLeg2(trader as any, 0.55, 0.93);
-  await e.settleHedge();
+  await e.settlePosition();
   const last = e.history[e.history.length - 1];
-  const ok = last?.exitType === "settlement" && last?.profit > 0 && last?.result === "WIN";
+  const ok = last?.exitType === "settlement" && last?.profit > 0 && last?.result === "WIN" && e.leg1Shares === 0;
   return {
-    name: "双腿结算盈利",
+    name: "单腿结算盈利",
+    ok,
+    summary: `exit=${last?.exitType} profit=$${Number(last?.profit || 0).toFixed(2)} result=${last?.result || "n/a"}`,
+  };
+}
+
+async function scenarioSettlementLoss(): Promise<ScenarioResult> {
+  const { engine, trader, rnd } = createEngine();
+  const e = engine as any;
+  trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
+  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
+  btcState.latestPrice = 99800;
+  btcState.chainlinkPrice = 99800;
+  btcState.chainlinkFresh = true;
+  btcState.direction = "down";
+  await e.settlePosition();
+  const last = e.history[e.history.length - 1];
+  const ok = last?.exitType === "settlement" && last?.result === "LOSS" && Number(last?.profit || 0) < 0;
+  return {
+    name: "单腿结算亏损",
     ok,
     summary: `exit=${last?.exitType} profit=$${Number(last?.profit || 0).toFixed(2)} result=${last?.result || "n/a"}`,
   };
@@ -213,34 +230,12 @@ async function scenarioGtcFallback(): Promise<ScenarioResult> {
   };
 }
 
-async function scenarioPartialLeg2Accounting(): Promise<ScenarioResult> {
-  const { engine, trader, rnd } = createEngine();
-  const e = engine as any;
-  trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueBuy({ orderId: "buy-l2", filled: 40, avgPrice: 0.54 });
-  trader.queueSell({ orderId: "trim-l1", filled: 29, avgPrice: 0.33 });
-  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.buyLeg2(trader as any, 0.55, 0.93);
-  btcState.latestPrice = 99800;
-  btcState.chainlinkPrice = 99800;
-  btcState.chainlinkFresh = true;
-  btcState.direction = "down";
-  await e.settleHedge();
-  const last = e.history[e.history.length - 1];
-  const ok = last?.exitType === "settlement" && last?.profit > 0 && e.leg1Shares === 0 && e.leg2Shares === 0;
-  return {
-    name: "Leg2部分成交后成本一致",
-    ok,
-    summary: `profit=$${Number(last?.profit || 0).toFixed(2)} expectedLocked=$${Number(e.expectedProfit || 0).toFixed(2)} totalCostReset=${e.totalCost === 0}`,
-  };
-}
-
 async function main(): Promise<void> {
   const scenarios = [
     scenarioSettlementWin,
+    scenarioSettlementLoss,
     scenarioStopLossSell,
     scenarioGtcFallback,
-    scenarioPartialLeg2Accounting,
   ];
   const results: ScenarioResult[] = [];
   for (const scenario of scenarios) {

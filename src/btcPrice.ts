@@ -373,3 +373,28 @@ export function getRecentMomentum(windowSec = 30): number {
   const latest = recentPrices[recentPrices.length - 1];
   return (latest.p - old.p) / old.p;
 }
+
+/** 返回最近 N 秒内按时间归一后的实现波动率，尽量消除采样频率变化带来的偏差 */
+export function getRecentVolatility(windowSec = 180): number {
+  if (recentPrices.length < 5) return 0;
+  const cutoff = Date.now() - windowSec * 1000;
+  const windowSamples = recentPrices.filter((sample) => sample.t >= cutoff && sample.p > 0);
+  if (windowSamples.length < 5) return 0;
+
+  const normalizedReturns: number[] = [];
+  for (let index = 1; index < windowSamples.length; index += 1) {
+    const prev = windowSamples[index - 1];
+    const current = windowSamples[index];
+    if (prev.p <= 0 || current.p <= 0) continue;
+    const dtSec = (current.t - prev.t) / 1000;
+    if (!Number.isFinite(dtSec) || dtSec <= 0) continue;
+    const logReturn = Math.log(current.p / prev.p);
+    if (!Number.isFinite(logReturn)) continue;
+    normalizedReturns.push(logReturn / Math.sqrt(dtSec));
+  }
+
+  if (normalizedReturns.length < 4) return 0;
+  const mean = normalizedReturns.reduce((sum, value) => sum + value, 0) / normalizedReturns.length;
+  const variance = normalizedReturns.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / normalizedReturns.length;
+  return Math.sqrt(Math.max(variance, 0));
+}

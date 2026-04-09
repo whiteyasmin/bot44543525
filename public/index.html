@@ -109,19 +109,14 @@ header h1{margin:0;font-size:22px;letter-spacing:.04em}
 .badge-run{color:var(--green);background:rgba(66,211,146,.1);border-color:rgba(66,211,146,.22)}
 .badge-stop{color:var(--muted);background:rgba(142,160,184,.1);border-color:rgba(142,160,184,.18)}
 
-.wrap{max-width:1440px;margin:0 auto;padding:24px}
-.summary-bar{
-  display:grid;
-  grid-template-columns:repeat(4, minmax(0,1fr));
-  gap:14px;
-  margin-bottom:18px;
-}
+.wrap{max-width:1320px;margin:0 auto;padding:24px}
+.summary-bar{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:12px;margin-bottom:14px}
 .stat-card{
   position:relative;
   overflow:hidden;
-  padding:18px 18px 16px;
+  padding:14px 16px 12px;
   border:1px solid rgba(118,183,255,.12);
-  border-radius:20px;
+  border-radius:18px;
   background:linear-gradient(180deg, rgba(18,28,44,.9), rgba(10,17,27,.92));
 }
 .stat-card::after{
@@ -134,8 +129,8 @@ header h1{margin:0;font-size:22px;letter-spacing:.04em}
   border-radius:99px;
   background:linear-gradient(90deg, var(--cyan), var(--blue));
 }
-.stat-val{font-size:28px;font-weight:700;letter-spacing:.02em}
-.stat-lbl{margin-top:6px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.stat-val{font-size:24px;font-weight:700;letter-spacing:.02em}
+.stat-lbl{margin-top:4px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 
 .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
 .card{
@@ -178,6 +173,27 @@ header h1{margin:0;font-size:22px;letter-spacing:.04em}
 .hero-box .big{margin-top:8px;font-size:22px;font-weight:700;line-height:1.2}
 
 .detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
+.focus-card{padding:22px 22px 18px}
+.focus-layout{display:grid;grid-template-columns:1.15fr .95fr;gap:18px;align-items:start}
+.focus-main{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.2fr);gap:16px}
+.focus-panel{padding:16px;border-radius:20px;border:1px solid rgba(118,183,255,.1);background:rgba(8,15,24,.74)}
+.focus-panel h4{margin:0 0 12px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.focus-stack{display:grid;gap:10px}
+.focus-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.focus-kpi{padding:12px 14px;border-radius:16px;background:rgba(255,255,255,.02);border:1px solid rgba(118,183,255,.08)}
+.focus-kpi .lbl{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.focus-kpi .val{margin-top:8px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:13px;line-height:1.35}
+.focus-aside{display:grid;gap:16px}
+.focus-note{margin-top:10px;font-size:12px;line-height:1.5;color:var(--muted)}
+.compact-card{padding-top:18px;padding-bottom:18px}
+.compact-card h3{margin-bottom:12px}
+.observe-layout{display:grid;grid-template-columns:1.05fr .95fr;gap:16px}
+.observe-panel{padding:16px;border-radius:18px;background:rgba(8,15,24,.68);border:1px solid rgba(118,183,255,.08)}
+.observe-panel h4{margin:0 0 12px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.fold-card details{width:100%}
+.fold-card summary{list-style:none;cursor:pointer;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:#d8e5f7}
+.fold-card summary::-webkit-details-marker{display:none}
+.fold-body{margin-top:16px}
 .row{
   display:flex;
   justify-content:space-between;
@@ -217,13 +233,14 @@ tr:hover{background:rgba(118,183,255,.04)}
 
 @media (max-width: 1180px){
   .summary-bar{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .focus-layout,.focus-main,.observe-layout{grid-template-columns:1fr}
   .span-4,.span-5,.span-6,.span-7{grid-column:1/-1}
 }
 @media (max-width: 760px){
   header{padding:16px;flex-direction:column}
   .wrap{padding:16px}
   .summary-bar{grid-template-columns:1fr}
-  .detail-grid,.config-grid,.hero-metrics,.subgrid{grid-template-columns:1fr}
+  .detail-grid,.config-grid,.hero-metrics,.subgrid,.focus-kpis{grid-template-columns:1fr}
   .row{flex-direction:column;gap:6px}
   .row .k,.row .v{text-align:left;flex:auto}
   .timer-big{font-size:44px}
@@ -235,7 +252,7 @@ tr:hover{background:rgba(118,183,255,.04)}
 <div id="login-overlay">
   <div class="login-box">
     <h2>15分钟方向性机器人</h2>
-    <p class="login-sub">BTC 15min 方向性持有策略，面板只保留盈利质量、持仓状态和运行质量。</p>
+    <p class="login-sub">BTC 15min 错价 + 趋势混合策略，面板聚焦入场质量、持仓风控和执行稳定性。</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
     <div style="margin-top:20px;text-align:center">
@@ -249,13 +266,11 @@ tr:hover{background:rgba(118,183,255,.04)}
   <header>
     <div class="title-wrap">
       <h1>15分钟方向性机器人</h1>
-      <div class="header-sub">方向性入场，持有到结算，重点观察 fill quality 与回撤保护是否生效。</div>
+      <div class="header-sub">错价单走失效退出，趋势单走动态止盈止损，重点观察信号质量与回撤控制。</div>
     </div>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
-      <button class="btn-b" onclick="downloadLogs()">下载日志</button>
-      <button class="btn-b" onclick="downloadHistory()">下载历史</button>
-      <button class="btn-y" onclick="downloadDecisionAudit()">下载决策审计</button>
+      <button class="btn-y" onclick="downloadDecisionAudit()">下载决策</button>
       <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
       <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
       <button class="btn-r" onclick="doLogout()">退出</button>
@@ -271,157 +286,174 @@ tr:hover{background:rgba(118,183,255,.04)}
     </div>
 
     <div class="grid">
-      <div class="card span-4">
-        <h3>回合节奏</h3>
-        <div class="timer-wrap">
-          <div class="timer-big" id="timer">--:--</div>
-          <div class="timer-label" id="market-q">等待市场...</div>
-        </div>
-        <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:var(--blue)"></div></div>
-        <div class="subgrid">
-          <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
-          <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
-          <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
-          <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
-        </div>
-      </div>
+      <div class="card full focus-card">
+        <h3>核心决策台</h3>
+        <div class="focus-layout">
+          <div class="focus-main">
+            <div class="focus-panel">
+              <h4>回合节奏</h4>
+              <div class="timer-wrap">
+                <div class="timer-big" id="timer">--:--</div>
+                <div class="timer-label" id="market-q">等待市场...</div>
+              </div>
+              <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:var(--blue)"></div></div>
+              <div class="subgrid">
+                <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
+                <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
+                <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
+                <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
+              </div>
+            </div>
 
-      <div class="card span-4">
-        <h3>盈利质量</h3>
-        <div class="hero-metrics">
-          <div class="hero-box"><div class="eyebrow">结算样本</div><div class="big" id="a-trades">--</div></div>
-          <div class="hero-box"><div class="eyebrow">实现边际</div><div class="big" id="a-est">--</div></div>
-          <div class="hero-box"><div class="eyebrow">盈利判断</div><div class="big" id="a-warning">--</div></div>
-        </div>
-        <div class="detail-grid">
-          <div class="row"><span class="k">价格分桶</span><span class="v" id="a-winrate">--</span></div>
-          <div class="row"><span class="k">趋势分桶</span><span class="v" id="a-pf">--</span></div>
-          <div class="row"><span class="k">入场来源</span><span class="v" id="a-dd">--</span></div>
-        </div>
-      </div>
+            <div class="focus-stack">
+              <div class="focus-panel">
+                <h4>决策焦点</h4>
+                <div class="focus-kpis">
+                  <div class="focus-kpi"><div class="lbl">回合阶段</div><div class="val" id="d-phase">--</div></div>
+                  <div class="focus-kpi"><div class="lbl">当前动作</div><div class="val" id="d-status">--</div></div>
+                  <div class="focus-kpi"><div class="lbl">入场决策</div><div class="val" id="d-entry">--</div></div>
+                  <div class="focus-kpi"><div class="lbl">执行方式</div><div class="val" id="d-exec">--</div></div>
+                </div>
+                <div class="focus-note">首屏明确区分错价单和趋势单，优先看当前风控是否真的在接管仓位。</div>
+              </div>
 
-      <div class="card span-4">
-        <h3>启动配置</h3>
-        <div class="config-grid">
-          <div>
-            <label>运行模式</label>
-            <select id="cfg-mode">
-              <option value="paper">仿真盘</option>
-              <option value="live">实盘</option>
-            </select>
+              <div class="focus-panel">
+                <h4>持仓摘要</h4>
+                <div class="detail-grid">
+                  <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+                  <div class="row"><span class="k">持仓类型</span><span class="v" id="h-entry-kind">--</span></div>
+                  <div class="row"><span class="k">入场 EV</span><span class="v" id="h-entry-ev">--</span></div>
+                  <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
+                  <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
+                  <div class="row"><span class="k">当前持仓</span><span class="v" id="h-leg1">--</span></div>
+                  <div class="row"><span class="k">持仓风控</span><span class="v" id="h-trend-guard">--</span></div>
+                  <div class="row"><span class="k">趋势确认</span><span class="v" id="h-trend-confirm">--</span></div>
+                  <div class="row"><span class="k">风险状态</span><span class="v" id="d-risk">--</span></div>
+                  <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div>
-            <label>仿真会话</label>
-            <select id="cfg-paper-session-mode">
-              <option value="persistent" selected>线上累计</option>
-              <option value="session">单次测试</option>
-            </select>
+
+          <div class="focus-aside">
+            <div class="focus-panel">
+              <h4>盘口与保护</h4>
+              <div class="detail-grid">
+                <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
+                <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
+                <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
+                <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
+                <div class="row"><span class="k">回撤保护</span><span class="v" id="h-leg2">--</span></div>
+                <div class="row"><span class="k">有效入场上限</span><span class="v" id="h-expected">--</span></div>
+                <div class="row"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
+              </div>
+            </div>
+
+            <div class="focus-panel">
+              <h4>执行质量</h4>
+              <div class="detail-grid">
+                <div class="row"><span class="k">网络延迟</span><span class="v" id="h-lat-p50">--</span></div>
+                <div class="row"><span class="k">WS 状态</span><span class="v" id="h-market-ws">--</span></div>
+                <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
+                <div class="row"><span class="k">本地 Book</span><span class="v" id="h-local-book">--</span></div>
+                <div class="row"><span class="k">Book 风险</span><span class="v" id="h-local-book-issues">--</span></div>
+                <div class="row"><span class="k">信号到成交</span><span class="v" id="h-exec-s2f">--</span></div>
+                <div class="row"><span class="k">回退统计</span><span class="v" id="h-fallback-stats">--</span></div>
+              </div>
+            </div>
           </div>
-          <div>
-            <label>仿真初始余额</label>
-            <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
+        </div>
+      </div>
+
+      <div class="card full compact-card">
+        <h3>策略观测</h3>
+        <div class="observe-layout">
+          <div class="observe-panel">
+            <h4>盈利质量</h4>
+            <div class="hero-metrics">
+              <div class="hero-box"><div class="eyebrow">结算样本</div><div class="big" id="a-trades">--</div></div>
+              <div class="hero-box"><div class="eyebrow">实现边际</div><div class="big" id="a-est">--</div></div>
+              <div class="hero-box"><div class="eyebrow">盈利判断</div><div class="big" id="a-warning">--</div></div>
+            </div>
+            <div class="detail-grid">
+              <div class="row"><span class="k">价格分桶</span><span class="v" id="a-winrate">--</span></div>
+              <div class="row"><span class="k">策略分桶</span><span class="v" id="a-pf">--</span></div>
+              <div class="row"><span class="k">趋势退出</span><span class="v" id="a-dd">--</span></div>
+            </div>
           </div>
-          <div>
-            <label>资金地址</label>
-            <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
+
+          <div class="observe-panel">
+            <h4>运行与护栏</h4>
+            <div class="detail-grid">
+              <div class="row"><span class="k">核心策略</span><span class="v">错价单做失效退出，趋势单做动态止盈止损</span></div>
+              <div class="row"><span class="k">主要入场</span><span class="v">双侧 GTC 预挂单，maker 0% 手续费</span></div>
+              <div class="row"><span class="k">预算规则</span><span class="v" id="p-budget">余额 × 25%</span></div>
+              <div class="row"><span class="k">SUM 目标</span><span class="v" id="p-sum">--</span></div>
+              <div class="row"><span class="k">高风险恢复</span><span class="v">4h 滚动亏损 ≥ 10% 时收紧入场价，上穿 5% 自动恢复</span></div>
+              <div class="row"><span class="k">费用结构</span><span class="v">maker 0% / taker 2% / 结算 0%</span></div>
+            </div>
           </div>
-          <div class="full-input">
-            <label>私钥</label>
-            <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off">
+        </div>
+
+        <div class="observe-layout" style="margin-top:16px">
+          <div class="observe-panel">
+            <h4>错价退出质量</h4>
+            <div class="detail-grid">
+              <div class="row"><span class="k">错价样本</span><span class="v" id="a-mis-sample">--</span></div>
+              <div class="row"><span class="k">失效退出</span><span class="v" id="a-mis-invalid">--</span></div>
+              <div class="row"><span class="k">超时退出</span><span class="v" id="a-mis-timeout">--</span></div>
+              <div class="row"><span class="k">结算持有</span><span class="v" id="a-mis-settle">--</span></div>
+            </div>
+          </div>
+
+          <div class="observe-panel">
+            <h4>趋势退出质量</h4>
+            <div class="detail-grid">
+              <div class="row"><span class="k">趋势样本</span><span class="v" id="a-trend-sample">--</span></div>
+              <div class="row"><span class="k">止盈族</span><span class="v" id="a-trend-profit">--</span></div>
+              <div class="row"><span class="k">止损族</span><span class="v" id="a-trend-stop">--</span></div>
+              <div class="row"><span class="k">规则分布</span><span class="v" id="a-trend-rules">--</span></div>
+            </div>
           </div>
         </div>
-        <p class="config-note">仿真盘不发真实订单。线上累计模式会保留余额、累计盈亏和滚动样本，适合持续观察真实盈利质量。</p>
       </div>
 
-      <div class="card span-7">
-        <h3>持仓与盘口</h3>
-        <div class="detail-grid">
-          <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
-          <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
-          <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
-          <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
-          <div class="row"><span class="k">BTC 价格</span><span class="v" id="h-btc">--</span></div>
-          <div class="row"><span class="k">UP Ask</span><span class="v" id="h-up-ask">--</span></div>
-          <div class="row"><span class="k">DOWN Ask</span><span class="v" id="h-dn-ask">--</span></div>
-          <div class="row"><span class="k">当前持仓</span><span class="v" id="h-leg1">--</span></div>
-          <div class="row"><span class="k">回撤保护</span><span class="v" id="h-leg2">--</span></div>
-          <div class="row"><span class="k">有效入场上限</span><span class="v" id="h-expected">--</span></div>
-          <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
-          <div class="row"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
-        </div>
+      <div class="card full fold-card">
+        <details>
+          <summary>启动配置</summary>
+          <div class="fold-body">
+            <div class="config-grid">
+              <div>
+                <label>运行模式</label>
+                <select id="cfg-mode">
+                  <option value="paper">仿真盘</option>
+                  <option value="live">实盘</option>
+                </select>
+              </div>
+              <div>
+                <label>仿真会话</label>
+                <select id="cfg-paper-session-mode">
+                  <option value="persistent" selected>线上累计</option>
+                  <option value="session">单次测试</option>
+                </select>
+              </div>
+              <div>
+                <label>仿真初始余额</label>
+                <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
+              </div>
+              <div>
+                <label>资金地址</label>
+                <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
+              </div>
+              <div class="full-input">
+                <label>私钥</label>
+                <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off">
+              </div>
+            </div>
+            <p class="config-note">仿真盘不发真实订单。线上累计模式会保留余额、累计盈亏和滚动样本，适合持续观察真实盈利质量。</p>
+          </div>
+        </details>
       </div>
-
-      <div class="card span-5">
-        <h3>运行质量</h3>
-        <div class="detail-grid">
-          <div class="row"><span class="k">网络延迟</span><span class="v" id="h-lat-p50">--</span></div>
-          <div class="row"><span class="k">WS 状态</span><span class="v" id="h-market-ws">--</span></div>
-          <div class="row"><span class="k">盘口源</span><span class="v" id="h-book-source">--</span></div>
-          <div class="row"><span class="k">本地 Book</span><span class="v" id="h-local-book">--</span></div>
-          <div class="row"><span class="k">Book 风险</span><span class="v" id="h-local-book-issues">--</span></div>
-          <div class="row"><span class="k">信号到成交</span><span class="v" id="h-exec-s2f">--</span></div>
-          <div class="row"><span class="k">回退统计</span><span class="v" id="h-fallback-stats">--</span></div>
-        </div>
-      </div>
-
-      <div class="card full">
-        <h3>策略护栏</h3>
-        <div class="detail-grid">
-          <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算，入场后不做中途卖出</span></div>
-          <div class="row"><span class="k">主要入场</span><span class="v">双侧 GTC 预挂单，maker 0% 手续费</span></div>
-          <div class="row"><span class="k">预算规则</span><span class="v" id="p-budget">余额 × 25%</span></div>
-          <div class="row"><span class="k">SUM 目标</span><span class="v" id="p-sum">--</span></div>
-          <div class="row"><span class="k">高风险恢复</span><span class="v">4h 滚动亏损 ≥ 10% 时收紧入场价，上穿 5% 自动恢复</span></div>
-          <div class="row"><span class="k">费用结构</span><span class="v">入场 maker 0% / 结算 0%</span></div>
-        </div>
-      </div>
-
-      <div class="card full">
-        <h3>交易历史</h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>结果</th>
-                <th>退出</th>
-                <th>方向</th>
-                <th>L1买入</th>
-                <th>L2买入</th>
-                <th>卖出价</th>
-                <th>份数</th>
-                <th>成本</th>
-                <th>盈亏</th>
-                <th>累计</th>
-                <th style="min-width:180px">理由</th>
-              </tr>
-            </thead>
-            <tbody id="history-body"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <div class="compat-hidden" aria-hidden="true">
-      <span id="h-strategy-policy"></span>
-      <span id="h-paper-tuning"></span>
-      <span id="h-paper-adjust"></span>
-      <span id="h-cost"></span>
-      <span id="h-maker"></span>
-      <span id="h-lat-p90"></span>
-      <span id="h-lat-live"></span>
-      <span id="h-lat-ping"></span>
-      <span id="h-lat-http"></span>
-      <span id="h-lat-cache"></span>
-      <span id="h-user-ws"></span>
-      <span id="h-exec-s2s"></span>
-      <span id="h-exec-s2a"></span>
-      <span id="h-exec-a2f"></span>
-      <span id="h-exec-leg2"></span>
-      <span id="h-exec-exit"></span>
-      <span id="h-exec-gtc"></span>
-      <span id="h-market-ws-stats"></span>
-      <span id="h-user-ws-stats"></span>
     </div>
   </div>
 </div>
@@ -429,8 +461,8 @@ tr:hover{background:rgba(118,183,255,.04)}
 <script>
 const API = '';
 let ws = null;
-let auditTimer = null;
 let latestState = null;
+let latestAudit = null;
 
 function fmtSecs(totalSecs) {
   const secs = Math.max(0, Math.floor(totalSecs || 0));
@@ -447,7 +479,7 @@ async function doLogin() {
   try {
     const r = await fetch(API + '/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pwd}), credentials:'include' });
     const d = await r.json();
-    if (r.ok) { errEl.style.display='none'; document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; connectWS(); refreshAudit(); }
+    if (r.ok) { errEl.style.display='none'; document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; refreshStatus(); refreshAudit(); connectWS(); }
     else { errEl.textContent=d.error||'登录失败'; errEl.style.display='block'; }
   } catch(e) { errEl.textContent='网络错误'; errEl.style.display='block'; }
 }
@@ -455,7 +487,6 @@ document.getElementById('pwd').addEventListener('keydown', e => { if(e.key==='En
 
 async function doLogout() {
   await fetch(API+'/api/logout',{method:'POST',credentials:'include'}).catch(()=>{});
-  if (auditTimer) { clearInterval(auditTimer); auditTimer = null; }
   location.reload();
 }
 
@@ -474,7 +505,7 @@ async function startBot() {
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
     if (!r.ok) alert(d.error||'启动失败');
-    else refreshAudit();
+    else { refreshStatus(); refreshAudit(); }
   } catch(e) { alert('网络错误'); }
 }
 
@@ -503,53 +534,32 @@ async function downloadWithAuth(url, fallbackName) {
   }
 }
 
-function downloadLogs() {
-  downloadWithAuth('/api/download-logs', 'hedge15m-log.txt');
-}
-
-function downloadHistory() {
-  downloadWithAuth('/api/download-history', 'hedge15m-history.json');
-}
-
 function downloadDecisionAudit() {
-  downloadWithAuth('/api/download-decision-audit', 'hedge15m-decisions.jsonl');
+  downloadWithAuth('/api/download-decision-audit', 'directional15m-decisions.jsonl');
 }
 
 async function stopBot() {
   try {
     await fetch(API+'/api/stop',{method:'POST',credentials:'include'});
+    refreshStatus();
     refreshAudit();
   } catch(e) { alert('网络错误'); }
 }
 
+async function refreshStatus() {
+  try {
+    const r = await fetch(API+'/api/status',{credentials:'include'});
+    if (!r.ok) return;
+    render(await r.json());
+  } catch {}
+}
+
 async function refreshAudit() {
   try {
-    if (latestState) {
-      renderDirectionalAudit(latestState.history || []);
-      if (!auditTimer) {
-        auditTimer = setInterval(refreshAudit, 15000);
-      }
-      return;
-    }
     const r = await fetch(API+'/api/audit',{credentials:'include'});
     if (!r.ok) return;
-    const a = await r.json();
-    document.getElementById('a-trades').textContent = a.totalTrades || 0;
-    document.getElementById('a-winrate').textContent = (a.winRatePct ?? 0).toFixed(1) + '%';
-    document.getElementById('a-pf').textContent = a.profitFactor == null ? 'inf' : Number(a.profitFactor).toFixed(2);
-    const ddEl = document.getElementById('a-dd');
-    ddEl.textContent = '$' + Number(a.maxDrawdown || 0).toFixed(2);
-    ddEl.style.color = (a.maxDrawdown || 0) > 0 ? '#ff6b6b' : '';
-    const estEl = document.getElementById('a-est');
-    estEl.textContent = (a.estimatedTradePct ?? 0).toFixed(1) + '%';
-    estEl.style.color = (a.estimatedTradePct || 0) > 20 ? '#ff6b6b' : (a.estimatedTradePct || 0) > 0 ? '#f4c96b' : '';
-    const warningEl = document.getElementById('a-warning');
-    warningEl.textContent = a.warnings && a.warnings.length ? a.warnings[0] : '无';
-    warningEl.title = a.warnings && a.warnings.length ? a.warnings.join('\n') : '';
-    warningEl.style.color = a.warnings && a.warnings.length ? '#ff6b6b' : '#42d392';
-    if (!auditTimer) {
-      auditTimer = setInterval(refreshAudit, 15000);
-    }
+    latestAudit = await r.json();
+    renderDirectionalAudit(latestAudit);
   } catch {}
 }
 
@@ -559,14 +569,39 @@ function summarizeWinRate(items) {
   return (wins / items.length * 100).toFixed(1) + '%(' + wins + '/' + items.length + ')';
 }
 
-function renderDirectionalAudit(history) {
-  const settled = (history || []).filter(h => h.exitType === 'settlement' && (h.leg1FillPrice || h.leg1Price || 0) > 0);
+function summarizeOutcome(items) {
+  if (!items.length) return '--';
+  const wins = items.filter(x => x.result === 'WIN').length;
+  const totalProfit = items.reduce((sum, x) => sum + Number(x.profit || 0), 0);
+  const avgProfit = totalProfit / items.length;
+  return (wins / items.length * 100).toFixed(1) + '%(' + wins + '/' + items.length + ') · ' + (totalProfit >= 0 ? '+' : '') + '$' + totalProfit.toFixed(2) + ' / avg ' + (avgProfit >= 0 ? '+' : '') + '$' + avgProfit.toFixed(2);
+}
+
+function summarizeRuleBreakdown(breakdown, labelMap) {
+  const entries = Object.entries(breakdown || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (!entries.length) return '--';
+  return entries.map(([key, count]) => (labelMap[key] || key) + ' ' + count).join(' / ');
+}
+
+function renderDirectionalAudit(audit) {
+  const report = audit && typeof audit === 'object' ? audit : { history: Array.isArray(audit) ? audit : [] };
+  const history = report.history || [];
+  const settled = history.filter(h => h.exitType === 'settlement' && (h.leg1FillPrice || h.leg1Price || 0) > 0);
+  const completed = history.filter(h => !!h.exitType);
   document.getElementById('a-trades').textContent = settled.length;
   if (!settled.length) {
     document.getElementById('a-winrate').textContent = '--';
     document.getElementById('a-pf').textContent = '--';
     document.getElementById('a-dd').textContent = '--';
     document.getElementById('a-est').textContent = '--';
+    document.getElementById('a-mis-sample').textContent = '--';
+    document.getElementById('a-mis-invalid').textContent = '--';
+    document.getElementById('a-mis-timeout').textContent = '--';
+    document.getElementById('a-mis-settle').textContent = '--';
+    document.getElementById('a-trend-sample').textContent = '--';
+    document.getElementById('a-trend-profit').textContent = '--';
+    document.getElementById('a-trend-stop').textContent = '--';
+    document.getElementById('a-trend-rules').textContent = '--';
     const warningEl = document.getElementById('a-warning');
     warningEl.textContent = '样本不足';
     warningEl.style.color = '#f4c96b';
@@ -574,25 +609,51 @@ function renderDirectionalAudit(history) {
   }
 
   const byPrice = {
-    low: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) <= 0.25),
-    mid: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.25 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.30),
-    high: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.30 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.35),
+    low: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) <= 0.35),
+    mid: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.35 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.40),
+    high: settled.filter(h => (h.leg1FillPrice || h.leg1Price || 0) > 0.40 && (h.leg1FillPrice || h.leg1Price || 0) <= 0.43),
   };
-  document.getElementById('a-winrate').textContent = '≤0.25 ' + summarizeWinRate(byPrice.low) + ' / 0.25-0.30 ' + summarizeWinRate(byPrice.mid) + ' / 0.30-0.35 ' + summarizeWinRate(byPrice.high);
+  document.getElementById('a-winrate').textContent = '≤0.35 ' + summarizeWinRate(byPrice.low) + ' / 0.35-0.40 ' + summarizeWinRate(byPrice.mid) + ' / 0.40-0.43 ' + summarizeWinRate(byPrice.high);
 
-  const trendGroups = {
-    up: settled.filter(h => h.entryTrendBias === 'up'),
-    down: settled.filter(h => h.entryTrendBias === 'down'),
-    flat: settled.filter(h => !h.entryTrendBias || h.entryTrendBias === 'flat'),
+  const strategyGroups = {
+    mispricing: completed.filter(h => h.strategyMode === 'mispricing'),
+    trend: completed.filter(h => h.strategyMode === 'trend'),
+    other: completed.filter(h => !h.strategyMode || (h.strategyMode !== 'mispricing' && h.strategyMode !== 'trend')),
   };
-  document.getElementById('a-pf').textContent = 'UP ' + summarizeWinRate(trendGroups.up) + ' / DOWN ' + summarizeWinRate(trendGroups.down) + ' / FLAT ' + summarizeWinRate(trendGroups.flat);
+  document.getElementById('a-pf').textContent = '错价 ' + summarizeWinRate(strategyGroups.mispricing) + ' / 趋势 ' + summarizeWinRate(strategyGroups.trend) + (strategyGroups.other.length ? ' / 其他 ' + summarizeWinRate(strategyGroups.other) : '');
 
   const sourceGroups = {
-    preorder: settled.filter(h => h.entrySource === 'dual-side-preorder'),
-    mispricing: settled.filter(h => h.entrySource === 'reactive-mispricing'),
-    trend: settled.filter(h => h.entrySource === 'reactive-trend'),
+    preorder: completed.filter(h => h.entrySource === 'dual-side-preorder'),
+    mispricing: completed.filter(h => h.entrySource === 'reactive-mispricing'),
+    trend: completed.filter(h => h.entrySource === 'reactive-trend'),
   };
-  document.getElementById('a-dd').textContent = '预挂 ' + summarizeWinRate(sourceGroups.preorder) + ' / 砸盘 ' + summarizeWinRate(sourceGroups.mispricing) + ' / 趋势 ' + summarizeWinRate(sourceGroups.trend);
+  const trendRuleText = summarizeRuleBreakdown(report.trendExitRuleBreakdown, {
+    'trend-fixed-tp': '固定TP',
+    'trend-trailing-stop': '移动TP',
+    'trend-relative-sl': '相对SL',
+    'trend-absolute-sl': '绝对SL',
+    'trend-deadzone-exit': '死区退',
+    'trend-late-exit': '尾段退',
+  });
+  const sourceText = '预挂 ' + summarizeWinRate(sourceGroups.preorder) + ' / 砸盘 ' + summarizeWinRate(sourceGroups.mispricing) + ' / 趋势 ' + summarizeWinRate(sourceGroups.trend);
+  document.getElementById('a-dd').textContent = trendRuleText === '--' ? sourceText : trendRuleText + ' · ' + sourceText;
+
+  const mispricingCompleted = completed.filter(h => h.strategyMode === 'mispricing');
+  const mispricingInvalid = mispricingCompleted.filter(h => (h.exitReason || '').includes('失效退出'));
+  const mispricingTimeout = mispricingCompleted.filter(h => h.exitType === 'force-exit' && !(h.exitReason || '').includes('GTC未成交'));
+  const mispricingSettlement = mispricingCompleted.filter(h => h.exitType === 'settlement');
+  document.getElementById('a-mis-sample').textContent = mispricingCompleted.length ? String(mispricingCompleted.length) : '--';
+  document.getElementById('a-mis-invalid').textContent = summarizeOutcome(mispricingInvalid);
+  document.getElementById('a-mis-timeout').textContent = summarizeOutcome(mispricingTimeout);
+  document.getElementById('a-mis-settle').textContent = summarizeOutcome(mispricingSettlement);
+
+  const trendCompleted = completed.filter(h => h.strategyMode === 'trend');
+  const trendProfitExits = trendCompleted.filter(h => h.trendExitRule === 'trend-fixed-tp' || h.trendExitRule === 'trend-trailing-stop');
+  const trendStopExits = trendCompleted.filter(h => h.trendExitRule === 'trend-relative-sl' || h.trendExitRule === 'trend-absolute-sl' || h.trendExitRule === 'trend-deadzone-exit' || h.trendExitRule === 'trend-late-exit');
+  document.getElementById('a-trend-sample').textContent = trendCompleted.length ? String(trendCompleted.length) : '--';
+  document.getElementById('a-trend-profit').textContent = summarizeOutcome(trendProfitExits);
+  document.getElementById('a-trend-stop').textContent = summarizeOutcome(trendStopExits);
+  document.getElementById('a-trend-rules').textContent = trendRuleText;
 
   const avgEdge = settled.reduce((sum, h) => sum + ((h.result === 'WIN' ? 1 : 0) - (h.leg1FillPrice || h.leg1Price || 0)), 0) / settled.length;
   const edgeEl = document.getElementById('a-est');
@@ -602,14 +663,17 @@ function renderDirectionalAudit(history) {
   const hiBucket = byPrice.high;
   const hiBucketWinRate = hiBucket.length ? hiBucket.filter(h => h.result === 'WIN').length / hiBucket.length : null;
   const warningEl = document.getElementById('a-warning');
-  if (avgEdge > 0 && (hiBucketWinRate == null || hiBucketWinRate >= 0.35)) {
-    warningEl.textContent = '有正边际，继续观察 fill quality';
+  if (Array.isArray(report.warnings) && report.warnings.length) {
+    warningEl.textContent = report.warnings[0];
+    warningEl.style.color = '#f4c96b';
+  } else if (avgEdge > 0 && (hiBucketWinRate == null || hiBucketWinRate >= 0.35)) {
+    warningEl.textContent = '有正边际，继续观察触发质量';
     warningEl.style.color = '#42d392';
   } else if (avgEdge <= 0) {
     warningEl.textContent = '当前样本未证明盈利';
     warningEl.style.color = '#ff6b6b';
   } else {
-    warningEl.textContent = '高价桶胜率偏低，注意逆向选择';
+    warningEl.textContent = '0.40-0.43 桶胜率偏低，注意高价 EV+ 但边际变薄';
     warningEl.style.color = '#f4c96b';
   }
 }
@@ -712,31 +776,25 @@ function render(s) {
   decisionEl.textContent = s.roundDecision || '--';
   decisionEl.style.color = (s.roundDecision || '').startsWith('跳过:') ? '#ff6b6b' : '#ecf3ff';
 
-  const stateMap = {off:'待命',watching:'监控中',leg1_filled:'已持仓待结算',leg2_filled:'历史兼容状态',done:'完成'};
+  const stateMap = {off:'待命',watching:'监控中',leg1_filled:'已持仓待结算',done:'完成'};
   const stateEl = document.getElementById('h-state');
-  const renderedStatus = fmtSkipStatus(s.status || stateMap[s.hedgeState] || s.hedgeState);
+  const renderedStatus = fmtSkipStatus(s.status || stateMap[s.positionState] || s.positionState);
   stateEl.textContent = renderedStatus;
-  stateEl.title = s.status || stateMap[s.hedgeState] || s.hedgeState || '';
+  stateEl.title = s.status || stateMap[s.positionState] || s.positionState || '';
   stateEl.style.color = (s.status || '').startsWith('跳过:') ? '#f4c96b' : '';
   document.getElementById('h-mode').textContent = s.tradingMode === 'paper'
     ? '仿真盘 / ' + (s.paperSessionMode === 'persistent' ? '线上累计' : '单次测试')
     : '实盘';
-  const tuningEl = document.getElementById('h-paper-tuning');
-  tuningEl.textContent = s.tuningEnabled
-    ? 'sum ' + Number(s.baseSumTarget || 0).toFixed(2) + '→' + Number(s.maxSumTarget || 0).toFixed(2) + ' / ask≤' + Number(s.maxEntryAsk || 0).toFixed(2)
-    : '固定参数';
-  tuningEl.style.color = s.adjustmentCount > 0 ? '#f4c96b' : '';
-  const adjustEl = document.getElementById('h-paper-adjust');
-  adjustEl.textContent = s.lastAdjustment || (s.tradingMode === 'paper' ? (s.tuningEnabled ? '未触发' : '动态调参关闭') : '--');
-  adjustEl.style.color = s.adjustmentCount > 0 ? '#f4c96b' : '#8ea0b8';
   const strategyEl = document.getElementById('h-strategy-mode');
   const strategyModeMap = {none:'待机',mispricing:'错价',trend:'趋势'};
   strategyEl.textContent = strategyModeMap[s.activeStrategyMode] || s.activeStrategyMode || '--';
   strategyEl.style.color = s.activeStrategyMode === 'trend' ? '#71e5ff' : s.activeStrategyMode === 'mispricing' ? '#76b7ff' : '';
-  const policyEl = document.getElementById('h-strategy-policy');
-  const policyMap = {'mispricing-first':'错价优先，趋势补充'};
-  policyEl.textContent = policyMap[s.strategyPolicy] || s.strategyPolicy || '--';
-  policyEl.style.color = '#8ea0b8';
+  const entryKindEl = document.getElementById('h-entry-kind');
+  entryKindEl.textContent = s.positionEntryKind || '--';
+  entryKindEl.style.color = s.activeStrategyMode === 'trend' ? '#71e5ff' : s.activeStrategyMode === 'mispricing' ? '#76b7ff' : '#8ea0b8';
+  const entryEvEl = document.getElementById('h-entry-ev');
+  entryEvEl.textContent = s.entryEvSummary || '--';
+  entryEvEl.style.color = (s.entryEvSummary || '').includes('EV50 -') ? '#ff6b6b' : '#42d392';
   const trendEl = document.getElementById('h-trend-bias');
   const trendBiasMap = {flat:'中性',up:'看涨',down:'看跌'};
   trendEl.textContent = trendBiasMap[s.trendBias] || s.trendBias || '--';
@@ -744,8 +802,8 @@ function render(s) {
   const paramBudgetEl = document.getElementById('p-budget');
   if (paramBudgetEl) {
     paramBudgetEl.textContent = s.activeStrategyMode === 'trend'
-      ? '趋势单8% / Mispricing正常18% / 边缘12% / 高价10% (3~100份)'
-      : '正常18% / 边缘12% / 高价10% (3~100份)';
+      ? '趋势单8% / ≤0.35 正常14% / 0.35-0.40 12% / 0.40-0.43 8% (3~100份)'
+      : '≤0.35 正常14% / 0.35-0.40 12% / 0.40-0.43 8% (3~100份)';
   }
   const paramSumEl = document.getElementById('p-sum');
   if (paramSumEl) {
@@ -761,18 +819,25 @@ function render(s) {
   document.getElementById('h-dn-ask').textContent = s.downAsk > 0 ? '$'+s.downAsk.toFixed(2) : '--';
   document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
 
-  if (s.hedgeLeg1Price > 0) {
-    document.getElementById('h-leg1').innerHTML = '<span class="tag tag-b">'+s.hedgeLeg1Dir+' @$'+s.hedgeLeg1Price.toFixed(2)+'</span>';
+  if (s.positionLeg1Price > 0) {
+    document.getElementById('h-leg1').innerHTML = '<span class="tag tag-b">'+s.positionLeg1Dir+' @$'+s.positionLeg1Price.toFixed(2)+'</span>';
   } else {
     document.getElementById('h-leg1').textContent = '--';
   }
+  const trendGuardEl = document.getElementById('h-trend-guard');
+  trendGuardEl.textContent = s.trendProtectionStatus || '--';
+  trendGuardEl.style.color = s.activeStrategyMode === 'trend'
+    ? ((s.trendProtectionStatus || '').startsWith('已触发') ? '#f4c96b' : '#71e5ff')
+    : '#8ea0b8';
+  const trendConfirmEl = document.getElementById('h-trend-confirm');
+  trendConfirmEl.textContent = s.trendConfirmSummary || '--';
+  trendConfirmEl.style.color = s.activeStrategyMode === 'trend' || (s.status || '').startsWith('趋势确认中:') ? '#71e5ff' : '#8ea0b8';
   const drawdownEl = document.getElementById('h-leg2');
   if (s.drawdownProtected) {
     drawdownEl.innerHTML = '<span class="tag tag-r">保护中 4h P/L $'+s.rolling4hPnL.toFixed(2)+'</span>';
   } else {
     drawdownEl.innerHTML = '<span class="tag tag-g">正常 4h P/L $'+s.rolling4hPnL.toFixed(2)+'</span>';
   }
-  document.getElementById('h-cost').textContent = s.hedgeTotalCost > 0 ? '$'+s.hedgeTotalCost.toFixed(2) : '--';
   const expEl = document.getElementById('h-expected');
   expEl.textContent = '$'+s.effectiveMaxAsk.toFixed(2);
   expEl.style.color = s.drawdownProtected ? '#f4c96b' : '#42d392';
@@ -788,91 +853,30 @@ function render(s) {
       preEl.textContent = parts.join(' / ');
       preEl.style.color = '#76b7ff';
     } else {
-      preEl.textContent = s.hedgeState === 'watching' ? '待挂' : '--';
+      preEl.textContent = s.positionState === 'watching' ? '待挂' : '--';
       preEl.style.color = '#8ea0b8';
     }
   }
-  const makerEl = document.getElementById('h-maker');
-  if (makerEl) {
-    if (s.hedgeState === 'leg1_filled' || s.hedgeState === 'leg2_filled') {
-      const parts = [];
-      parts.push('L1:' + (s.leg1Maker ? '✅maker' : 'taker'));
-      if (s.hedgeState === 'leg2_filled') parts.push('L2:' + (s.leg2Maker ? '✅maker' : 'taker'));
-      makerEl.textContent = parts.join(' / ');
-      makerEl.style.color = (s.leg1Maker || s.leg2Maker) ? '#42d392' : '#8ea0b8';
-    } else {
-      makerEl.textContent = '--';
-      makerEl.style.color = '';
-    }
-  }
-
   const lat50 = s.latencyP50 || 0;
-  const lat90 = s.latencyP90 || 0;
   const latColor = (ms) => ms <= 0 ? '' : ms < 60 ? '#42d392' : ms < 150 ? '#f4c96b' : '#ff6b6b';
   const latEl50 = document.getElementById('h-lat-p50');
   latEl50.textContent = lat50 > 0 ? lat50 + 'ms · ' + ((s.latencyNetworkSource || 'ping').toUpperCase()) : '--';
   latEl50.style.color = latColor(lat50);
-  const latEl90 = document.getElementById('h-lat-p90');
-  latEl90.textContent = lat90 > 0 ? lat90+'ms' : '--';
-  latEl90.style.color = latColor(lat90);
-  const liveEl = document.getElementById('h-lat-live');
-  const networkLastMs = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastMs || 0) : (s.latencyPingLastMs || 0);
-  const networkLastAt = s.latencyNetworkSource === 'http' ? (s.latencyHttpLastAt || 0) : (s.latencyPingLastAt || 0);
-  liveEl.textContent = networkLastMs > 0 ? networkLastMs + 'ms · ' + fmtLatencyAge(networkLastAt) : '--';
-  liveEl.style.color = latColor(networkLastMs || lat50);
-  const pingEl = document.getElementById('h-lat-ping');
-  pingEl.textContent = fmtLatencyDetail(s.latencyPingP50 || 0, s.latencyPingP90 || 0, s.latencyPingCount || 0, s.latencyPingLastMs || 0, s.latencyPingLastAt || 0, 7000);
-  pingEl.style.color = latColor(s.latencyPingP50 || 0);
-  const httpEl = document.getElementById('h-lat-http');
-  const httpAgeMs = s.latencyHttpLastAt ? Math.max(0, now - s.latencyHttpLastAt) : 0;
-  httpEl.textContent = fmtLatencyDetail(s.latencyHttpP50 || 0, s.latencyHttpP90 || 0, s.latencyHttpCount || 0, s.latencyHttpLastMs || 0, s.latencyHttpLastAt || 0, 10000);
-  httpEl.style.color = httpAgeMs > 10000 ? '#8ea0b8' : latColor(s.latencyHttpP50 || 0);
-  const cacheEl = document.getElementById('h-lat-cache');
-  cacheEl.textContent = fmtLatencyDetail(s.latencyCacheP50 || 0, s.latencyCacheP90 || 0, s.latencyCacheCount || 0, s.latencyCacheLastMs || 0, s.latencyCacheLastAt || 0, 2000);
-  cacheEl.style.color = s.latencyCacheP50 > 0 ? '#76b7ff' : '';
 
   const diagnostics = s.diagnostics || {};
   const marketWsEl = document.getElementById('h-market-ws');
   const marketWs = fmtWsStatus(diagnostics.marketWsConnected, diagnostics.marketWsAgeMs, diagnostics.marketWsDisconnects, diagnostics.marketWsReconnects);
   marketWsEl.textContent = marketWs.text;
   marketWsEl.style.color = marketWs.color;
-  const userWsEl = document.getElementById('h-user-ws');
-  const userWs = fmtWsStatus(diagnostics.userWsConnected, diagnostics.userWsAgeMs, diagnostics.userWsDisconnects, diagnostics.userWsReconnects);
-  userWsEl.textContent = userWs.text;
-  userWsEl.style.color = userWs.color;
   const bookSourceEl = document.getElementById('h-book-source');
   bookSourceEl.textContent = fmtBookSource(diagnostics.orderbookSource, diagnostics.fallbackActive);
   bookSourceEl.style.color = diagnostics.orderbookSource === 'ws' ? '#42d392' : diagnostics.orderbookSource === 'http' ? '#f4c96b' : '';
   const localBookEl = document.getElementById('h-local-book');
   localBookEl.textContent = (diagnostics.localBookReady ? '就绪' : '未就绪') + ' · ' + (diagnostics.localBookTokenCount || 0) + '/' + (diagnostics.trackedTokenCount || 0);
   localBookEl.style.color = diagnostics.localBookReady && !(diagnostics.localBookStaleCount || 0) && !(diagnostics.localBookCrossedCount || 0) ? '#42d392' : '#f4c96b';
-  const execS2SEl = document.getElementById('h-exec-s2s');
-  execS2SEl.textContent = diagnostics.execSignalToSubmitP50 > 0 ? diagnostics.execSignalToSubmitP50 + 'ms' : '--';
-  execS2SEl.style.color = latColor(diagnostics.execSignalToSubmitP50 || 0);
-  const execS2AEl = document.getElementById('h-exec-s2a');
-  execS2AEl.textContent = diagnostics.execSubmitToAckP50 > 0 ? diagnostics.execSubmitToAckP50 + 'ms' : '--';
-  execS2AEl.style.color = latColor(diagnostics.execSubmitToAckP50 || 0);
-  const execA2FEl = document.getElementById('h-exec-a2f');
-  execA2FEl.textContent = diagnostics.execAckToFillP50 > 0 ? diagnostics.execAckToFillP50 + 'ms' : '--';
-  execA2FEl.style.color = latColor(diagnostics.execAckToFillP50 || 0);
   const execS2FEl = document.getElementById('h-exec-s2f');
   execS2FEl.textContent = diagnostics.execSignalToFillP50 > 0 ? diagnostics.execSignalToFillP50 + 'ms / P90 ' + (diagnostics.execSignalToFillP90 || 0) + 'ms' : '--';
   execS2FEl.style.color = latColor(diagnostics.execSignalToFillP50 || 0);
-  const execLeg2El = document.getElementById('h-exec-leg2');
-  execLeg2El.textContent = diagnostics.execSignalToFillP50 > 0 ? diagnostics.execSignalToFillP50 + 'ms / P90 ' + (diagnostics.execSignalToFillP90 || 0) + 'ms' : '--';
-  execLeg2El.style.color = latColor(diagnostics.execSignalToFillP50 || 0);
-  const execExitEl = document.getElementById('h-exec-exit');
-  execExitEl.textContent = diagnostics.execExitSignalToFillP50 > 0 ? diagnostics.execExitSignalToFillP50 + 'ms / P90 ' + (diagnostics.execExitSignalToFillP90 || 0) + 'ms' : '--';
-  execExitEl.style.color = latColor(diagnostics.execExitSignalToFillP50 || 0);
-  const execGtcEl = document.getElementById('h-exec-gtc');
-  execGtcEl.textContent = diagnostics.execGtcWaitToFillP50 > 0 ? diagnostics.execGtcWaitToFillP50 + 'ms' : '--';
-  execGtcEl.style.color = latColor(diagnostics.execGtcWaitToFillP50 || 0);
-  const marketWsStatsEl = document.getElementById('h-market-ws-stats');
-  marketWsStatsEl.textContent = '断流 ' + (diagnostics.marketWsDisconnects || 0) + ' · 重连 ' + (diagnostics.marketWsReconnects || 0);
-  marketWsStatsEl.style.color = (diagnostics.marketWsDisconnects || 0) > 0 ? '#f4c96b' : '#8ea0b8';
-  const userWsStatsEl = document.getElementById('h-user-ws-stats');
-  userWsStatsEl.textContent = '断流 ' + (diagnostics.userWsDisconnects || 0) + ' · 重连 ' + (diagnostics.userWsReconnects || 0);
-  userWsStatsEl.style.color = (diagnostics.userWsDisconnects || 0) > 0 ? '#f4c96b' : '#8ea0b8';
   const fallbackStatsEl = document.getElementById('h-fallback-stats');
   fallbackStatsEl.textContent = '回退 ' + (diagnostics.fallbackTransitions || 0) + ' 次 · 深度 ' + (diagnostics.localBookMaxDepth || 0) + ' 档';
   fallbackStatsEl.style.color = (diagnostics.fallbackTransitions || 0) > 0 ? '#f4c96b' : '#8ea0b8';
@@ -880,44 +884,33 @@ function render(s) {
   localBookIssuesEl.textContent = fmtIssueCount(diagnostics.localBookStaleCount, diagnostics.localBookCrossedCount);
   localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#f4c96b' : '#42d392';
 
-  const tbody = document.getElementById('history-body');
-  const rows = (s.history||[]).slice().reverse().slice(0,50);
-  const exitLabels = {'settlement':'结算','take-profit':'止盈','stop-loss':'止损','force-exit':'割肉','gtc-fill':'GTC'};
-  tbody.innerHTML = rows.map(h => {
-    const cls = h.result==='WIN'?'tag-g':'tag-r';
-    const pf = h.profit>=0?'+$'+h.profit.toFixed(2):'-$'+Math.abs(h.profit).toFixed(2);
-    const exit = exitLabels[h.exitType]||h.exitType||'-';
-    const l1fill = h.leg1FillPrice>0?'$'+h.leg1FillPrice.toFixed(2):'$'+(h.leg1Price||0).toFixed(2);
-    const l2fill = h.leg2FillPrice>0?'$'+h.leg2FillPrice.toFixed(2):(h.leg2Price>0?'$'+h.leg2Price.toFixed(2):'-');
-    const sell = h.sellPrice>0?'$'+h.sellPrice.toFixed(2):(h.exitType==='settlement'?'$1.00':'-');
-    const shares = h.sellShares>0?h.sellShares.toFixed(0):(h.leg1Shares>0?h.leg1Shares.toFixed(0):'-');
-    const estMark = h.estimated ? '<span title="含估算数据" style="color:#f4c96b;cursor:help"> ⚠</span>' : '';
-    const reasonText = h.exitReason || '-';
-    const breakdown = h.profitBreakdown ? ' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"' : '';
-    return '<tr><td>'+h.time+'</td>'
-      +'<td><span class="tag '+cls+'">'+h.result+'</span>'+estMark+'</td>'
-      +'<td><span class="tag tag-b">'+exit+'</span></td>'
-      +'<td>'+h.leg1Dir+'</td>'
-      +'<td>'+l1fill+(h.leg1Shares>0?' <small style="color:#8ea0b8">×'+h.leg1Shares.toFixed(0)+'</small>':'')+'</td>'
-      +'<td>'+l2fill+(h.leg2Shares>0?' <small style="color:#8ea0b8">×'+h.leg2Shares.toFixed(0)+'</small>':'')+'</td>'
-      +'<td>'+sell+(h.sellShares>0?' <small style="color:#8ea0b8">×'+h.sellShares.toFixed(0)+'</small>':'')+'</td>'
-      +'<td>'+shares+'</td>'
-      +'<td>$'+(h.totalCost||0).toFixed(2)+'</td>'
-      +'<td style="color:'+(h.profit>=0?'#42d392':'#ff6b6b')+'"'+breakdown+'>'+pf+'</td>'
-      +'<td style="color:'+(h.cumProfit>=0?'#42d392':'#ff6b6b')+'">$'+(h.cumProfit||0).toFixed(2)+'</td>'
-      +'<td style="font-size:11px;color:#8ea0b8;max-width:220px;white-space:normal;line-height:1.3">'+reasonText+'</td>'
-      +'</tr>';
-  }).join('');
+  document.getElementById('d-phase').textContent = s.roundPhase || '--';
+  document.getElementById('d-status').textContent = renderedStatus || '--';
+  document.getElementById('d-entry').textContent = s.roundDecision || '--';
+  document.getElementById('d-exec').textContent = s.positionState === 'leg1_filled'
+    ? (s.activeStrategyMode === 'trend'
+      ? '趋势单已建仓，动态止盈止损接管'
+      : '错价单已建仓，失效退出与超时退出监控中')
+    : ((s.preOrderUpPrice || 0) > 0 || (s.preOrderDownPrice || 0) > 0)
+      ? '双侧预挂观察中'
+      : '无持仓，等待下一次有效决策';
+  document.getElementById('d-risk').textContent = s.drawdownProtected
+    ? '回撤保护开启 / 有效上限 $' + s.effectiveMaxAsk.toFixed(2)
+    : '正常 / EV+ 入场上限 $' + s.effectiveMaxAsk.toFixed(2);
 
-  renderDirectionalAudit(s.history || []);
+  renderDirectionalAudit(latestAudit || { history: s.history || [] });
 }
 
 (async function() {
   try {
     const r = await fetch(API+'/api/status',{credentials:'include'});
-    if (r.ok) { document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; connectWS(); refreshAudit(); }
+    if (r.ok) { document.getElementById('login-overlay').style.display='none'; document.getElementById('app').style.display='block'; render(await r.json()); refreshAudit(); connectWS(); }
   } catch {}
 })();
+
+setInterval(() => {
+  if (document.getElementById('app').style.display !== 'none') refreshAudit();
+}, 15000);
 </script>
 </body>
 </html>

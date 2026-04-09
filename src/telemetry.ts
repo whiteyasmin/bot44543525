@@ -10,10 +10,6 @@ type ExecutionMetricName =
   | "submitToAck"
   | "ackToFill"
   | "signalToFill"
-  | "leg2SignalToSubmit"
-  | "leg2SubmitToAck"
-  | "leg2AckToFill"
-  | "leg2SignalToFill"
   | "exitSignalToSubmit"
   | "exitSubmitToAck"
   | "exitAckToFill"
@@ -27,10 +23,6 @@ const samples: Record<ExecutionMetricName, number[]> = {
   submitToAck: [],
   ackToFill: [],
   signalToFill: [],
-  leg2SignalToSubmit: [],
-  leg2SubmitToAck: [],
-  leg2AckToFill: [],
-  leg2SignalToFill: [],
   exitSignalToSubmit: [],
   exitSubmitToAck: [],
   exitAckToFill: [],
@@ -70,10 +62,6 @@ export function getExecutionTelemetry(): Record<ExecutionMetricName, MetricSnaps
     submitToAck: summarize(samples.submitToAck),
     ackToFill: summarize(samples.ackToFill),
     signalToFill: summarize(samples.signalToFill),
-    leg2SignalToSubmit: summarize(samples.leg2SignalToSubmit),
-    leg2SubmitToAck: summarize(samples.leg2SubmitToAck),
-    leg2AckToFill: summarize(samples.leg2AckToFill),
-    leg2SignalToFill: summarize(samples.leg2SignalToFill),
     exitSignalToSubmit: summarize(samples.exitSignalToSubmit),
     exitSubmitToAck: summarize(samples.exitSubmitToAck),
     exitAckToFill: summarize(samples.exitAckToFill),

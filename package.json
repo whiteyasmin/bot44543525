@@ -14,9 +14,9 @@
     "optimize:dual": "npx tsx src/autoOptimizeDual.ts"
   },
   "dependencies": {
-    "@ethersproject/wallet": "^5.7.0",
     "@polymarket/clob-client": "^5.8.0",
     "dotenv": "^16.4.0",
+    "ethers": "^6.15.0",
     "express": "^4.21.0",
     "ws": "^8.18.0"
   },

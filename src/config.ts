@@ -10,7 +10,7 @@ export const ServerConfig = {
   ADMIN_PASSWORD: env("ADMIN_PASSWORD", "admin"),
 };
 
-/** 15分钟对冲机器人配置 */
+/** 15分钟方向策略机器人配置 */
 export const Config = {
   // Polymarket API
   CLOB_HOST: "https://clob.polymarket.com",
