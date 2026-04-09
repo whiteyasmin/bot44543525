@@ -6,43 +6,42 @@
 <title>15分钟方向性机器人</title>
 <style>
 :root{
-  --bg:#f5efe4;
-  --bg-2:#fffaf0;
-  --panel:#fffdf8cc;
-  --panel-strong:#fff8ee;
-  --line:#dfd1bb;
-  --line-strong:#ccb899;
-  --text:#201911;
-  --muted:#7d6b59;
-  --green:#1f9d62;
-  --yellow:#c88d16;
-  --red:#d34b3f;
-  --blue:#2b6cb0;
-  --cyan:#0f8b8d;
-  --accent:#f08a24;
-  --accent-soft:#ffd9b4;
-  --shadow:0 24px 60px rgba(113, 79, 39, .12);
+  --bg:#05070a;
+  --bg-2:#0a0d12;
+  --panel:#0b1017ee;
+  --panel-strong:#101722;
+  --line:#1a2636;
+  --line-strong:#24374f;
+  --text:#eef4ff;
+  --muted:#7d8fa6;
+  --green:#35d07f;
+  --yellow:#f4b84f;
+  --red:#ff6969;
+  --blue:#5ea2ff;
+  --cyan:#3fd0d4;
+  --accent:#ff9f3d;
+  --accent-soft:#3a2916;
+  --shadow:0 22px 50px rgba(0, 0, 0, .34);
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{
-  font-family:"Bahnschrift","Segoe UI Variable Text","PingFang SC","Microsoft YaHei",sans-serif;
+  font-family:"IBM Plex Sans","Segoe UI Variable Text","PingFang SC","Microsoft YaHei",sans-serif;
   color:var(--text);
   min-height:100vh;
   background:
-    radial-gradient(circle at 8% 12%, rgba(240,138,36,.18), transparent 24%),
-    radial-gradient(circle at 92% 8%, rgba(43,108,176,.12), transparent 20%),
-    radial-gradient(circle at 78% 36%, rgba(15,139,141,.08), transparent 18%),
-    linear-gradient(180deg, #fffaf2 0%, #f7f0e4 48%, #efe5d4 100%);
+    radial-gradient(circle at 8% 10%, rgba(255,159,61,.10), transparent 18%),
+    radial-gradient(circle at 92% 6%, rgba(94,162,255,.10), transparent 18%),
+    linear-gradient(180deg, #040608 0%, #080b10 46%, #05070a 100%);
 }
 body::before{
   content:"";
   position:fixed;
   inset:0;
   pointer-events:none;
-  background-image:linear-gradient(rgba(32,25,17,.03) 1px, transparent 1px), linear-gradient(90deg, rgba(32,25,17,.03) 1px, transparent 1px);
-  background-size:24px 24px;
-  mask-image:linear-gradient(180deg, rgba(0,0,0,.4), transparent 88%);
+  background-image:linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+  background-size:20px 20px;
+  mask-image:linear-gradient(180deg, rgba(0,0,0,.65), transparent 92%);
 }
 button,input,select{font:inherit}
 button{
@@ -57,11 +56,11 @@ input,select{
   width:100%;
   padding:10px 12px;
   color:var(--text);
-  background:#fffdf8;
+  background:#050a11;
   border:1px solid var(--line);
-  border-radius:14px;
+  border-radius:10px;
 }
-input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,138,36,.12)}
+input:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(94,162,255,.12)}
 
 #login-overlay{
   position:fixed;
@@ -69,19 +68,19 @@ input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 
   display:flex;
   align-items:center;
   justify-content:center;
-  background:rgba(241,231,214,.72);
+  background:rgba(2,5,10,.82);
   backdrop-filter:blur(10px);
   z-index:100;
 }
 .login-box{
   width:min(420px, calc(100vw - 32px));
   padding:34px;
-  border:1px solid rgba(204,184,153,.65);
-  border-radius:28px;
-  background:linear-gradient(180deg, rgba(255,253,247,.98), rgba(255,245,231,.98));
-  box-shadow:0 28px 80px rgba(98,70,35,.18);
+  border:1px solid rgba(36,55,79,.8);
+  border-radius:20px;
+  background:linear-gradient(180deg, rgba(8,12,18,.98), rgba(10,15,22,.98));
+  box-shadow:0 28px 80px rgba(0,0,0,.45);
 }
-.login-box h2{margin:0 0 8px;font-size:30px;letter-spacing:.02em}
+.login-box h2{margin:0 0 8px;font-size:28px;letter-spacing:.08em;text-transform:uppercase}
 .login-sub{margin:0 0 20px;color:var(--muted);font-size:14px}
 label{display:block;margin-top:14px;font-size:13px;color:var(--muted)}
 
@@ -93,13 +92,13 @@ header{
   justify-content:space-between;
   align-items:flex-start;
   gap:20px;
-  padding:20px 26px;
-  border-bottom:1px solid rgba(204,184,153,.55);
-  background:linear-gradient(180deg, rgba(255,250,242,.92), rgba(255,248,237,.84));
+  padding:14px 18px;
+  border-bottom:1px solid rgba(36,55,79,.85);
+  background:linear-gradient(180deg, rgba(5,8,12,.96), rgba(6,10,15,.88));
   backdrop-filter:blur(12px);
 }
 .title-wrap{display:flex;flex-direction:column;gap:6px}
-header h1{margin:0;font-size:24px;letter-spacing:.06em}
+header h1{margin:0;font-size:18px;letter-spacing:.14em;text-transform:uppercase}
 .header-sub{font-size:13px;color:var(--muted)}
 .hdr-right{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;align-items:center}
 .btn-g{background:linear-gradient(135deg,#0e8e59,#2fb56f);color:#fff}
@@ -111,7 +110,7 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
   display:inline-flex;
   align-items:center;
   gap:8px;
-  padding:9px 13px;
+  padding:7px 11px;
   border-radius:999px;
   border:1px solid transparent;
   font-size:12px;
@@ -123,15 +122,15 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
 .badge-run{color:var(--green);background:rgba(31,157,98,.1);border-color:rgba(31,157,98,.22)}
 .badge-stop{color:var(--muted);background:rgba(125,107,89,.1);border-color:rgba(125,107,89,.18)}
 
-.wrap{max-width:1440px;margin:0 auto;padding:28px 22px 36px}
-.summary-bar{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:12px;margin-bottom:14px}
+.wrap{max-width:1500px;margin:0 auto;padding:14px 14px 20px}
+.summary-bar{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:8px;margin-bottom:10px}
 .stat-card{
   position:relative;
   overflow:hidden;
-  padding:18px 18px 15px;
-  border:1px solid rgba(204,184,153,.55);
-  border-radius:22px;
-  background:linear-gradient(180deg, rgba(255,253,247,.95), rgba(255,247,234,.96));
+  padding:9px 12px 8px;
+  border:1px solid rgba(26,38,54,.95);
+  border-radius:10px;
+  background:linear-gradient(180deg, rgba(10,15,22,.96), rgba(7,11,16,.96));
   box-shadow:var(--shadow);
 }
 .stat-card::after{
@@ -140,23 +139,26 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
   left:16px;
   right:16px;
   top:0;
-  height:4px;
+  height:2px;
   border-radius:99px;
   background:linear-gradient(90deg, var(--accent), #f4b15e);
 }
 .stat-card:nth-child(2)::after{background:linear-gradient(90deg, var(--blue), #7fb2e8)}
 .stat-card:nth-child(3)::after{background:linear-gradient(90deg, var(--cyan), #55b9b0)}
 .stat-card:nth-child(4)::after{background:linear-gradient(90deg, var(--green), #8ed5b2)}
-.stat-val{font-size:28px;font-weight:750;letter-spacing:.01em}
-.stat-lbl{margin-top:4px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.stat-val{font-size:18px;font-weight:760;letter-spacing:.01em;font-family:"IBM Plex Mono","Consolas",monospace}
+.stat-lbl{margin-top:3px;font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.ticker-shell{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ticker-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ticker-delta{font-size:11px;font-family:"IBM Plex Mono","Consolas",monospace;color:#9ab0c9;text-align:right;white-space:nowrap}
 
-.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px}
 .card{
   position:relative;
-  padding:22px;
-  border:1px solid rgba(204,184,153,.55);
-  border-radius:28px;
-  background:linear-gradient(180deg, rgba(255,252,246,.96), rgba(255,246,232,.94));
+  padding:14px;
+  border:1px solid rgba(26,38,54,.95);
+  border-radius:16px;
+  background:linear-gradient(180deg, rgba(11,16,23,.96), rgba(7,10,15,.96));
   box-shadow:var(--shadow);
 }
 .card::before{
@@ -165,24 +167,24 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
   inset:0;
   border-radius:inherit;
   pointer-events:none;
-  background:linear-gradient(135deg, rgba(255,255,255,.45), transparent 38%);
+  background:linear-gradient(135deg, rgba(255,255,255,.04), transparent 34%);
 }
 .span-4{grid-column:span 4}
 .span-5{grid-column:span 5}
 .span-6{grid-column:span 6}
 .span-7{grid-column:span 7}
 .full{grid-column:1/-1}
-.card h3{position:relative;margin:0 0 18px;font-size:14px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.card h3{position:relative;margin:0 0 10px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#9bb4d1}
 
-.timer-big{font-size:64px;font-weight:780;line-height:1;letter-spacing:.04em;color:#19120c}
+.timer-big{font-size:58px;font-weight:780;line-height:1;letter-spacing:.03em;color:#f4f8ff;font-family:"IBM Plex Mono","Consolas",monospace}
 .timer-wrap{display:flex;flex-direction:column;gap:8px}
 .timer-label{font-size:13px;color:var(--muted)}
-.timer-bar{height:10px;border-radius:999px;background:#ecdcc3;overflow:hidden;margin-top:14px}
+.timer-bar{height:6px;border-radius:999px;background:#0a1119;overflow:hidden;margin-top:10px;border:1px solid rgba(36,55,79,.55)}
 .timer-fill{height:100%;border-radius:999px;transition:width .8s linear}
-.subgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}
-.mini-stat{padding:13px;border-radius:18px;background:rgba(255,255,255,.44);border:1px solid rgba(204,184,153,.45)}
+.subgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.mini-stat{padding:10px;border-radius:10px;background:rgba(255,255,255,.015);border:1px solid rgba(26,38,54,.92)}
 .mini-stat .lbl{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
-.mini-stat .val{margin-top:8px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:13px;line-height:1.4;color:#2a2119}
+.mini-stat .val{margin-top:6px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:12px;line-height:1.35;color:#dde8f8}
 
 .hero-metrics{
   display:grid;
@@ -191,46 +193,46 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
   margin-bottom:16px;
 }
 .hero-box{
-  padding:14px;
-  border-radius:20px;
-  background:rgba(255,255,255,.5);
-  border:1px solid rgba(204,184,153,.45);
+  padding:10px 12px;
+  border-radius:10px;
+  background:rgba(255,255,255,.02);
+  border:1px solid rgba(26,38,54,.92);
 }
 .hero-box .eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.hero-box .big{margin-top:8px;font-size:24px;font-weight:760;line-height:1.2;color:#1f1810}
+.hero-box .big{margin-top:6px;font-size:20px;font-weight:760;line-height:1.2;color:#f2f7ff;font-family:"IBM Plex Mono","Consolas",monospace}
 
 .detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
-.focus-card{padding:22px 22px 18px}
-.focus-layout{display:grid;grid-template-columns:1.15fr .95fr;gap:18px;align-items:start}
-.focus-main{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(0,1.2fr);gap:16px}
-.focus-panel{padding:18px;border-radius:22px;border:1px solid rgba(204,184,153,.48);background:rgba(255,255,255,.46)}
+.focus-card{padding:14px}
+.focus-layout{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;align-items:start}
+.focus-main{display:grid;grid-template-columns:minmax(250px,.78fr) minmax(0,1.22fr);gap:10px}
+.focus-panel{padding:12px;border-radius:12px;border:1px solid rgba(26,38,54,.92);background:rgba(255,255,255,.02)}
 .focus-panel h4{margin:0 0 12px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-.focus-stack{display:grid;gap:10px}
-.focus-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.focus-kpi{padding:13px 14px;border-radius:18px;background:rgba(255,249,241,.82);border:1px solid rgba(204,184,153,.35)}
+.focus-stack{display:grid;gap:8px}
+.focus-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.focus-kpi{padding:10px 11px;border-radius:10px;background:rgba(255,255,255,.018);border:1px solid rgba(26,38,54,.88)}
 .focus-kpi .lbl{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
-.focus-kpi .val{margin-top:8px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:13px;line-height:1.35;color:#2a2119}
-.focus-aside{display:grid;gap:16px}
+.focus-kpi .val{margin-top:6px;font-family:"IBM Plex Mono","Consolas",monospace;font-size:12px;line-height:1.35;color:#e4edf9}
+.focus-aside{display:grid;gap:10px}
 .focus-note{margin-top:10px;font-size:12px;line-height:1.5;color:var(--muted)}
 .compact-card{padding-top:18px;padding-bottom:18px}
 .compact-card h3{margin-bottom:12px}
-.observe-layout{display:grid;grid-template-columns:1.05fr .95fr;gap:16px}
-.observe-panel{padding:18px;border-radius:22px;background:rgba(255,255,255,.42);border:1px solid rgba(204,184,153,.42)}
+.observe-layout{display:grid;grid-template-columns:1.05fr .95fr;gap:10px}
+.observe-panel{padding:12px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid rgba(26,38,54,.88)}
 .observe-panel h4{margin:0 0 12px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .fold-card details{width:100%}
-.fold-card summary{list-style:none;cursor:pointer;font-size:15px;letter-spacing:.12em;text-transform:uppercase;color:#2e2419}
+.fold-card summary{list-style:none;cursor:pointer;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#dbe7f8}
 .fold-card summary::-webkit-details-marker{display:none}
 .fold-body{margin-top:16px}
 .row{
   display:flex;
   justify-content:space-between;
   gap:16px;
-  padding:11px 0;
-  border-bottom:1px solid rgba(204,184,153,.36);
-  font-size:13px;
+  padding:8px 0;
+  border-bottom:1px solid rgba(26,38,54,.65);
+  font-size:12px;
 }
 .row .k{color:var(--muted);flex:0 0 108px}
-.row .v{flex:1 1 auto;text-align:right;font-family:"IBM Plex Mono","Consolas",monospace;word-break:break-word;line-height:1.35;color:#271e16}
+.row .v{flex:1 1 auto;text-align:right;font-family:"IBM Plex Mono","Consolas",monospace;word-break:break-word;line-height:1.35;color:#e4edf9}
 
 .config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .config-grid .full-input{grid-column:1/-1}
@@ -246,31 +248,99 @@ header h1{margin:0;font-size:24px;letter-spacing:.06em}
   font-size:12px;
   line-height:1;
 }
-.tag-g{background:rgba(31,157,98,.12);color:var(--green);border-color:rgba(31,157,98,.2)}
-.tag-r{background:rgba(211,75,63,.12);color:var(--red);border-color:rgba(211,75,63,.2)}
-.tag-b{background:rgba(43,108,176,.12);color:var(--blue);border-color:rgba(43,108,176,.2)}
+.tag-g{background:rgba(53,208,127,.12);color:var(--green);border-color:rgba(53,208,127,.24)}
+.tag-r{background:rgba(255,105,105,.12);color:var(--red);border-color:rgba(255,105,105,.24)}
+.tag-b{background:rgba(94,162,255,.12);color:var(--blue);border-color:rgba(94,162,255,.24)}
 
-.table-wrap{max-height:520px;overflow:auto;border-radius:20px;border:1px solid rgba(204,184,153,.42)}
-table{width:100%;border-collapse:collapse;font-size:12px;font-family:"IBM Plex Mono","Consolas",monospace;background:rgba(255,250,243,.92)}
-th,td{padding:10px 12px;text-align:left;border-bottom:1px solid rgba(204,184,153,.32);vertical-align:top}
-th{position:sticky;top:0;background:#f7ecda;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
-tr:hover{background:rgba(240,138,36,.05)}
+.table-wrap{max-height:520px;overflow:auto;border-radius:12px;border:1px solid rgba(26,38,54,.88)}
+table{width:100%;border-collapse:collapse;font-size:12px;font-family:"IBM Plex Mono","Consolas",monospace;background:rgba(9,13,19,.96)}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid rgba(26,38,54,.62);vertical-align:top}
+th{position:sticky;top:0;background:#0c121b;color:#93a8c3;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+tr:hover{background:rgba(94,162,255,.05)}
+
+.terminal-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.terminal-pill{padding:8px 10px;border:1px solid rgba(26,38,54,.9);border-radius:10px;background:rgba(255,255,255,.015);min-height:56px}
+.terminal-pill .eyebrow{display:block;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.terminal-pill .terminal-value{display:block;margin-top:8px;font-size:12px;line-height:1.3;color:#edf4ff;font-family:"IBM Plex Mono","Consolas",monospace}
+.terminal-layout{grid-template-columns:1.32fr .68fr}
+.terminal-main{grid-template-columns:1fr;gap:10px}
+.board-panel{padding:10px 12px}
+.market-board{display:grid;grid-template-columns:minmax(250px,.72fr) minmax(360px,1.28fr);gap:10px;align-items:stretch}
+.board-clock{display:grid;gap:8px}
+.signal-rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.signal-box{padding:10px;border-radius:10px;border:1px solid rgba(26,38,54,.88);background:rgba(255,255,255,.018)}
+.signal-box .label{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.signal-box .value{display:block;margin-top:6px;font-size:12px;line-height:1.35;color:#eef5ff;font-family:"IBM Plex Mono","Consolas",monospace}
+.board-right{display:grid;gap:8px}
+.quote-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.quote-box{padding:12px;border-radius:12px;border:1px solid rgba(26,38,54,.92);background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));min-height:96px}
+.quote-box.up{box-shadow:inset 0 0 0 1px rgba(53,208,127,.08)}
+.quote-box.down{box-shadow:inset 0 0 0 1px rgba(255,105,105,.08)}
+.quote-box.neutral{min-height:84px}
+.quote-box .side{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.quote-box .price{display:block;margin-top:10px;font-size:30px;line-height:1;color:#f4f8ff;font-family:"IBM Plex Mono","Consolas",monospace}
+.quote-box .sub{display:block;margin-top:8px;font-size:11px;color:var(--muted);font-family:"IBM Plex Mono","Consolas",monospace}
+.quote-box.up .price{color:var(--green)}
+.quote-box.down .price{color:var(--red)}
+.ladder-wrap{margin-top:10px;display:grid;gap:4px}
+.ladder-row{position:relative;display:grid;grid-template-columns:54px 1fr 56px;gap:8px;align-items:center;font-size:10px}
+.ladder-row .l-label,.ladder-row .l-value{font-family:"IBM Plex Mono","Consolas",monospace;color:var(--muted)}
+.ladder-row .l-bar{position:relative;height:12px;border-radius:4px;border:1px solid rgba(36,55,79,.7);background:rgba(255,255,255,.03);overflow:hidden}
+.ladder-row .l-fill{position:absolute;inset:0 auto 0 0;width:0%;transition:width .25s ease, background .25s ease;opacity:.92}
+.ladder-row.active .l-label,.ladder-row.active .l-value{color:#eef4ff}
+.ladder-row.active .l-bar{border-color:rgba(94,162,255,.58);box-shadow:inset 0 0 0 1px rgba(94,162,255,.16)}
+.ladder-row.active .l-fill{box-shadow:0 0 10px rgba(94,162,255,.18)}
+.micro-ladder{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.micro-row{display:flex;justify-content:space-between;gap:10px;padding:9px 10px;border-radius:10px;border:1px solid rgba(26,38,54,.86);background:rgba(255,255,255,.014);font-size:11px}
+.micro-row span{color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.micro-row strong{font-weight:600;color:#edf4ff;font-family:"IBM Plex Mono","Consolas",monospace;text-align:right}
+.focus-kpis.terminal-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+.terminal-side{display:grid;gap:10px}
+.terminal-table{width:100%;display:grid;gap:6px}
+.terminal-table .thead,.terminal-table .trow{display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:start}
+.terminal-table .thead{padding:0 0 4px;border-bottom:1px solid rgba(26,38,54,.75);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#8ba1bc}
+.terminal-table .trow{padding:7px 0;border-bottom:1px solid rgba(26,38,54,.5);font-size:12px}
+.terminal-table .trow:last-child{border-bottom:none}
+.terminal-table .tkey{color:var(--muted)}
+.terminal-table .tval{color:#e6eefb;font-family:"IBM Plex Mono","Consolas",monospace;line-height:1.35}
+.observe-terminal-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:10px}
+.observe-terminal-stack{display:grid;gap:10px}
+.replay-panel{padding:0;overflow:hidden}
+.replay-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(26,38,54,.8);background:rgba(255,255,255,.015)}
+.replay-title{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#9bb4d1}
+.replay-sub{font-size:11px;color:var(--muted);font-family:"IBM Plex Mono","Consolas",monospace}
+.replay-body{max-height:320px;overflow:auto;padding:8px 12px 12px}
+.replay-row{display:grid;grid-template-columns:88px 72px 86px minmax(0,1fr) 90px;gap:10px;align-items:start;padding:8px 0;border-bottom:1px solid rgba(26,38,54,.5)}
+.replay-row:last-child{border-bottom:none}
+.replay-time,.replay-type,.replay-side,.replay-pnl,.replay-note{font-family:"IBM Plex Mono","Consolas",monospace;font-size:11px;line-height:1.35}
+.replay-time,.replay-type,.replay-side{color:#9bb0c8}
+.replay-note{color:#e8f0fb;word-break:break-word}
+.replay-pnl{text-align:right}
+.replay-win{color:var(--green)}
+.replay-loss{color:var(--red)}
+.replay-flat{color:var(--muted)}
+.pulse-flash{animation:terminalFlash .55s ease}
+@keyframes terminalFlash{
+  0%{box-shadow:inset 0 0 0 1px rgba(94,162,255,.36), 0 0 0 0 rgba(94,162,255,.18);background:rgba(94,162,255,.09)}
+  100%{box-shadow:none;background:transparent}
+}
 
 .compat-hidden{display:none}
 
 @media (max-width: 1180px){
   .summary-bar{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .focus-layout,.focus-main,.observe-layout{grid-template-columns:1fr}
+  .focus-layout,.focus-main,.observe-layout,.market-board,.terminal-layout,.micro-ladder,.terminal-strip,.observe-terminal-grid{grid-template-columns:1fr}
   .span-4,.span-5,.span-6,.span-7{grid-column:1/-1}
 }
 @media (max-width: 760px){
   header{padding:16px;flex-direction:column}
   .wrap{padding:16px}
   .summary-bar{grid-template-columns:1fr}
-  .detail-grid,.config-grid,.hero-metrics,.subgrid,.focus-kpis{grid-template-columns:1fr}
+  .detail-grid,.config-grid,.hero-metrics,.subgrid,.focus-kpis,.signal-rail,.quote-grid{grid-template-columns:1fr}
+  .replay-row{grid-template-columns:1fr;gap:4px}
   .row{flex-direction:column;gap:6px}
   .row .k,.row .v{text-align:left;flex:auto}
-  .timer-big{font-size:46px}
+  .timer-big{font-size:44px}
 }
 </style>
 </head>
@@ -306,63 +376,88 @@ tr:hover{background:rgba(240,138,36,.05)}
 
   <div class="wrap">
     <div class="summary-bar">
-      <div class="stat-card"><div class="stat-val" id="s-profit">$0.00</div><div class="stat-lbl">总盈亏</div></div>
-      <div class="stat-card"><div class="stat-val" id="s-balance">$0.00</div><div class="stat-lbl">余额</div></div>
-      <div class="stat-card"><div class="stat-val" id="s-sum">--</div><div class="stat-lbl">实时 SUM</div></div>
-      <div class="stat-card"><div class="stat-val" id="s-record">0W / 0L</div><div class="stat-lbl">战绩 / ROI</div></div>
+      <div class="stat-card"><div class="ticker-shell"><div class="ticker-meta"><div class="stat-lbl">总盈亏</div><div class="stat-val" id="s-profit">$0.00</div></div><div class="ticker-delta" id="s-profit-delta">SESSION</div></div></div>
+      <div class="stat-card"><div class="ticker-shell"><div class="ticker-meta"><div class="stat-lbl">余额</div><div class="stat-val" id="s-balance">$0.00</div></div><div class="ticker-delta" id="s-balance-delta">EQUITY</div></div></div>
+      <div class="stat-card"><div class="ticker-shell"><div class="ticker-meta"><div class="stat-lbl">实时 SUM</div><div class="stat-val" id="s-sum">--</div></div><div class="ticker-delta" id="s-sum-delta">EDGE</div></div></div>
+      <div class="stat-card"><div class="ticker-shell"><div class="ticker-meta"><div class="stat-lbl">战绩 / ROI</div><div class="stat-val" id="s-record">0W / 0L</div></div><div class="ticker-delta" id="s-record-delta">TRACK</div></div></div>
     </div>
 
     <div class="grid">
       <div class="card full focus-card">
         <h3>核心决策台</h3>
-        <div class="focus-layout">
-          <div class="focus-main">
-            <div class="focus-panel">
-              <h4>回合节奏</h4>
-              <div class="timer-wrap">
-                <div class="timer-big" id="timer">--:--</div>
-                <div class="timer-label" id="market-q">等待市场...</div>
-              </div>
-              <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:var(--blue)"></div></div>
-              <div class="subgrid">
-                <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
-                <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
-                <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
-                <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
+        <div class="terminal-strip">
+          <div class="terminal-pill"><span class="eyebrow">Round Phase</span><span class="terminal-value" id="term-phase">--</span></div>
+          <div class="terminal-pill"><span class="eyebrow">Policy</span><span class="terminal-value" id="term-policy">--</span></div>
+          <div class="terminal-pill"><span class="eyebrow">Risk Mode</span><span class="terminal-value" id="term-riskmode">--</span></div>
+          <div class="terminal-pill"><span class="eyebrow">Feed</span><span class="terminal-value" id="term-feed">--</span></div>
+        </div>
+        <div class="focus-layout terminal-layout">
+          <div class="focus-main terminal-main">
+            <div class="focus-panel board-panel">
+              <h4>盘口主看板</h4>
+              <div class="market-board">
+                <div class="board-clock">
+                  <div class="timer-wrap">
+                    <div class="timer-big" id="timer">--:--</div>
+                    <div class="timer-label" id="market-q">等待市场...</div>
+                  </div>
+                  <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:0;background:var(--blue)"></div></div>
+                  <div class="signal-rail">
+                    <div class="signal-box"><span class="label">当前动作</span><span class="value" id="signal-status">--</span></div>
+                    <div class="signal-box"><span class="label">入场决策</span><span class="value" id="signal-entry">--</span></div>
+                    <div class="signal-box"><span class="label">执行方式</span><span class="value" id="signal-exec">--</span></div>
+                  </div>
+                  <div class="subgrid">
+                    <div class="mini-stat"><div class="lbl">本轮进度</div><div class="val" id="round-progress">--</div></div>
+                    <div class="mini-stat"><div class="lbl">下轮开始</div><div class="val" id="next-round">--</div></div>
+                    <div class="mini-stat"><div class="lbl">入场窗口</div><div class="val" id="entry-window">--</div></div>
+                    <div class="mini-stat"><div class="lbl">本轮判定</div><div class="val" id="round-decision">--</div></div>
+                  </div>
+                </div>
+                <div class="board-right">
+                  <div class="quote-grid">
+                    <div class="quote-box up pulse-target" id="box-up-ask"><span class="side">UP Ask</span><span class="price" id="board-up-ask">--</span><span class="sub" id="board-up-meta">等待盘口</span><div class="ladder-wrap" id="ladder-up"></div></div>
+                    <div class="quote-box down pulse-target" id="box-dn-ask"><span class="side">DOWN Ask</span><span class="price" id="board-dn-ask">--</span><span class="sub" id="board-dn-meta">等待盘口</span><div class="ladder-wrap" id="ladder-down"></div></div>
+                  </div>
+                  <div class="quote-grid">
+                    <div class="quote-box neutral pulse-target" id="box-sum"><span class="side">Live Sum</span><span class="price" id="board-sum">--</span><span class="sub" id="board-sum-state">--</span><div class="ladder-wrap" id="ladder-sum"></div></div>
+                    <div class="quote-box neutral pulse-target" id="box-btc"><span class="side">BTC Spot</span><span class="price" id="board-btc">--</span><span class="sub" id="board-btc-meta">--</span></div>
+                  </div>
+                  <div class="micro-ladder">
+                    <div class="micro-row"><span>盘口源</span><strong id="board-feed">--</strong></div>
+                    <div class="micro-row"><span>执行延迟</span><strong id="board-latency">--</strong></div>
+                    <div class="micro-row"><span>Book 风险</span><strong id="board-book-risk">--</strong></div>
+                    <div class="micro-row"><span>预挂状态</span><strong id="board-preorder">--</strong></div>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div class="focus-stack">
-              <div class="focus-panel">
-                <h4>决策焦点</h4>
-                <div class="focus-kpis">
-                  <div class="focus-kpi"><div class="lbl">回合阶段</div><div class="val" id="d-phase">--</div></div>
-                  <div class="focus-kpi"><div class="lbl">当前动作</div><div class="val" id="d-status">--</div></div>
-                  <div class="focus-kpi"><div class="lbl">入场决策</div><div class="val" id="d-entry">--</div></div>
-                  <div class="focus-kpi"><div class="lbl">执行方式</div><div class="val" id="d-exec">--</div></div>
-                </div>
-                <div class="focus-note">首屏明确区分错价单和趋势单，优先看当前风控是否真的在接管仓位。</div>
+            <div class="focus-panel">
+              <h4>决策与持仓</h4>
+              <div class="focus-kpis terminal-kpis">
+                <div class="focus-kpi"><div class="lbl">回合阶段</div><div class="val" id="d-phase">--</div></div>
+                <div class="focus-kpi"><div class="lbl">当前动作</div><div class="val" id="d-status">--</div></div>
+                <div class="focus-kpi"><div class="lbl">入场决策</div><div class="val" id="d-entry">--</div></div>
+                <div class="focus-kpi"><div class="lbl">执行方式</div><div class="val" id="d-exec">--</div></div>
               </div>
-
-              <div class="focus-panel">
-                <h4>持仓摘要</h4>
-                <div class="detail-grid">
-                  <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
-                  <div class="row"><span class="k">持仓类型</span><span class="v" id="h-entry-kind">--</span></div>
-                  <div class="row"><span class="k">入场 EV</span><span class="v" id="h-entry-ev">--</span></div>
-                  <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
-                  <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
-                  <div class="row"><span class="k">当前持仓</span><span class="v" id="h-leg1">--</span></div>
-                  <div class="row"><span class="k">持仓风控</span><span class="v" id="h-trend-guard">--</span></div>
-                  <div class="row"><span class="k">趋势确认</span><span class="v" id="h-trend-confirm">--</span></div>
-                  <div class="row"><span class="k">风险状态</span><span class="v" id="d-risk">--</span></div>
-                  <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
-                </div>
+              <div class="detail-grid" style="margin-top:8px">
+                <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
+                <div class="row"><span class="k">持仓类型</span><span class="v" id="h-entry-kind">--</span></div>
+                <div class="row"><span class="k">入场 EV</span><span class="v" id="h-entry-ev">--</span></div>
+                <div class="row"><span class="k">策略模式</span><span class="v" id="h-strategy-mode">--</span></div>
+                <div class="row"><span class="k">趋势偏向</span><span class="v" id="h-trend-bias">--</span></div>
+                <div class="row"><span class="k">当前持仓</span><span class="v" id="h-leg1">--</span></div>
+                <div class="row"><span class="k">持仓风控</span><span class="v" id="h-trend-guard">--</span></div>
+                <div class="row"><span class="k">趋势确认</span><span class="v" id="h-trend-confirm">--</span></div>
+                <div class="row"><span class="k">风险状态</span><span class="v" id="d-risk">--</span></div>
+                <div class="row"><span class="k">双侧预挂单</span><span class="v" id="h-preorder">--</span></div>
               </div>
+              <div class="focus-note">盘口看板负责盯实时，下面这块只留策略与仓位解释，避免首屏信息混在一起。</div>
             </div>
           </div>
 
-          <div class="focus-aside">
+          <div class="focus-aside terminal-side">
             <div class="focus-panel">
               <h4>盘口与保护</h4>
               <div class="detail-grid">
@@ -394,55 +489,69 @@ tr:hover{background:rgba(240,138,36,.05)}
 
       <div class="card full compact-card">
         <h3>策略观测</h3>
-        <div class="observe-layout">
-          <div class="observe-panel">
-            <h4>盈利质量</h4>
-            <div class="hero-metrics">
-              <div class="hero-box"><div class="eyebrow">结算样本</div><div class="big" id="a-trades">--</div></div>
-              <div class="hero-box"><div class="eyebrow">实现边际</div><div class="big" id="a-est">--</div></div>
-              <div class="hero-box"><div class="eyebrow">盈利判断</div><div class="big" id="a-warning">--</div></div>
+        <div class="observe-terminal-grid">
+          <div class="observe-terminal-stack">
+            <div class="observe-panel">
+              <h4>绩效总览</h4>
+              <div class="hero-metrics">
+                <div class="hero-box"><div class="eyebrow">结算样本</div><div class="big" id="a-trades">--</div></div>
+                <div class="hero-box"><div class="eyebrow">实现边际</div><div class="big" id="a-est">--</div></div>
+                <div class="hero-box"><div class="eyebrow">盈利判断</div><div class="big" id="a-warning">--</div></div>
+              </div>
+              <div class="terminal-table">
+                <div class="thead"><div>Key</div><div>Value</div></div>
+                <div class="trow"><div class="tkey">价格分桶</div><div class="tval" id="a-winrate">--</div></div>
+                <div class="trow"><div class="tkey">策略分桶</div><div class="tval" id="a-pf">--</div></div>
+                <div class="trow"><div class="tkey">趋势退出</div><div class="tval" id="a-dd">--</div></div>
+              </div>
             </div>
-            <div class="detail-grid">
-              <div class="row"><span class="k">价格分桶</span><span class="v" id="a-winrate">--</span></div>
-              <div class="row"><span class="k">策略分桶</span><span class="v" id="a-pf">--</span></div>
-              <div class="row"><span class="k">趋势退出</span><span class="v" id="a-dd">--</span></div>
+
+            <div class="observe-panel">
+              <h4>错价退出台账</h4>
+              <div class="terminal-table">
+                <div class="thead"><div>Field</div><div>Observation</div></div>
+                <div class="trow"><div class="tkey">错价样本</div><div class="tval" id="a-mis-sample">--</div></div>
+                <div class="trow"><div class="tkey">失效退出</div><div class="tval" id="a-mis-invalid">--</div></div>
+                <div class="trow"><div class="tkey">超时退出</div><div class="tval" id="a-mis-timeout">--</div></div>
+                <div class="trow"><div class="tkey">结算持有</div><div class="tval" id="a-mis-settle">--</div></div>
+              </div>
             </div>
           </div>
 
-          <div class="observe-panel">
-            <h4>运行与护栏</h4>
-            <div class="detail-grid">
-              <div class="row"><span class="k">核心策略</span><span class="v">错价单做失效退出，趋势单做动态止盈止损</span></div>
-              <div class="row"><span class="k">主要入场</span><span class="v">双侧 GTC 预挂单，maker 0% 手续费</span></div>
-              <div class="row"><span class="k">预算规则</span><span class="v" id="p-budget">余额 × 25%</span></div>
-              <div class="row"><span class="k">SUM 目标</span><span class="v" id="p-sum">--</span></div>
-              <div class="row"><span class="k">高风险恢复</span><span class="v">4h 滚动亏损 ≥ 10% 时收紧入场价，上穿 5% 自动恢复</span></div>
-              <div class="row"><span class="k">费用结构</span><span class="v">maker 0% / taker 2% / 结算 0%</span></div>
+          <div class="observe-terminal-stack">
+            <div class="observe-panel">
+              <h4>运行护栏</h4>
+              <div class="terminal-table">
+                <div class="thead"><div>Guard</div><div>Config</div></div>
+                <div class="trow"><div class="tkey">核心策略</div><div class="tval">错价单做失效退出，趋势单做动态止盈止损</div></div>
+                <div class="trow"><div class="tkey">主要入场</div><div class="tval">双侧 GTC 预挂单，maker 0% 手续费</div></div>
+                <div class="trow"><div class="tkey">预算规则</div><div class="tval" id="p-budget">余额 × 25%</div></div>
+                <div class="trow"><div class="tkey">SUM 目标</div><div class="tval" id="p-sum">--</div></div>
+                <div class="trow"><div class="tkey">高风险恢复</div><div class="tval">4h 滚动亏损 ≥ 10% 时收紧入场价，上穿 5% 自动恢复</div></div>
+                <div class="trow"><div class="tkey">费用结构</div><div class="tval">maker 0% / taker 2% / 结算 0%</div></div>
+              </div>
+            </div>
+
+            <div class="observe-panel">
+              <h4>趋势退出台账</h4>
+              <div class="terminal-table">
+                <div class="thead"><div>Field</div><div>Observation</div></div>
+                <div class="trow"><div class="tkey">趋势样本</div><div class="tval" id="a-trend-sample">--</div></div>
+                <div class="trow"><div class="tkey">止盈族</div><div class="tval" id="a-trend-profit">--</div></div>
+                <div class="trow"><div class="tkey">止损族</div><div class="tval" id="a-trend-stop">--</div></div>
+                <div class="trow"><div class="tkey">规则分布</div><div class="tval" id="a-trend-rules">--</div></div>
+              </div>
             </div>
           </div>
         </div>
+      </div>
 
-        <div class="observe-layout" style="margin-top:16px">
-          <div class="observe-panel">
-            <h4>错价退出质量</h4>
-            <div class="detail-grid">
-              <div class="row"><span class="k">错价样本</span><span class="v" id="a-mis-sample">--</span></div>
-              <div class="row"><span class="k">失效退出</span><span class="v" id="a-mis-invalid">--</span></div>
-              <div class="row"><span class="k">超时退出</span><span class="v" id="a-mis-timeout">--</span></div>
-              <div class="row"><span class="k">结算持有</span><span class="v" id="a-mis-settle">--</span></div>
-            </div>
-          </div>
-
-          <div class="observe-panel">
-            <h4>趋势退出质量</h4>
-            <div class="detail-grid">
-              <div class="row"><span class="k">趋势样本</span><span class="v" id="a-trend-sample">--</span></div>
-              <div class="row"><span class="k">止盈族</span><span class="v" id="a-trend-profit">--</span></div>
-              <div class="row"><span class="k">止损族</span><span class="v" id="a-trend-stop">--</span></div>
-              <div class="row"><span class="k">规则分布</span><span class="v" id="a-trend-rules">--</span></div>
-            </div>
-          </div>
+      <div class="card full replay-panel">
+        <div class="replay-head">
+          <div class="replay-title">成交回放</div>
+          <div class="replay-sub" id="replay-meta">最近 0 条</div>
         </div>
+        <div class="replay-body" id="replay-body"></div>
       </div>
 
       <div class="card full fold-card">
@@ -490,6 +599,87 @@ const API = '';
 let ws = null;
 let latestState = null;
 let latestAudit = null;
+
+function pulseIfChanged(id, text, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const nextText = text == null ? '--' : String(text);
+  const prevText = el.dataset.prevText;
+  if (prevText !== undefined && prevText !== nextText) {
+    const pulseTarget = el.closest('.pulse-target') || el;
+    pulseTarget.classList.remove('pulse-flash');
+    void pulseTarget.offsetWidth;
+    pulseTarget.classList.add('pulse-flash');
+  }
+  el.dataset.prevText = nextText;
+  el.textContent = nextText;
+  if (color !== undefined) el.style.color = color;
+}
+
+function setText(id, text, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text == null ? '--' : String(text);
+  if (color !== undefined) el.style.color = color;
+}
+
+function renderLadder(id, config) {
+  const host = document.getElementById(id);
+  if (!host) return;
+  const { min, max, steps, value, formatter, palette } = config;
+  const rows = [];
+  const span = max - min;
+  const current = Number.isFinite(value) ? value : null;
+  const activeIndex = current == null ? -1 : Math.max(0, Math.min(steps - 1, Math.round(((current - min) / Math.max(span, 1e-9)) * (steps - 1))));
+
+  for (let index = steps - 1; index >= 0; index -= 1) {
+    const level = min + (span * index) / Math.max(steps - 1, 1);
+    const intensity = (index + 1) / steps;
+    const fill = Math.round(20 + intensity * 80);
+    const active = index === activeIndex;
+    rows.push(
+      '<div class="ladder-row' + (active ? ' active' : '') + '">' +
+        '<span class="l-label">L' + String(index + 1).padStart(2, '0') + '</span>' +
+        '<div class="l-bar"><div class="l-fill" style="width:' + fill + '%;background:' + palette(intensity, active) + '"></div></div>' +
+        '<span class="l-value">' + formatter(level) + '</span>' +
+      '</div>'
+    );
+  }
+
+  host.innerHTML = rows.join('');
+}
+
+function renderReplay(history) {
+  const body = document.getElementById('replay-body');
+  const meta = document.getElementById('replay-meta');
+  if (!body || !meta) return;
+
+  const rows = Array.isArray(history) ? history.slice(-18).reverse() : [];
+  meta.textContent = '最近 ' + rows.length + ' 条';
+  if (!rows.length) {
+    body.innerHTML = '<div class="replay-row"><div class="replay-note">暂无成交回放</div></div>';
+    return;
+  }
+
+  body.innerHTML = rows.map((item) => {
+    const time = item.time || (item.ts ? String(item.ts).slice(11, 19) : '--');
+    const strategy = item.strategyMode === 'trend' ? 'TREND' : item.strategyMode === 'mispricing' ? 'MISPRC' : 'OTHER';
+    const side = item.leg1Dir ? String(item.leg1Dir).toUpperCase() : '--';
+    const profit = Number(item.profit || 0);
+    const pnlClass = profit > 0 ? 'replay-win' : profit < 0 ? 'replay-loss' : 'replay-flat';
+    const reason = item.exitReason || item.result || '状态更新';
+    const fill = item.leg1FillPrice || item.leg1Price || 0;
+    const note = (fill > 0 ? side + ' @$' + Number(fill).toFixed(2) + ' · ' : '') + reason;
+
+    return '<div class="replay-row">' +
+      '<div class="replay-time">' + time + '</div>' +
+      '<div class="replay-type">' + strategy + '</div>' +
+      '<div class="replay-side">' + side + '</div>' +
+      '<div class="replay-note">' + note + '</div>' +
+      '<div class="replay-pnl ' + pnlClass + '">' + (profit >= 0 ? '+' : '') + '$' + profit.toFixed(2) + '</div>' +
+    '</div>';
+  }).join('');
+}
 
 function fmtSecs(totalSecs) {
   const secs = Math.max(0, Math.floor(totalSecs || 0));
@@ -782,11 +972,24 @@ function render(s) {
     sumEl.style.color = sumVal > 0 ? (sumVal <= 0.96 ? '#42d392' : sumVal <= 0.98 ? '#f4c96b' : '#ff6b6b') : '';
   }
   document.getElementById('s-record').textContent = s.wins+'W / '+s.losses+'L · '+s.sessionROI.toFixed(1)+'%';
+  setText('s-profit-delta', s.botRunning ? (s.tradingMode === 'paper' ? 'PAPER LIVE' : 'LIVE RUN') : 'IDLE', s.botRunning ? '#5ea2ff' : '#7d8fa6');
+  setText('s-balance-delta', '4H ' + (s.rolling4hPnL >= 0 ? '+' : '') + '$' + Number(s.rolling4hPnL || 0).toFixed(2), s.rolling4hPnL >= 0 ? '#35d07f' : '#ff6969');
+  const sumStateTicker = sumVal <= 0 ? 'NO BOOK' : sumVal <= 0.96 ? 'EV RICH' : sumVal <= 0.98 ? 'THIN EDGE' : 'STRETCHED';
+  setText('s-sum-delta', sumStateTicker, sumVal <= 0.96 ? '#35d07f' : sumVal <= 0.98 ? '#f4b84f' : '#ff6969');
+  setText('s-record-delta', 'R' + Number(s.totalRounds || 0) + ' / S' + Number(s.skips || 0), '#9ab0c9');
+
+  const diagnostics = s.diagnostics || {};
+  const feedText = fmtBookSource(diagnostics.orderbookSource, diagnostics.fallbackActive);
+  const riskModeText = s.drawdownProtected ? 'drawdown protect' : 'normal risk';
+  setText('term-phase', s.roundPhase || '--');
+  setText('term-policy', s.strategyPolicy || '--');
+  setText('term-riskmode', riskModeText, s.drawdownProtected ? '#f4b84f' : '#35d07f');
+  setText('term-feed', feedText, diagnostics.orderbookSource === 'ws' ? '#35d07f' : diagnostics.orderbookSource === 'http' ? '#f4b84f' : '#7d8fa6');
 
   const secs = Math.max(0, Math.floor(s.secondsLeft));
   const mm = String(Math.floor(secs/60)).padStart(2,'0');
   const ss = String(secs%60).padStart(2,'0');
-  document.getElementById('timer').textContent = mm+':'+ss;
+  pulseIfChanged('timer', mm+':'+ss, '#f4f8ff');
   document.getElementById('market-q').textContent = s.currentMarket || '等待市场...';
   const pct = Math.max(0, Math.min(100, secs/900*100));
   const fill = document.getElementById('timer-fill');
@@ -841,10 +1044,53 @@ function render(s) {
     }
   }
 
-  document.getElementById('h-btc').textContent = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
-  document.getElementById('h-up-ask').textContent = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
-  document.getElementById('h-dn-ask').textContent = s.downAsk > 0 ? '$'+s.downAsk.toFixed(2) : '--';
+  const btcText = s.btcPrice > 0 ? '$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}) : '--';
+  const upAskText = s.upAsk > 0 ? '$'+s.upAsk.toFixed(2) : '--';
+  const dnAskText = s.downAsk > 0 ? '$'+s.downAsk.toFixed(2) : '--';
+  document.getElementById('h-btc').textContent = btcText;
+  document.getElementById('h-up-ask').textContent = upAskText;
+  document.getElementById('h-dn-ask').textContent = dnAskText;
   document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
+
+  pulseIfChanged('board-up-ask', upAskText, s.upAsk > 0 ? '#35d07f' : '#eef4ff');
+  pulseIfChanged('board-dn-ask', dnAskText, s.downAsk > 0 ? '#ff6969' : '#eef4ff');
+  pulseIfChanged('board-sum', sumVal > 0 ? sumVal.toFixed(3) : '--', sumVal > 0 ? (sumVal <= 0.96 ? '#35d07f' : sumVal <= 0.98 ? '#f4b84f' : '#ff6969') : '#eef4ff');
+  pulseIfChanged('board-btc', btcText, '#eef4ff');
+  setText('board-up-meta', s.activeStrategyMode === 'mispricing' && s.leg1Dir === 'up' ? 'active side' : 'watching book');
+  setText('board-dn-meta', s.activeStrategyMode === 'mispricing' && s.leg1Dir === 'down' ? 'active side' : 'watching book');
+  const sumState = sumVal <= 0 ? '--' : sumVal <= 0.96 ? 'ev rich' : sumVal <= 0.98 ? 'thin edge' : 'stretched';
+  setText('board-sum-state', sumState, sumVal <= 0.96 ? '#35d07f' : sumVal <= 0.98 ? '#f4b84f' : '#ff6969');
+  setText('board-btc-meta', trendBiasMap[s.trendBias] || s.trendBias || '--', s.trendBias === 'up' ? '#35d07f' : s.trendBias === 'down' ? '#ff6969' : '#7d8fa6');
+  renderLadder('ladder-up', {
+    min: 0.20,
+    max: 0.50,
+    steps: 5,
+    value: s.upAsk > 0 ? s.upAsk : null,
+    formatter: (level) => '$' + level.toFixed(2),
+    palette: (intensity, active) => active ? 'linear-gradient(90deg, rgba(53,208,127,.92), rgba(53,208,127,.48))' : 'linear-gradient(90deg, rgba(53,208,127,' + (0.16 + intensity * 0.22).toFixed(2) + '), rgba(53,208,127,.05))'
+  });
+  renderLadder('ladder-down', {
+    min: 0.20,
+    max: 0.50,
+    steps: 5,
+    value: s.downAsk > 0 ? s.downAsk : null,
+    formatter: (level) => '$' + level.toFixed(2),
+    palette: (intensity, active) => active ? 'linear-gradient(90deg, rgba(255,105,105,.92), rgba(255,105,105,.48))' : 'linear-gradient(90deg, rgba(255,105,105,' + (0.16 + intensity * 0.22).toFixed(2) + '), rgba(255,105,105,.05))'
+  });
+  renderLadder('ladder-sum', {
+    min: 0.90,
+    max: 1.04,
+    steps: 5,
+    value: sumVal > 0 ? sumVal : null,
+    formatter: (level) => level.toFixed(3),
+    palette: (intensity, active) => {
+      if (active && sumVal <= 0.96) return 'linear-gradient(90deg, rgba(53,208,127,.92), rgba(53,208,127,.46))';
+      if (active && sumVal <= 0.98) return 'linear-gradient(90deg, rgba(244,184,79,.92), rgba(244,184,79,.46))';
+      if (active) return 'linear-gradient(90deg, rgba(255,105,105,.92), rgba(255,105,105,.46))';
+      const base = intensity < 0.4 ? '53,208,127' : intensity < 0.7 ? '244,184,79' : '255,105,105';
+      return 'linear-gradient(90deg, rgba(' + base + ',' + (0.16 + intensity * 0.22).toFixed(2) + '), rgba(' + base + ',.05))';
+    }
+  });
 
   if (s.positionLeg1Price > 0) {
     document.getElementById('h-leg1').innerHTML = '<span class="tag tag-b">'+s.positionLeg1Dir+' @$'+s.positionLeg1Price.toFixed(2)+'</span>';
@@ -870,6 +1116,7 @@ function render(s) {
   expEl.style.color = s.drawdownProtected ? '#f4c96b' : '#42d392';
 
   const preEl = document.getElementById('h-preorder');
+  let preorderText = '--';
   if (preEl) {
     const upP = s.preOrderUpPrice || 0;
     const dnP = s.preOrderDownPrice || 0;
@@ -877,10 +1124,12 @@ function render(s) {
       const parts = [];
       if (upP > 0) parts.push('UP@$' + upP.toFixed(2));
       if (dnP > 0) parts.push('DN@$' + dnP.toFixed(2));
-      preEl.textContent = parts.join(' / ');
+      preorderText = parts.join(' / ');
+      preEl.textContent = preorderText;
       preEl.style.color = '#76b7ff';
     } else {
-      preEl.textContent = s.positionState === 'watching' ? '待挂' : '--';
+      preorderText = s.positionState === 'watching' ? '待挂' : '--';
+      preEl.textContent = preorderText;
       preEl.style.color = '#8ea0b8';
     }
   }
@@ -890,7 +1139,6 @@ function render(s) {
   latEl50.textContent = lat50 > 0 ? lat50 + 'ms · ' + ((s.latencyNetworkSource || 'ping').toUpperCase()) : '--';
   latEl50.style.color = latColor(lat50);
 
-  const diagnostics = s.diagnostics || {};
   const marketWsEl = document.getElementById('h-market-ws');
   const marketWs = fmtWsStatus(diagnostics.marketWsConnected, diagnostics.marketWsAgeMs, diagnostics.marketWsDisconnects, diagnostics.marketWsReconnects);
   marketWsEl.textContent = marketWs.text;
@@ -911,6 +1159,11 @@ function render(s) {
   localBookIssuesEl.textContent = fmtIssueCount(diagnostics.localBookStaleCount, diagnostics.localBookCrossedCount);
   localBookIssuesEl.style.color = ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#f4c96b' : '#42d392';
 
+  setText('board-feed', feedText, diagnostics.orderbookSource === 'ws' ? '#35d07f' : diagnostics.orderbookSource === 'http' ? '#f4b84f' : '#7d8fa6');
+  setText('board-latency', lat50 > 0 ? lat50 + 'ms' : '--', latColor(lat50));
+  setText('board-book-risk', fmtIssueCount(diagnostics.localBookStaleCount, diagnostics.localBookCrossedCount), ((diagnostics.localBookStaleCount || 0) > 0 || (diagnostics.localBookCrossedCount || 0) > 0) ? '#f4b84f' : '#35d07f');
+  setText('board-preorder', preorderText, preorderText === '--' ? '#7d8fa6' : '#5ea2ff');
+
   document.getElementById('d-phase').textContent = s.roundPhase || '--';
   document.getElementById('d-status').textContent = renderedStatus || '--';
   document.getElementById('d-entry').textContent = s.roundDecision || '--';
@@ -924,7 +1177,11 @@ function render(s) {
   document.getElementById('d-risk').textContent = s.drawdownProtected
     ? '回撤保护开启 / 有效上限 $' + s.effectiveMaxAsk.toFixed(2)
     : '正常 / EV+ 入场上限 $' + s.effectiveMaxAsk.toFixed(2);
+  setText('signal-status', renderedStatus || '--', (s.status || '').startsWith('跳过:') ? '#f4b84f' : '#eef4ff');
+  setText('signal-entry', s.roundDecision || '--', (s.roundDecision || '').startsWith('跳过:') ? '#ff6969' : '#eef4ff');
+  setText('signal-exec', document.getElementById('d-exec').textContent || '--', s.positionState === 'leg1_filled' ? '#5ea2ff' : '#7d8fa6');
 
+  renderReplay((latestAudit && latestAudit.history) || s.history || []);
   renderDirectionalAudit(latestAudit || { history: s.history || [] });
 }
 
