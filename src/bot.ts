@@ -98,7 +98,7 @@ const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
 const LIMIT_LEG2_ENABLED = true;           // Leg2 也尝试 limit
 const LIMIT_LEG2_OFFSET = 0.01;
 const LIMIT_LEG2_TIMEOUT_MS = 300;
-const LEG2_GTC_ENABLED = true;              // Leg1成交后立即挂Leg2 GTC limit, 争取双腿maker
+const LEG2_GTC_ENABLED = false;             // 方向性策略: 不对冲, 持有到结算
 const LEG2_GTC_REPRICE_MS = 5000;           // Leg2 GTC 每5秒检查是否需要重新定价
 const CHAINLINK_CONFIRM_ENABLED = true;    // Chainlink 方向确认
 const CHAINLINK_CONTRA_PENALTY = 0.50;     // CL与dump方向矛盾时仓位减半
@@ -1272,148 +1272,29 @@ export class Hedge15mEngine {
 
             // ── 无挂单时: TP/SL/Leg2 逻辑 ──
             if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled") {
-              if (this.activeStrategyMode === "trend") {
-                await this.manageTrendLeg(trader, leg1Bid, secs);
-              }
-              else {
-              // ── Leg1 止盈: 仅当反转风险 > 手续费损失时才卖 ──
-              // bid=B 卖出回收 B*0.98; 持有到结算EV=B*$1=B
-              // 只有当认为方向可能反转时才值得卖: >300s时反转风险较高
-              // 但 bid≥0.95 说明市场95%确定, 反转概率极低, 不值得丢手续费
-              // 新策略: 仅在 >300s 且 bid≥0.95 时止盈(锁定95%利润, 防小概率反转)
-              //          90-300s: 不止盈, 等结算拿100%
-              //          ≤90s: 不卖, 结算拿满
-              if (leg1Bid != null && leg1Bid >= 0.95 && secs > 300) {
-                logger.info(`HEDGE15M LEG1 TAKE-PROFIT: bid=${leg1Bid.toFixed(2)} >= 0.95, locking ${(leg1Bid*0.98*100).toFixed(1)}% with ${secs.toFixed(0)}s left (reversal risk > fee)`);
+              // ── 方向性策略: 持有到结算, 最小化中途干预 ──
+              // 入场价≤0.43时EV+, 只要方向正确就赚 $1-entry
+              // 止损仅在极端情况: bid<0.05(几乎确定方向错误)
+              // 止盈: bid≥0.90且>300s时锁定利润(防长时间反转)
+              {
+              const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+
+              // 更新峰值bid(用于状态显示)
+              if (leg1Bid != null && leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
+
+              this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left`;
+
+              // ① 止盈: bid≥0.90 且 >300s → 锁定高胜率利润, 防长周期反转
+              if (leg1Bid != null && leg1Bid >= 0.90 && secs > 300) {
+                logger.info(`HEDGE15M DIRECTIONAL TP: bid=${leg1Bid.toFixed(2)} >= 0.90, locking profit with ${secs.toFixed(0)}s left`);
                 await this.emergencySellLeg1(trader, "止盈", leg1Bid);
               }
-              // ── Leg1 止损: 全时段生效(secs>30), 消陨15-120s空窗 ──
-              // 相对阈值(入场价*82%) 或 绝对阈值(bid<0.15)
-              // 冷却期: 填充后15s内仅绝对止损生效, 防抖动误杀
-              else if (leg1Bid != null && secs > 30) {
-                const sinceEntry = this.leg1FilledAt > 0 ? Date.now() - this.leg1FilledAt : 999_999;
-                const inCooldown = sinceEntry < STOP_LOSS_COOLDOWN_MS;
-                let adverseExited = false;
-
-                // ── 填充后反向确认: 3s内sum>1.05说明严重逆向选择, 快速退出 ──
-                if (sinceEntry <= ADVERSE_FILL_CHECK_MS && oppAsk != null && oppAsk > 0) {
-                  const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                  const adverseSum = fillPrice + oppAsk;
-                  if (adverseSum >= ADVERSE_FILL_EXIT_SUM) {
-                    logger.info(`HEDGE15M ADVERSE FILL EXIT: ${(sinceEntry/1000).toFixed(1)}s after fill, sum=${adverseSum.toFixed(2)} >= ${ADVERSE_FILL_EXIT_SUM.toFixed(2)}, counter-trend detected`);
-                    await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
-                    adverseExited = true;
-                  }
-                }
-                // 绝对止损: 不受冷却期影响 (逆向确认未触发时也要检查)
-                if (!adverseExited && leg1Bid < LEG1_STOP_ABS) {
-                  logger.info(`HEDGE15M LEG1 STOP-LOSS: 绝对止损 bid=${leg1Bid.toFixed(2)}<${LEG1_STOP_ABS}, ${secs.toFixed(0)}s left`);
-                  await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
-                }
-                // 相对止损: 冷却期内跳过; Leg2 GTC挂单时放宽到70%
-                else if (!adverseExited && !inCooldown) {
-                  const hasLeg2Gtc = !!this.leg2GtcOrderId;
-                  const baseThreshold = this.leg1ThinEdgeEntry ? THIN_EDGE_STOP_LOSS : this.getLeg1StopLossThreshold();
-                  const stopLossThreshold = hasLeg2Gtc ? Math.min(baseThreshold, LEG2_GTC_ACTIVE_STOP_LOSS) : baseThreshold;
-                  if (leg1Bid < this.leg1Price * stopLossThreshold) {
-                    logger.info(`HEDGE15M LEG1 STOP-LOSS: 中途止损 bid=${leg1Bid.toFixed(2)}<entry*${stopLossThreshold}=${(this.leg1Price*stopLossThreshold).toFixed(2)}, ${secs.toFixed(0)}s left${hasLeg2Gtc ? " (GTC宽松阈值)" : ""}`);
-                    await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
-                  }
-                }
+              // ② 极端止损: bid<0.05 → 方向几乎确定错误, 回收残值
+              else if (leg1Bid != null && leg1Bid < 0.05 && secs > 30) {
+                logger.info(`HEDGE15M DIRECTIONAL SL: bid=${leg1Bid.toFixed(2)} < 0.05, direction wrong, salvaging`);
+                await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
               }
-              // ── 渐进式 SUM_TARGET(用真实成交价): 越接近结算越放宽 ──
-              else if (oppAsk != null && oppAsk > 0) {
-                // ── 如果Leg1方向高度确定(bid≥0.80), 跳过Leg2等结算拿$1 ──
-                if (leg1Bid != null && leg1Bid >= 0.80 && secs <= 120) {
-                  this.status = `Leg1方向确定(bid=${leg1Bid.toFixed(2)}≥0.80), 等结算拿$1`;
-                  // 不买Leg2, 结算拿满比花钱对冲更优
-                }
-                else {
-                  const target = this.getLeg2Target(secs);
-
-                  // 用真实成交价而非ask报价, 避免滑点导致利润误判
-                  const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                  const sum = fillPrice + oppAsk;
-                  this.status = `等Leg2: L1=${this.leg1Dir.toUpperCase()}@${fillPrice.toFixed(2)} 对面ask=${oppAsk.toFixed(2)} sum=${sum.toFixed(2)} target≤${target.toFixed(2)} ${secs<=60?'⏰':''}`;
-
-                  if (sum <= target) {
-                    await this.buyLeg2(trader, oppAsk, target);
-                  }
-                }
-              }
-
-              if (
-                !this.pendingSellOrderId &&
-                this.hedgeState === "leg1_filled" &&
-                this.leg1ThinEdgeEntry &&
-                this.leg1FilledAt > 0 &&
-                Date.now() - this.leg1FilledAt >= THIN_EDGE_HEDGE_TIMEOUT_MS &&
-                oppAsk != null &&
-                oppAsk > 0
-              ) {
-                const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                const thinEdgeSum = fillPrice + oppAsk;
-                const fastExitTarget = Math.min(this.leg1ThinEdgeHardMaxSum || this.getMaxSumTarget(), (this.leg1ThinEdgePreferredSum || this.getBaseSumTarget()) + THIN_EDGE_HEDGE_SUM_BUFFER);
-                if (thinEdgeSum > fastExitTarget) {
-                  logger.info(`HEDGE15M THIN EDGE TIMEOUT: held naked ${((Date.now() - this.leg1FilledAt) / 1000).toFixed(1)}s, sum=${thinEdgeSum.toFixed(2)} > fastTarget=${fastExitTarget.toFixed(2)}, exit Leg1`);
-                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
-                }
-              }
-
-              if (
-                !this.pendingSellOrderId &&
-                this.hedgeState === "leg1_filled" &&
-                oppAsk != null &&
-                oppAsk > 0 &&
-                secs <= LEG1_HEDGE_TIMEOUT_SECS &&
-                secs > LEG1_HEDGE_TIMEOUT_MIN_SECS
-              ) {
-                const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                const timeoutTarget = Math.max(this.getMaxSumTarget(), this.getLeg2Target(secs));
-                const timeoutSum = fillPrice + oppAsk;
-                if (timeoutSum > timeoutTarget + LEG1_HEDGE_TIMEOUT_SUM_BUFFER) {
-                  logger.info(`HEDGE15M HEDGE TIMEOUT: ${secs.toFixed(0)}s left, sum=${timeoutSum.toFixed(2)} > ${timeoutTarget.toFixed(2)}+${LEG1_HEDGE_TIMEOUT_SUM_BUFFER.toFixed(2)}, exit Leg1`);
-                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
-                }
-              }
-
-              if (
-                !this.pendingSellOrderId &&
-                this.hedgeState === "leg1_filled" &&
-                this.leg1FilledAt > 0 &&
-                Date.now() - this.leg1FilledAt >= EARLY_EXIT_AFTER_MS &&
-                oppAsk != null &&
-                oppAsk > 0
-              ) {
-                const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                const adaptiveSum = fillPrice + oppAsk;
-                // 入场价越高 buffer 越小: 0.35→0.06, 0.45→0.02, 线性插值
-                const earlyBuf = Math.max(EARLY_EXIT_SUM_BUFFER_HIGH,
-                  Math.min(EARLY_EXIT_SUM_BUFFER_BASE,
-                    EARLY_EXIT_SUM_BUFFER_BASE - (fillPrice - 0.35) * ((EARLY_EXIT_SUM_BUFFER_BASE - EARLY_EXIT_SUM_BUFFER_HIGH) / 0.10)));
-                if (adaptiveSum > this.getMaxSumTarget() + earlyBuf) {
-                  logger.info(`HEDGE15M EARLY EXIT: held naked ${(Date.now() - this.leg1FilledAt) / 1000}s, sum=${adaptiveSum.toFixed(2)} > maxSum+${earlyBuf.toFixed(3)}, exit`);
-                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
-                }
-              }
-
-              // ── 硬性裸仓时限: 120s无条件平仓 (sum接近目标时宽限至150s) ──
-              if (
-                !this.pendingSellOrderId &&
-                this.hedgeState === "leg1_filled" &&
-                this.leg1FilledAt > 0 &&
-                Date.now() - this.leg1FilledAt >= NAKED_HARD_TIMEOUT_MS
-              ) {
-                const heldSecs = (Date.now() - this.leg1FilledAt) / 1000;
-                const fp = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                const curSum = oppAsk != null && oppAsk > 0 ? fp + oppAsk : 99;
-                const nearHedge = curSum <= this.getMaxSumTarget() + 0.01;
-                // sum接近目标时宽限30s, 否则120s强制退出
-                if (!nearHedge || heldSecs >= NAKED_HARD_TIMEOUT_MS / 1000 + 30) {
-                  logger.info(`HEDGE15M NAKED HARD TIMEOUT: held ${heldSecs.toFixed(0)}s, sum=${curSum.toFixed(2)}, forced exit`);
-                  await this.emergencySellLeg1(trader, "对冲超时", leg1Bid ?? undefined);
-                }
-              }
+              // ③ 其他情况: 持有等结算
               }
             }
 
@@ -1711,8 +1592,6 @@ export class Hedge15mEngine {
         this.preOrderUpPrice = 0;
         this.preOrderUpShares = 0;
         await this.refreshBalance();
-        // Leg1成交后立即挂Leg2 GTC limit, 争取双maker
-        await this.placeLeg2Gtc(trader, rnd.downToken, upFill.filled, secs);
         return;
       }
     }
@@ -1753,8 +1632,6 @@ export class Hedge15mEngine {
         this.preOrderDownPrice = 0;
         this.preOrderDownShares = 0;
         await this.refreshBalance();
-        // Leg1成交后立即挂Leg2 GTC limit, 争取双maker
-        await this.placeLeg2Gtc(trader, rnd.upToken, dnFill.filled, secs);
         return;
       }
     }

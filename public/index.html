@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>15分钟对冲机器人</title>
+<title>15分钟方向性机器人</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,system-ui,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0a0e14;color:#e6edf3;min-height:100vh}
@@ -88,8 +88,8 @@ tr:hover{background:rgba(88,166,255,.04)}
 <!-- Login -->
 <div id="login-overlay">
   <div class="login-box">
-    <h2>15分钟对冲机器人</h2>
-    <p class="login-sub">BTC 15min 双腿对冲策略</p>
+    <h2>15分钟方向性机器人</h2>
+    <p class="login-sub">BTC 15min 方向性持有策略</p>
     <label>密码<input type="password" id="pwd" autocomplete="current-password"></label>
     <div style="margin-top:20px;text-align:center">
       <button class="btn-g" onclick="doLogin()" style="width:100%">登录</button>
@@ -101,7 +101,7 @@ tr:hover{background:rgba(88,166,255,.04)}
 <!-- Dashboard -->
 <div id="app" style="display:none">
 <header>
-  <h1>15分钟对冲机器人</h1>
+  <h1>15分钟方向性机器人</h1>
   <div class="hdr-right">
     <span id="badge" class="badge badge-stop">已停止</span>
     <button class="btn-g" onclick="downloadLogs()" style="font-size:12px;padding:6px 12px;background:linear-gradient(135deg,#1f6feb,#58a6ff)">下载日志</button>
@@ -187,7 +187,7 @@ tr:hover{background:rgba(88,166,255,.04)}
 
     <!-- Hedge Status -->
     <div class="card full horizontal-card">
-      <h3>🔀 对冲状态</h3>
+      <h3>� 持仓状态</h3>
       <div class="detail-grid">
       <div class="row"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
       <div class="row"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
@@ -247,10 +247,10 @@ tr:hover{background:rgba(88,166,255,.04)}
       <div class="row"><span class="k">监控窗口</span><span class="v">420秒 (前7分钟)</span></div>
       <div class="row"><span class="k">回合时长</span><span class="v">15分钟</span></div>
       <div class="row"><span class="k">手续费</span><span class="v">taker 2% / maker 0% (Limit赛跑)</span></div>
-      <div class="row"><span class="k">止损</span><span class="v">82%/88%/bid&lt;0.15 + 15s冷却期 + 3s逆向确认</span></div>
-      <div class="row"><span class="k">止盈</span><span class="v">bid≥0.95且>300s</span></div>
-      <div class="row"><span class="k">割肉</span><span class="v">边缘15s未锁 / 裸仓60s早退(动态) / 120s硬超 / 对冲超时 / ≤30s且bid&lt;0.35</span></div>
-      <div class="row"><span class="k">双侧做市</span><span class="v">sum≤$0.94 / ask≤$0.43 / 动态仓位 / 流动性过滤 / 趋势过滤</span></div>
+      <div class="row"><span class="k">止损</span><span class="v">bid&lt;0.05(极端) / ≤30s且bid&lt;0.35(残值回收)</span></div>
+      <div class="row"><span class="k">止盈</span><span class="v">bid≥0.90且>300s(锁定利润)</span></div>
+      <div class="row"><span class="k">核心策略</span><span class="v">方向性持有到结算, 不对冲, 赚$1结算差价</span></div>
+      <div class="row"><span class="k">双侧做市</span><span class="v">ask≤0.43 / 流动性过滤 / 趋势过滤 / 入场即持有</span></div>
       </div>
     </div>
 
