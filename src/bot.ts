@@ -63,9 +63,9 @@ const DRAWDOWN_RECOVER_THRESHOLD = 0.05;   // 滚动4h亏损<5%余额 → 恢复
 const DRAWDOWN_WINDOW_MS = 4 * 3600_000;   // 滚动窗口 4小时
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
-const SUM_DIVERGENCE_MAX = 0.98;            // 入场时 upAsk+downAsk > 此值 → 几乎无edge, 拒绝入场
+const SUM_DIVERGENCE_MAX = 1.10;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (放宽: 原0.98过严导致零交易)
 const SUM_DIVERGENCE_MIN = 0.85;            // 入场时 upAsk+downAsk < 此值 → 方向性强、砸盘更可信
-const DUMP_CONFIRM_CYCLES = 3;              // 连续 N 个循环看到 dump 才触发入场
+const DUMP_CONFIRM_CYCLES = 2;              // 连续 N 个循环看到 dump 才触发入场 (从3降到2: 保留确认但不过分延迟)
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -902,12 +902,12 @@ export class Hedge15mEngine {
                     this.trackRoundRejectReason(`sum_high: ${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX}`);
                     logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — market uncertain, no clear edge`);
                   } else {
-                  // ── #1 Chainlink方向确认: CL方向明确反对入场方向则拒绝 ──
+                  // ── #1 Chainlink方向过滤: CL方向明确时阻止逆CL入场 ──
                   const clFresh = isChainlinkFresh();
                   const clDir = clFresh ? getChainlinkDirection() : null;
                   if (clFresh && clDir && clDir !== candidate.dir) {
-                    this.trackRoundRejectReason(`chainlink_contra: entry=${candidate.dir} CL=${clDir}`);
-                    logger.warn(`HEDGE15M SKIP: Chainlink says ${clDir.toUpperCase()} but entry is ${candidate.dir.toUpperCase()} — likely losing direction`);
+                    this.trackRoundRejectReason(`chainlink_contra: CL=${clDir} entry=${candidate.dir}`);
+                    logger.warn(`HEDGE15M SKIP: Chainlink says ${clDir.toUpperCase()} but entry is ${candidate.dir.toUpperCase()} — blocked`);
                   } else {
                   this.dumpDetected = candidate.dumpDetected;
                   this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
