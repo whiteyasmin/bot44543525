@@ -1,20 +1,9 @@
 import * as fs from "fs";
-import { PositionHistoryEntry } from "./bot";
-import {
-  getLiveHistoryFilePath,
-  getPaperHistoryFilePath,
-  resolveCompatibleLiveHistoryFilePath,
-  resolveCompatiblePaperHistoryFilePath,
-} from "./instancePaths";
+import { HedgeHistoryEntry } from "./bot";
+import { getLiveHistoryFilePath, getPaperHistoryFilePath } from "./instancePaths";
 
 export const HISTORY_FILE = getLiveHistoryFilePath();
 export const PAPER_HISTORY_FILE = getPaperHistoryFilePath();
-
-function resolveHistoryReadPath(filePath: string): string {
-  if (filePath === HISTORY_FILE) return resolveCompatibleLiveHistoryFilePath();
-  if (filePath === PAPER_HISTORY_FILE) return resolveCompatiblePaperHistoryFilePath();
-  return filePath;
-}
 
 export interface AuditReport {
   fileExists: boolean;
@@ -36,68 +25,8 @@ export interface AuditReport {
   totalReturn: number;
   roiPct: number | null;
   exitTypeBreakdown: Record<string, number>;
-  strategyModeBreakdown: Record<string, number>;
-  entrySourceBreakdown: Record<string, number>;
-  trendExitRuleBreakdown: Record<string, number>;
   warnings: string[];
-  history: PositionHistoryEntry[];
-}
-
-function normalizeHistoryEntry(entry: unknown): PositionHistoryEntry {
-  const source = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
-  const exitType = typeof source.exitType === "string" ? source.exitType : undefined;
-  const leg1Shares = safeNumber(source.leg1Shares);
-  const legacyLeg2Shares = safeNumber(source.leg2Shares);
-  const normalizedShares = exitType === "settlement"
-    ? leg1Shares + legacyLeg2Shares
-    : leg1Shares;
-  return {
-    time: typeof source.time === "string" ? source.time : "",
-    result: typeof source.result === "string" ? source.result : "",
-    leg1Dir: typeof source.leg1Dir === "string" ? source.leg1Dir : "",
-    leg1Price: safeNumber(source.leg1Price),
-    totalCost: safeNumber(source.totalCost),
-    profit: safeNumber(source.profit),
-    cumProfit: safeNumber(source.cumProfit),
-    exitType,
-    exitReason: typeof source.exitReason === "string" ? source.exitReason : undefined,
-    leg1Shares: normalizedShares || undefined,
-    leg1FillPrice: safeNumber(source.leg1FillPrice) || undefined,
-    sellPrice: safeNumber(source.sellPrice) || undefined,
-    sellShares: safeNumber(source.sellShares) || undefined,
-    orderId: typeof source.orderId === "string" ? source.orderId : undefined,
-    sellOrderId: typeof source.sellOrderId === "string" ? source.sellOrderId : undefined,
-    estimated: typeof source.estimated === "boolean" ? source.estimated : undefined,
-    profitBreakdown: typeof source.profitBreakdown === "string" ? source.profitBreakdown : undefined,
-    strategyMode: typeof source.strategyMode === "string" ? source.strategyMode : undefined,
-    entrySource: typeof source.entrySource === "string" ? source.entrySource : undefined,
-    entryTrendBias: typeof source.entryTrendBias === "string" ? source.entryTrendBias : undefined,
-    trendExitRule: typeof source.trendExitRule === "string" ? source.trendExitRule : undefined,
-  };
-}
-
-export function normalizeHistoryEntries(entries: unknown[]): PositionHistoryEntry[] {
-  return entries.map((entry) => normalizeHistoryEntry(entry));
-}
-
-export function normalizeHistoryFileInPlace(filePath = HISTORY_FILE): boolean {
-  const resolvedPath = resolveHistoryReadPath(filePath);
-  if (!fs.existsSync(resolvedPath)) return false;
-
-  const raw = fs.readFileSync(resolvedPath, "utf8");
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== "object") return false;
-
-  const normalized = {
-    ...(parsed as Record<string, unknown>),
-    history: Array.isArray((parsed as Record<string, unknown>).history)
-      ? normalizeHistoryEntries((parsed as Record<string, unknown>).history as unknown[])
-      : [],
-  };
-  const next = JSON.stringify(normalized, null, 2);
-  if (next === raw) return false;
-  fs.writeFileSync(resolvedPath, next, "utf8");
-  return true;
+  history: HedgeHistoryEntry[];
 }
 
 function safeNumber(value: unknown): number {
@@ -113,16 +42,14 @@ function pct(num: number, den: number): number {
   return round2((num / den) * 100);
 }
 
-export function loadHistoryEntries(filePath = HISTORY_FILE): PositionHistoryEntry[] {
-  const resolvedPath = resolveHistoryReadPath(filePath);
-  if (!fs.existsSync(resolvedPath)) return [];
-  const raw = fs.readFileSync(resolvedPath, "utf8");
+export function loadHistoryEntries(filePath = HISTORY_FILE): HedgeHistoryEntry[] {
+  if (!fs.existsSync(filePath)) return [];
+  const raw = fs.readFileSync(filePath, "utf8");
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed?.history) ? normalizeHistoryEntries(parsed.history) : [];
+  return Array.isArray(parsed?.history) ? parsed.history as HedgeHistoryEntry[] : [];
 }
 
-export function buildAuditReport(history: PositionHistoryEntry[], filePath = HISTORY_FILE): AuditReport {
-  const resolvedPath = resolveHistoryReadPath(filePath);
+export function buildAuditReport(history: HedgeHistoryEntry[], filePath = HISTORY_FILE): AuditReport {
   let realizedProfit = 0;
   let totalCost = 0;
   let totalReturn = 0;
@@ -135,9 +62,6 @@ export function buildAuditReport(history: PositionHistoryEntry[], filePath = HIS
   let runningProfit = 0;
   let maxDrawdown = 0;
   const exitTypeBreakdown: Record<string, number> = {};
-  const strategyModeBreakdown: Record<string, number> = {};
-  const entrySourceBreakdown: Record<string, number> = {};
-  const trendExitRuleBreakdown: Record<string, number> = {};
   const warnings: string[] = [];
 
   for (const trade of history) {
@@ -146,18 +70,10 @@ export function buildAuditReport(history: PositionHistoryEntry[], filePath = HIS
     const sellShares = safeNumber(trade.sellShares);
     const sellPrice = safeNumber(trade.sellPrice);
     const leg1Shares = safeNumber(trade.leg1Shares);
+    const leg2Shares = safeNumber(trade.leg2Shares);
     const exitType = trade.exitType || "unknown";
 
     exitTypeBreakdown[exitType] = (exitTypeBreakdown[exitType] || 0) + 1;
-    if (trade.strategyMode) {
-      strategyModeBreakdown[trade.strategyMode] = (strategyModeBreakdown[trade.strategyMode] || 0) + 1;
-    }
-    if (trade.entrySource) {
-      entrySourceBreakdown[trade.entrySource] = (entrySourceBreakdown[trade.entrySource] || 0) + 1;
-    }
-    if (trade.trendExitRule) {
-      trendExitRuleBreakdown[trade.trendExitRule] = (trendExitRuleBreakdown[trade.trendExitRule] || 0) + 1;
-    }
     realizedProfit += profit;
     totalCost += cost;
     if (trade.estimated) estimatedTrades++;
@@ -169,7 +85,7 @@ export function buildAuditReport(history: PositionHistoryEntry[], filePath = HIS
     if (sellShares > 0 && sellPrice > 0) {
       totalReturn += sellShares * sellPrice;
     } else if (exitType === "settlement") {
-      totalReturn += leg1Shares;
+      totalReturn += leg1Shares + leg2Shares;
     }
 
     runningProfit += profit;
@@ -209,7 +125,7 @@ export function buildAuditReport(history: PositionHistoryEntry[], filePath = HIS
   }
 
   return {
-    fileExists: history.length > 0 || fs.existsSync(resolvedPath),
+    fileExists: history.length > 0 || fs.existsSync(filePath),
     totalTrades: history.length,
     realizedProfit: round2(realizedProfit),
     estimatedTrades,
@@ -228,9 +144,6 @@ export function buildAuditReport(history: PositionHistoryEntry[], filePath = HIS
     totalReturn: round2(totalReturn),
     roiPct: totalCost > 0 ? pct(realizedProfit, totalCost) : null,
     exitTypeBreakdown,
-    strategyModeBreakdown,
-    entrySourceBreakdown,
-    trendExitRuleBreakdown,
     warnings: [...new Set(warnings)],
     history,
   };

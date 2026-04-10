@@ -1,30 +1,9 @@
 import { ClobClient, Side, OrderType, type ApiKeyCreds } from "@polymarket/clob-client";
-import { Wallet } from "ethers";
+import { Wallet } from "@ethersproject/wallet";
 import { WebSocket, type RawData } from "ws";
 import { Config } from "./config";
 import { getP50Ms } from "./latency";
 import { logger } from "./logger";
-
-type EthersWalletLike = {
-  address: string;
-  signTypedData(domain: Record<string, unknown>, types: Record<string, Array<{ name: string; type: string }>>, value: Record<string, unknown>): Promise<string>;
-};
-
-type ClobCompatibleSigner = {
-  _signTypedData(domain: Record<string, unknown>, types: Record<string, Array<{ name: string; type: string }>>, value: Record<string, unknown>): Promise<string>;
-  getAddress(): Promise<string>;
-};
-
-function createClobCompatibleSigner(wallet: EthersWalletLike): ClobCompatibleSigner {
-  return {
-    _signTypedData(domain, types, value) {
-      return wallet.signTypedData(domain, types, value);
-    },
-    getAddress() {
-      return Promise.resolve(wallet.address);
-    },
-  };
-}
 
 const PAPER_TAKER_FEE = 0.02;
 const PAPER_MAKER_FEE = 0.00;   // maker 挂单 0% fee
@@ -259,10 +238,9 @@ export class Trader {
   async init(options: TraderInitOptions = {}): Promise<void> {
     this.mode = options.mode || "live";
     const wallet = Config.PRIVATE_KEY ? new Wallet(Config.PRIVATE_KEY) : Wallet.createRandom();
-    const signer = createClobCompatibleSigner(wallet);
 
     if (this.mode === "paper") {
-      this.client = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, signer);
+      this.client = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, wallet);
       this.apiCreds = null;
       this.paperBalance = options.paperBalance && options.paperBalance > 0 ? options.paperBalance : 100;
       this.paperOrders.clear();
@@ -272,7 +250,7 @@ export class Trader {
       return;
     }
 
-    const tempClient = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, signer);
+    const tempClient = new ClobClient(Config.CLOB_HOST, Config.CHAIN_ID, wallet);
     const creds = await tempClient.createOrDeriveApiKey();
     this.apiCreds = creds;
     let sigType = Config.SIGNATURE_TYPE;
@@ -283,7 +261,7 @@ export class Trader {
     this.client = new ClobClient(
       Config.CLOB_HOST,
       Config.CHAIN_ID,
-      signer,
+      wallet,
       creds,
       sigType,
       Config.FUNDER_ADDRESS,

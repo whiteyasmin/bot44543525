@@ -5,12 +5,11 @@ import * as crypto from "crypto";
 import * as path from "path";
 import { Duplex } from "stream";
 import { Config, ServerConfig, updateConfig } from "./config";
-import { HISTORY_FILE, PAPER_HISTORY_FILE, loadAuditReport, normalizeHistoryFileInPlace } from "./audit";
-import { Directional15mEngine } from "./bot";
-import { migrateLegacyDirectionalFiles, resolveCompatibleDecisionAuditFilePath } from "./instancePaths";
+import { loadAuditReport } from "./audit";
+import { Hedge15mEngine } from "./bot";
+import { getDecisionAuditFilePath, getLogFilePath } from "./instancePaths";
 import { logger } from "./logger";
 import * as fs from "fs";
-import { normalizeDecisionAuditContent, normalizeDecisionAuditFileInPlace } from "./decisionAudit";
 
 const app = express();
 const server = createServer(app);
@@ -104,7 +103,7 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
 }
 
 // --- Bot ---
-const bot = new Directional15mEngine();
+const bot = new Hedge15mEngine();
 
 // --- Routes ---
 
@@ -185,15 +184,40 @@ app.post("/api/stop", auth, (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/download-logs", auth, (_req, res) => {
+  const logPath = getLogFilePath();
+  if (!fs.existsSync(logPath)) {
+    res.status(404).json({ error: "日志文件未找到" });
+    return;
+  }
+  const raw = fs.readFileSync(logPath, "utf-8");
+  const lines = raw.split("\n");
+  const tail = lines.slice(-1000).join("\n");
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(logPath)}"`);
+  res.send(tail);
+});
+
+app.get("/api/download-history", auth, (_req, res) => {
+  const historyPath = bot.getHistoryFilePath();
+  if (!fs.existsSync(historyPath)) {
+    res.status(404).json({ error: "历史文件未找到" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(historyPath)}"`);
+  res.send(fs.readFileSync(historyPath, "utf8"));
+});
+
 app.get("/api/download-decision-audit", auth, (_req, res) => {
-  const auditPath = resolveCompatibleDecisionAuditFilePath();
+  const auditPath = getDecisionAuditFilePath();
   if (!fs.existsSync(auditPath)) {
     res.status(404).json({ error: "审计日志文件未找到" });
     return;
   }
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${path.basename(auditPath)}"`);
-  res.send(normalizeDecisionAuditContent(fs.readFileSync(auditPath, "utf8")));
+  res.send(fs.readFileSync(auditPath, "utf8"));
 });
 
 app.get("/api/healthz", (_req, res) => {
@@ -226,23 +250,9 @@ setInterval(() => {
 // --- Start ---
 
 export function startServer(): void {
-  const migratedFiles = migrateLegacyDirectionalFiles();
-  for (const move of migratedFiles) {
-    logger.info(`Directional15m migrated legacy data: ${path.basename(move.from)} -> ${path.basename(move.to)}`);
-  }
-  if (normalizeHistoryFileInPlace(HISTORY_FILE)) {
-    logger.info(`Directional15m normalized history schema: ${path.basename(HISTORY_FILE)}`);
-  }
-  if (normalizeHistoryFileInPlace(PAPER_HISTORY_FILE)) {
-    logger.info(`Directional15m normalized history schema: ${path.basename(PAPER_HISTORY_FILE)}`);
-  }
-  const auditPath = resolveCompatibleDecisionAuditFilePath();
-  if (normalizeDecisionAuditFileInPlace(auditPath)) {
-    logger.info(`Directional15m normalized audit schema: ${path.basename(auditPath)}`);
-  }
   const port = ServerConfig.PORT;
   server.listen(port, () => {
-    console.log(`15分钟方向策略机器人面板: http://localhost:${port}`);
+    console.log(`15分钟对冲机器人面板: http://localhost:${port}`);
     logger.info(`Server started on port ${port}`);
   });
 }

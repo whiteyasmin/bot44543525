@@ -10,18 +10,12 @@ import {
   getChainlinkPrice, getChainlinkDirection, isChainlinkFresh,
   setRoundSecsLeft, setRoundStartPrice, stopPriceFeed,
   getRecentMomentum,
-  getRecentVolatility,
 } from "./btcPrice";
-import { HISTORY_FILE, PAPER_HISTORY_FILE, normalizeHistoryFileInPlace } from "./audit";
+import { HISTORY_FILE, PAPER_HISTORY_FILE } from "./audit";
 import { clearPaperRuntimeState, loadPaperRuntimeState, savePaperRuntimeState } from "./paperRuntimeState";
 import { RoundMarketState } from "./marketState";
 import { estimateFilledShares, evaluateEntryOrderbook } from "./executionManager";
-import { planDirectionalEntry, planTrendEntry } from "./executionPlanner";
-import {
-  migrateLegacyDirectionalFiles,
-  resolveCompatibleLiveHistoryFilePath,
-  resolveCompatiblePaperHistoryFilePath,
-} from "./instancePaths";
+import { planHedgeEntry, planTrendEntry } from "./executionPlanner";
 import {
   evaluateMispricingOpportunity,
   evaluateTrendOpportunity,
@@ -29,10 +23,10 @@ import {
 } from "./strategyEngine";
 import { Trader, type TraderDiagnostics } from "./trader";
 
-// ── 15分钟方向策略机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
+// ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
 const MAX_SHARES      = 100;      // 单腿上限100份
-const SUM_TARGET      = 0.93;     // 历史目标价基线, 当前主要作为入场质量约束参考
+const SUM_TARGET      = 0.93;     // Leg1 + Leg2 fillPrice ≤ 此值买入Leg2 (利润≈5.1%含手续费)
 const DUMP_THRESHOLD  = 0.10;     // ask 跌幅 ≥10% 触发Leg1
 const ENTRY_WINDOW_S  = 420;      // 开局7分钟内监控砸盘, 配合MIN_ENTRY_SECS=480
 const ROUND_DURATION  = 900;      // 15分钟
@@ -41,42 +35,34 @@ const MAX_SUM_TARGET  = 0.96;     // 渐进最高放宽到此, 保留~2%利润�
 const MIN_ENTRY_SECS  = 480;      // 剩余 <8分钟不开新仓
 const LEG1_STOP_LOSS  = 0.82;     // Leg1 bid跌至入场价*82%时止损 (统一用adaptive更紧的止损)
 const LEG1_STOP_ABS   = 0.15;     // Leg1 bid绝对下限, 低于此无论入场价都止损
-const EV_COMFORT_ENTRY_ASK = 0.35; // 50%胜率下仍有较厚安全垫的舒适入场价
-const EV_THIN_ENTRY_ASK = 0.40;    // 50%胜率仍为EV+, 但利润边际开始变薄
-const EV_MAX_ENTRY_ASK = 0.43;     // 纯随机仍为EV+的硬上限, 超过则不做
-const MAX_ENTRY_ASK   = EV_MAX_ENTRY_ASK;
-const MIN_ENTRY_ASK   = 0.25;     // 方向单入场价下限, 低于此通常流动性和胜率都偏差
+const MAX_ENTRY_ASK   = 0.50;     // Leg1 入场价上限 (实盘)
+const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功对冲概率极低
 const PAPER_SUM_TARGET = 0.95;    // 仿真盘sum target (回测最优)
 const PAPER_MAX_SUM_TARGET = 0.99;
-const PAPER_MAX_ENTRY_ASK = EV_MAX_ENTRY_ASK;
+const PAPER_MAX_ENTRY_ASK = 0.59;
 const PAPER_HARD_MAX_SUM_TARGET = 0.99;
 const PAPER_SUM_ADJUST_STEP = 0.01;
 const PAPER_SKIP_ADJUST_TRIGGER = 2;
 const PAPER_DYNAMIC_TUNING_ENABLED = false;
 const PAPER_MIN_LOCKED_PROFIT = 0.02;     // 至少锁定 $0.02 (不再是主要门槛)
 const PAPER_MIN_LOCKED_ROI = 0.02;        // 至少锁定 2% ROI (主要门槛)
-const PAPER_ENTRY_SUM_BUFFER = 0.01;      // 入场时预留 sum 安全 buffer
+const PAPER_ENTRY_SUM_BUFFER = 0.01;      // 入场时预留对冲空间buffer
 const PAPER_OVER_SUM_SMALL_BUDGET_PCT = 0.06;
 const PAPER_NEAR_CAP_SMALL_BUDGET_PCT = 0.04;
-const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点 sum 空间
-const DIRECTIONAL_ENTRY_ASK_CAP = EV_MAX_ENTRY_ASK;
+const DIRECTIONAL_ENTRY_SUM_BONUS = 0.01; // 顺势且价格足够低时, 允许多拿一点对冲空间
+const DIRECTIONAL_ENTRY_ASK_CAP = 0.35;
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
 const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
 const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 60s内反方向移动超过 0.10% 才拒绝dump
 const TREND_WINDOW_SEC = 180;              // 中期趋势窗口 180秒
 const TREND_CONTRA_PCT = 0.0024;           // BTC 180s内单边超过 0.24% 才视为强真实趋势
-const TREND_VOL_WINDOW_SEC = 180;          // 趋势波动归一化窗口
-const TREND_VOL_BASELINE = 0.00055;        // 以 0.055% 实现波动率作为基准环境
-const TREND_VOL_MIN_MULTIPLIER = 0.90;     // 低波动最多放宽到 0.90x
-const TREND_VOL_MAX_MULTIPLIER = 1.35;     // 高波动最多收紧到 1.35x
 const TREND_ENTRY_MAX_SECS = 840;          // 趋势单仅在回合前期介入
 const TREND_ENTRY_MIN_SECS = 480;          // 趋势单剩余时间过少不追
 const TREND_SHORT_TRIGGER_PCT = 0.0018;    // 60s 同向至少 0.18%
 const TREND_MEDIUM_TRIGGER_PCT = 0.0025;   // 180s 同向至少 0.25%
 const TREND_ROUND_TRIGGER_PCT = 0.0030;    // 本回合累计至少单边 0.30%
-const TREND_CONFIRM_MIN_MS = 10_000;       // 趋势信号至少持续10秒, 避免被高频盘口刷新放大
-const TREND_CONFIRM_GRACE_MS = 2_500;      // 趋势确认允许短暂抖动, 不因一次采样失真立刻清零
-const TREND_MAX_ENTRY_ASK = EV_MAX_ENTRY_ASK; // 趋势单也只做 EV+ 入场, 不再追到 0.68
+const TREND_CONFIRM_TRIGGER = 4;           // 连续4次确认后才视为持续趋势
+const TREND_MAX_ENTRY_ASK = 0.68;          // 趋势追价上限
 const TREND_BUDGET_PCT = 0.08;             // 趋势单更轻仓
 const TREND_TAKE_PROFIT_BID = 0.90;        // 趋势单高胜率先落袋
 const TREND_STOP_LOSS_BID = 0.42;          // 趋势失败快速退出(绝对底线)
@@ -84,27 +70,36 @@ const TREND_RELATIVE_STOP_LOSS = 0.75;     // 趋势单相对止损: bid < 入�
 const TREND_TRAILING_PULLBACK = 0.15;      // 趋势单移动止盈: 从峰值回撤15%就卖
 const TREND_TRAILING_MIN_BID = 0.55;       // 移动止盈最低触发bid
 const TREND_DEADZONE_EXIT_BID = 0.50;      // 60-180s死区 bid<0.50 退出
-const STRATEGY_POLICY = "quality-ranked" as const;
-const TREND_SELECTION_SCORE_MARGIN = 0.01; // 趋势已确认时, 仅在质量接近或更优时才压过错价单
-const BASE_BUDGET_PCT = 0.14;             // 单腿方向单默认更轻仓，优先控制回撤
-const THIN_EDGE_BUDGET_PCT = 0.12;        // 盈利空间偏薄时进一步缩仓
-const HIGH_ASK_BUDGET_PCT = 0.08;         // 0.40-0.43 高价 EV+ 入场只允许极小仓位
+const STRATEGY_POLICY = "mispricing-first" as const;
+const BASE_BUDGET_PCT = 0.18;             // 默认轻仓，优先控制回撤
+const THIN_EDGE_BUDGET_PCT = 0.12;        // 对冲空间偏薄时进一步缩仓
+const HIGH_ASK_BUDGET_PCT = 0.10;         // 高价入场只允许极小仓位
+const LEG1_HEDGE_TIMEOUT_SECS = 30;
+const LEG1_HEDGE_TIMEOUT_MIN_SECS = 15;
+const LEG1_HEDGE_TIMEOUT_SUM_BUFFER = 0.03;
+const THIN_EDGE_HEDGE_TIMEOUT_MS = 15_000;
+const THIN_EDGE_HEDGE_SUM_BUFFER = 0.01;
 const THIN_EDGE_STOP_LOSS = 0.88;            // 边缘入场更紧止损 (正常0.82)
 const THIN_EDGE_MIN_PROFIT_PER_SHARE = 0.008; // 边缘入场每股至少0.8分利润, 否则拒绝
-const EARLY_EXIT_AFTER_MS = 75_000;
+const EARLY_EXIT_AFTER_MS = 60_000;
 const EARLY_EXIT_SUM_BUFFER_BASE = 0.06;    // 低价入场(≤0.35)最宽松
-const EARLY_EXIT_SUM_BUFFER_HIGH = 0.02;    // 高价入场(≥0.43)最严格
-const NAKED_HARD_TIMEOUT_MS = 240_000;      // 错价裸仓最长观察时间，避免2分钟内把正常回摆误判为失败
-const MISPRICING_TIMEOUT_MIN_SECS_LEFT = 330; // 错价超时退出只在回合后段触发，前段给修复时间
+const EARLY_EXIT_SUM_BUFFER_HIGH = 0.02;    // 高价入场(≥0.45)最严格
+const NAKED_HARD_TIMEOUT_MS = 120_000;      // 裸仓硬性时限: 120s无条件平仓
 const STOP_LOSS_COOLDOWN_MS = 15_000;       // 止损冷却期: 填充后15s内不触发相对止损(绝对止损不受影响)
 const ADVERSE_FILL_EXIT_SUM = 1.05;         // 填充后3s内sum>1.05说明严重逆向选择, 快速退出
 const ADVERSE_FILL_CHECK_MS = 3_000;        // 填充后反向确认窗口 3秒
+const LEG2_GTC_ACTIVE_STOP_LOSS = 0.70;     // Leg2 GTC 挂单期间相对止损放宽到70%(给GTC成交留时间)
 const LIMIT_RACE_ENABLED = true;           // 启用 Limit+FAK 赛跑
 const LIMIT_RACE_OFFSET = 0.01;            // limit 挂单价 = ask - offset
 const LIMIT_RACE_FAST_OFFSET = 0.02;       // dump 快速时更激进
 const LIMIT_RACE_TIMEOUT_MS = 400;         // limit 等待上限 ms
 const LIMIT_RACE_POLL_MS = 50;             // 每 50ms 检查一次
 const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
+const LIMIT_LEG2_ENABLED = true;           // Leg2 也尝试 limit
+const LIMIT_LEG2_OFFSET = 0.01;
+const LIMIT_LEG2_TIMEOUT_MS = 300;
+const LEG2_GTC_ENABLED = false;             // 方向性策略: 不对冲, 持有到结算
+const LEG2_GTC_REPRICE_MS = 5000;           // Leg2 GTC 每5秒检查是否需要重新定价
 const CHAINLINK_CONFIRM_ENABLED = true;    // Chainlink 方向确认
 const CHAINLINK_CONTRA_PENALTY = 0.50;     // CL与dump方向矛盾时仓位减半
 const CHAINLINK_LAG_AGGRESSIVE_PCT = 0.001; // CL滞后>0.1% → 更激进的limit offset
@@ -112,13 +107,13 @@ const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
 const DUAL_SIDE_SUM_CEILING = 0.96;        // 预挂单目标: 双侧sum ≤ 此值 (较0.94放宽, 提高挂单与成交机会)
 const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少)
 const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
-const DUAL_SIDE_BUDGET_PCT = 0.18;         // 预挂单仓位 (单侧) - 低价单腿有效，但仍需压低回撤
+const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
-const DUAL_SIDE_MAX_ASK = EV_MAX_ENTRY_ASK;  // 挂单价上限 (≤0.43 纯随机仍为 EV+)
-const DUAL_SIDE_MAX_ASK_PROTECTED = 0.30;    // 亏损保护模式: 只接受更厚安全垫的低价入场
-const DRAWDOWN_PROTECT_THRESHOLD = 0.07;   // 滚动4h亏损≥7%余额 → 提前收紧入场
-const DRAWDOWN_RECOVER_THRESHOLD = 0.03;   // 滚动4h亏损<3%余额 → 恢复正常
+const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
+const DUAL_SIDE_MAX_ASK_PROTECTED = 0.25;  // 亏损保护模式: 只接受极低价入场
+const DRAWDOWN_PROTECT_THRESHOLD = 0.10;   // 滚动4h亏损≥10%余额 → 收紧入场
+const DRAWDOWN_RECOVER_THRESHOLD = 0.05;   // 滚动4h亏损<5%余额 → 恢复正常
 const DRAWDOWN_WINDOW_MS = 4 * 3600_000;   // 滚动窗口 4小时
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
@@ -127,7 +122,7 @@ const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 
 export type PaperSessionMode = "session" | "persistent";
 
-export interface Directional15mState {
+export interface Hedge15mState {
   botRunning: boolean;
   tradingMode: "live" | "paper";
   paperSessionMode: PaperSessionMode;
@@ -150,11 +145,12 @@ export interface Directional15mState {
   losses: number;
   skips: number;
   totalRounds: number;
-  history: PositionHistoryEntry[];
-  positionState: string;
-  positionLeg1Dir: string;
-  positionLeg1Price: number;
-  positionTotalCost: number;
+  history: HedgeHistoryEntry[];
+  hedgeState: string;
+  hedgeLeg1Dir: string;
+  hedgeLeg1Price: number;
+  hedgeLeg2Price: number;
+  hedgeTotalCost: number;
   expectedProfit: number;
   dumpDetected: string;
   tuningEnabled: boolean;
@@ -164,10 +160,6 @@ export interface Directional15mState {
   adjustmentCount: number;
   lastAdjustment: string;
   activeStrategyMode: string;
-  positionEntryKind: string;
-  trendProtectionStatus: string;
-  entryEvSummary: string;
-  trendConfirmSummary: string;
   strategyPolicy: string;
   trendBias: string;
   sessionROI: number;
@@ -177,6 +169,9 @@ export interface Directional15mState {
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
+  leg2Maker: boolean;
+  leg2GtcPrice: number;
+  leg2GtcShares: number;
   latencyP50: number;
   latencyP90: number;
   latencyNetworkSource: string;
@@ -219,23 +214,26 @@ export interface Directional15mState {
     execAckToFillP50: number;
     execSignalToFillP50: number;
     execSignalToFillP90: number;
+    execLeg2SignalToFillP50: number;
+    execLeg2SignalToFillP90: number;
     execExitSignalToFillP50: number;
     execExitSignalToFillP90: number;
     execGtcWaitToFillP50: number;
   };
 }
 
-export interface Directional15mStartOptions {
+export interface Hedge15mStartOptions {
   mode?: "live" | "paper";
   paperBalance?: number;
   paperSessionMode?: PaperSessionMode;
 }
 
-export interface PositionHistoryEntry {
+export interface HedgeHistoryEntry {
   time: string;
   result: string;
   leg1Dir: string;
   leg1Price: number;        // Leg1 入场 ask (报价)
+  leg2Price: number;        // Leg2 入场 ask (报价)
   totalCost: number;
   profit: number;
   cumProfit: number;
@@ -243,7 +241,9 @@ export interface PositionHistoryEntry {
   exitType?: string;        // "settlement" | "take-profit" | "stop-loss" | "force-exit" | "gtc-fill"
   exitReason?: string;      // 人类可读退出理由
   leg1Shares?: number;      // Leg1 实际成交份数
+  leg2Shares?: number;      // Leg2 实际成交份数
   leg1FillPrice?: number;   // Leg1 真实平均成交价
+  leg2FillPrice?: number;   // Leg2 真实平均成交价
   sellPrice?: number;       // 卖出真实成交价 (非结算退出时)
   sellShares?: number;      // 卖出份数
   orderId?: string;         // 关联订单ID (截取前12位)
@@ -253,7 +253,6 @@ export interface PositionHistoryEntry {
   strategyMode?: string;    // "mispricing" | "trend"
   entrySource?: string;     // dual-side-preorder | reactive-mispricing | reactive-trend
   entryTrendBias?: string;  // up | down | flat
-  trendExitRule?: string;   // trend-fixed-tp | trend-trailing-stop | trend-relative-sl | trend-absolute-sl | trend-deadzone-exit | trend-late-exit
 }
 
 function sleep(ms: number): Promise<void> {
@@ -306,7 +305,7 @@ function getDefaultTraderDiagnostics(): TraderDiagnostics {
   };
 }
 
-export class Directional15mEngine {
+export class Hedge15mEngine {
   running = false;
   private servicesStarted = false;
   private trader: Trader | null = null;
@@ -322,7 +321,7 @@ export class Directional15mEngine {
   private losses = 0;
   private skips = 0;
   private totalRounds = 0;
-  private history: PositionHistoryEntry[] = [];
+  private history: HedgeHistoryEntry[] = [];
 
   private secondsLeft = 0;
   private currentMarket = "";
@@ -330,12 +329,15 @@ export class Directional15mEngine {
   private upAsk = 0;
   private downAsk = 0;
 
-  // Directional position state
-  private positionState: "off" | "watching" | "leg1_pending" | "leg1_filled" | "done" = "off";
+  // Hedge state
+  private hedgeState: "off" | "watching" | "leg1_pending" | "leg1_filled" | "leg2_filled" | "done" = "off";
   private leg1Dir = "";
   private leg1Price = 0;
   private leg1Shares = 0;
   private leg1Token = "";
+  private leg2Token = "";
+  private leg2Price = 0;
+  private leg2Shares = 0;
   private totalCost = 0;
   private expectedProfit = 0;
   private dumpDetected = "";
@@ -346,9 +348,10 @@ export class Directional15mEngine {
   private pendingSellOrderId = ""; // GTC卖单追踪，FAK失败时挂限价单
   private pendingSellOrderTime = 0;  // GTC卖单创建时间戳
   private pendingSellPrice = 0;      // GTC卖单挂单价格
-  private pendingExitRule = "";     // 退出触发规则, 用于GTC回退后的历史/审计归因
   private leg1FillPrice = 0;         // Leg1 真实平均成交价
+  private leg2FillPrice = 0;         // Leg2 真实平均成交价
   private leg1OrderId = "";          // Leg1 订单ID
+  private leg2OrderId = "";          // Leg2 订单ID
   private leg1FilledAt = 0;
   private leg1ThinEdgeEntry = false;
   private leg1ThinEdgeObservedSum = 0;
@@ -356,6 +359,7 @@ export class Directional15mEngine {
   private leg1ThinEdgeHardMaxSum = 0;
   private leg1ThinEdgeDelayLoggedAt = 0;
   private leg1Estimated = false;       // Leg1 成交是否为估算值
+  private leg2Estimated = false;       // Leg2 成交是否为估算值
   private leg1EntryInFlight = false;
   private leg1AttemptedThisRound = false;
   private adaptiveBaseSumTarget = PAPER_SUM_TARGET;
@@ -370,18 +374,17 @@ export class Directional15mEngine {
   private roundMomentumRejects = 0;
   private roundSumRejects = 0;
   private roundEntryAskRejects = 0;
-  private roundTrendConfirmRejects = 0;
   private minLockedProfit = PAPER_MIN_LOCKED_PROFIT;
   private minLockedRoi = PAPER_MIN_LOCKED_ROI;
   private loopRunId = 0;
   private activeStrategyMode: "none" | "mispricing" | "trend" = "none";
   private currentTrendBias: "up" | "down" | "flat" = "flat";
+  private trendSignalStreak = 0;
   private trendSignalDir: "up" | "down" | "flat" = "flat";
-  private trendSignalStartedAt = 0;
-  private trendSignalLastSeenAt = 0;
   private trendPeakBid = 0;                  // 趋势单持仓期间最高bid
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
   private leg1MakerFill = false;             // Leg1是否maker成交
+  private leg2MakerFill = false;             // Leg2是否maker成交
   private preOrderUpId = "";                 // 双侧预挂单: UP token GTC orderId
   private preOrderDownId = "";               // 双侧预挂单: DOWN token GTC orderId
   private preOrderUpPrice = 0;
@@ -391,18 +394,15 @@ export class Directional15mEngine {
   private preOrderUpToken = "";
   private preOrderDownToken = "";
   private preOrderLastRefresh = 0;
+  private leg2GtcOrderId = "";               // Leg2 GTC limit 单ID
+  private leg2GtcPrice = 0;                  // Leg2 GTC 限价
+  private leg2GtcShares = 0;                 // Leg2 GTC 份数
+  private leg2GtcToken = "";                 // Leg2 GTC token
+  private leg2GtcPlacedAt = 0;               // Leg2 GTC 挂单时间
+  private leg2GtcLastReprice = 0;            // Leg2 GTC 上次重新定价时间
   private leg1EntrySource = "";
   private leg1EntryTrendBias: "up" | "down" | "flat" = "flat";
-  private leg1ObservedEntrySum = 0;
-  private currentTrendConfirmAsk = 0;
-  private currentTrendConfirmMs = TREND_CONFIRM_MIN_MS;
-  private currentTrendShortTriggerPct = TREND_SHORT_TRIGGER_PCT;
-  private currentTrendMediumTriggerPct = TREND_MEDIUM_TRIGGER_PCT;
-  private currentTrendRoundTriggerPct = TREND_ROUND_TRIGGER_PCT;
-  private currentTrendVolatility = 0;
-  private currentTrendVolatilityMultiplier = 1;
   private lastMomentumRejectSignature = "";
-  private lastTrendConfirmRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
   private rollingPnL: Array<{ ts: number; profit: number }> = []; // 滚动P/L记录
   private drawdownProtected = false;        // 当前是否在亏损保护模式
@@ -433,32 +433,8 @@ export class Directional15mEngine {
     this.roundMomentumRejects = 0;
     this.roundSumRejects = 0;
     this.roundEntryAskRejects = 0;
-    this.roundTrendConfirmRejects = 0;
     this.lastMomentumRejectSignature = "";
-    this.lastTrendConfirmRejectSignature = "";
     this.roundRejectReasonCounts.clear();
-  }
-
-  private noteTrendConfirmFailure(reason: string, payload: {
-    askPrice: number;
-    confirmHeldMs?: number;
-    confirmMinMs?: number;
-    roundDeltaPct?: number;
-    roundTriggerPct?: number;
-  }): void {
-    const signature = `${reason}|${payload.askPrice.toFixed(2)}|${Math.round((payload.roundDeltaPct || 0) * 10000)}|${Math.round((payload.confirmHeldMs || 0) / 1000)}`;
-    if (signature === this.lastTrendConfirmRejectSignature) return;
-    this.lastTrendConfirmRejectSignature = signature;
-    this.roundTrendConfirmRejects += 1;
-    this.trackRoundRejectReason(`trend-confirm:${reason}`);
-    this.writeRoundAudit("trend-confirm-failed", {
-      reason,
-      askPrice: payload.askPrice,
-      confirmHeldMs: payload.confirmHeldMs || 0,
-      confirmMinMs: payload.confirmMinMs || this.currentTrendConfirmMs,
-      roundDeltaPct: payload.roundDeltaPct || 0,
-      roundTriggerPct: payload.roundTriggerPct || this.currentTrendRoundTriggerPct,
-    });
   }
 
   private trackRoundRejectReason(reason: string): void {
@@ -482,13 +458,16 @@ export class Directional15mEngine {
       conditionId: this.currentConditionId,
       secondsLeft: this.secondsLeft,
       status: this.status,
-      positionState: this.positionState,
+      hedgeState: this.hedgeState,
       activeStrategyMode: this.activeStrategyMode,
       trendBias: this.currentTrendBias,
       leg1Dir: this.leg1Dir,
       leg1Price: this.leg1Price,
       leg1FillPrice: this.leg1FillPrice,
       leg1Shares: this.leg1Shares,
+      leg2Price: this.leg2Price,
+      leg2FillPrice: this.leg2FillPrice,
+      leg2Shares: this.leg2Shares,
       totalCost: this.totalCost,
       expectedProfit: this.expectedProfit,
       balance: this.balance,
@@ -498,16 +477,6 @@ export class Directional15mEngine {
         momentum: this.roundMomentumRejects,
         sum: this.roundSumRejects,
         entryAsk: this.roundEntryAskRejects,
-        trendConfirm: this.roundTrendConfirmRejects,
-      },
-      trendConfirm: {
-        ask: this.currentTrendConfirmAsk,
-        confirmMinMs: this.currentTrendConfirmMs,
-        shortTriggerPct: this.currentTrendShortTriggerPct,
-        mediumTriggerPct: this.currentTrendMediumTriggerPct,
-        roundTriggerPct: this.currentTrendRoundTriggerPct,
-        realizedVolatility: this.currentTrendVolatility,
-        volatilityMultiplier: this.currentTrendVolatilityMultiplier,
       },
       topRejectReasons: this.getTopRoundRejectReasons(),
       ...details,
@@ -519,14 +488,13 @@ export class Directional15mEngine {
     if (this.roundMomentumRejects > 0) parts.push(`momentum=${this.roundMomentumRejects}`);
     if (this.roundSumRejects > 0) parts.push(`sum=${this.roundSumRejects}`);
     if (this.roundEntryAskRejects > 0) parts.push(`entryAsk=${this.roundEntryAskRejects}`);
-    if (this.roundTrendConfirmRejects > 0) parts.push(`trendConfirm=${this.roundTrendConfirmRejects}`);
     if (parts.length === 0) return;
-    logger.info(`DIR15M ROUND SUMMARY: ${reason}, rejects(${parts.join(", ")})`);
+    logger.info(`HEDGE15M ROUND SUMMARY: ${reason}, rejects(${parts.join(", ")})`);
     const topReasons = Array.from(this.roundRejectReasonCounts.entries())
       .sort((left, right) => right[1] - left[1])
       .slice(0, 5);
     for (const [detail, count] of topReasons) {
-      logger.info(`DIR15M REJECT DETAIL: ${count}x ${detail}`);
+      logger.info(`HEDGE15M REJECT DETAIL: ${count}x ${detail}`);
     }
     this.writeRoundAudit("round-no-entry", {
       reason,
@@ -536,207 +504,18 @@ export class Directional15mEngine {
   }
 
   private resetTrendSignalTracking(): void {
+    this.trendSignalStreak = 0;
     this.trendSignalDir = "flat";
-    this.trendSignalStartedAt = 0;
-    this.trendSignalLastSeenAt = 0;
-    this.currentTrendConfirmAsk = 0;
-    this.currentTrendConfirmMs = TREND_CONFIRM_MIN_MS;
-    this.currentTrendShortTriggerPct = TREND_SHORT_TRIGGER_PCT;
-    this.currentTrendMediumTriggerPct = TREND_MEDIUM_TRIGGER_PCT;
-    this.currentTrendRoundTriggerPct = TREND_ROUND_TRIGGER_PCT;
-    this.currentTrendVolatility = 0;
-    this.currentTrendVolatilityMultiplier = 1;
   }
 
-  private noteTrendSignal(dir: "up" | "down", now = Date.now()): number {
-    if (this.trendSignalDir !== dir || this.trendSignalStartedAt <= 0) {
+  private noteTrendSignal(dir: "up" | "down"): number {
+    if (this.trendSignalDir === dir) {
+      this.trendSignalStreak += 1;
+    } else {
       this.trendSignalDir = dir;
-      this.trendSignalStartedAt = now;
+      this.trendSignalStreak = 1;
     }
-    this.trendSignalLastSeenAt = now;
-    return this.getTrendSignalHeldMs(now);
-  }
-
-  private getTrendSignalHeldMs(now = Date.now()): number {
-    if (this.trendSignalStartedAt <= 0) return 0;
-    return Math.max(0, now - this.trendSignalStartedAt);
-  }
-
-  private isTrendSignalWithinGrace(now = Date.now()): boolean {
-    if (this.trendSignalStartedAt <= 0 || this.trendSignalLastSeenAt <= 0) return false;
-    return now - this.trendSignalLastSeenAt <= TREND_CONFIRM_GRACE_MS;
-  }
-
-  private updateTrendConfirmContext(askPrice: number, profile: {
-    shortTriggerPct: number;
-    mediumTriggerPct: number;
-    roundTriggerPct: number;
-    confirmMinMs: number;
-    realizedVolatility: number;
-    volatilityMultiplier: number;
-  }): void {
-    this.currentTrendConfirmAsk = askPrice;
-    this.currentTrendConfirmMs = profile.confirmMinMs;
-    this.currentTrendShortTriggerPct = profile.shortTriggerPct;
-    this.currentTrendMediumTriggerPct = profile.mediumTriggerPct;
-    this.currentTrendRoundTriggerPct = profile.roundTriggerPct;
-    this.currentTrendVolatility = profile.realizedVolatility;
-    this.currentTrendVolatilityMultiplier = profile.volatilityMultiplier;
-  }
-
-  private getMispricingOpportunityScore(askPrice: number, dumpDrop: number): number {
-    const entryEdge = Math.max(0, 1 - askPrice);
-    const priceBonus = askPrice <= EV_COMFORT_ENTRY_ASK ? 0.04 : askPrice <= EV_THIN_ENTRY_ASK ? 0.02 : 0;
-    return entryEdge + (dumpDrop * 0.9) + priceBonus;
-  }
-
-  private getTrendOpportunityScore(params: {
-    askPrice: number;
-    shortMomentum: number;
-    trendMomentum: number;
-    roundDeltaPct: number;
-    confirmHeldMs: number;
-    confirmMinMs: number;
-    shortTriggerPct: number;
-    mediumTriggerPct: number;
-    roundTriggerPct: number;
-  }): number {
-    const {
-      askPrice,
-      shortMomentum,
-      trendMomentum,
-      roundDeltaPct,
-      confirmHeldMs,
-      confirmMinMs,
-      shortTriggerPct,
-      mediumTriggerPct,
-      roundTriggerPct,
-    } = params;
-    const entryEdge = Math.max(0, 1 - askPrice);
-    const confirmProgress = confirmMinMs > 0 ? Math.min(1, confirmHeldMs / confirmMinMs) : 0;
-    const shortExcess = Math.max(0, Math.abs(shortMomentum) - shortTriggerPct);
-    const mediumExcess = Math.max(0, Math.abs(trendMomentum) - mediumTriggerPct);
-    const roundExcess = Math.max(0, Math.abs(roundDeltaPct) - roundTriggerPct);
-    return entryEdge
-      + (confirmProgress * 0.08)
-      + (shortExcess * 18)
-      + (mediumExcess * 22)
-      + (roundExcess * 14);
-  }
-
-  private getEntryEvSummary(): string {
-    const activeEntryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-    const referencePrice = activeEntryPrice > 0
-      ? activeEntryPrice
-      : (this.upAsk > 0 && this.downAsk > 0 ? Math.min(this.upAsk, this.downAsk) : 0);
-    if (referencePrice <= 0) return "--";
-    const source = activeEntryPrice > 0 ? "持仓" : "参考";
-    const breakEvenWinRatePct = referencePrice * 100;
-    const evAt50 = 0.50 - referencePrice;
-    const evAt55 = 0.55 - referencePrice;
-    const fmtDollar = (value: number) => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(3)}`;
-    return `${source}@$${referencePrice.toFixed(2)} / BE ${breakEvenWinRatePct.toFixed(0)}% / EV50 ${fmtDollar(evAt50)} / EV55 ${fmtDollar(evAt55)}`;
-  }
-
-  private getTrendEntryProfile(askPrice: number): {
-    shortTriggerPct: number;
-    mediumTriggerPct: number;
-    roundTriggerPct: number;
-    confirmMinMs: number;
-    realizedVolatility: number;
-    volatilityMultiplier: number;
-  } {
-    const realizedVolatility = getRecentVolatility(TREND_VOL_WINDOW_SEC);
-    const rawVolatilityMultiplier = realizedVolatility > 0 ? realizedVolatility / TREND_VOL_BASELINE : 1;
-    const volatilityMultiplier = Math.max(
-      TREND_VOL_MIN_MULTIPLIER,
-      Math.min(TREND_VOL_MAX_MULTIPLIER, rawVolatilityMultiplier),
-    );
-
-    if (askPrice <= EV_COMFORT_ENTRY_ASK) {
-      return {
-        shortTriggerPct: TREND_SHORT_TRIGGER_PCT * 0.95 * volatilityMultiplier,
-        mediumTriggerPct: TREND_MEDIUM_TRIGGER_PCT * 0.95 * volatilityMultiplier,
-        roundTriggerPct: TREND_ROUND_TRIGGER_PCT * 0.95 * volatilityMultiplier,
-        confirmMinMs: Math.round(8_000 * volatilityMultiplier),
-        realizedVolatility,
-        volatilityMultiplier,
-      };
-    }
-    if (askPrice <= EV_THIN_ENTRY_ASK) {
-      return {
-        shortTriggerPct: TREND_SHORT_TRIGGER_PCT * volatilityMultiplier,
-        mediumTriggerPct: TREND_MEDIUM_TRIGGER_PCT * volatilityMultiplier,
-        roundTriggerPct: TREND_ROUND_TRIGGER_PCT * volatilityMultiplier,
-        confirmMinMs: Math.round(TREND_CONFIRM_MIN_MS * volatilityMultiplier),
-        realizedVolatility,
-        volatilityMultiplier,
-      };
-    }
-    return {
-      shortTriggerPct: TREND_SHORT_TRIGGER_PCT * 1.12 * volatilityMultiplier,
-      mediumTriggerPct: TREND_MEDIUM_TRIGGER_PCT * 1.12 * volatilityMultiplier,
-      roundTriggerPct: TREND_ROUND_TRIGGER_PCT * 1.12 * volatilityMultiplier,
-      confirmMinMs: Math.round(12_000 * volatilityMultiplier),
-      realizedVolatility,
-      volatilityMultiplier,
-    };
-  }
-
-  private getTrendConfirmSummary(): string {
-    if (this.currentTrendConfirmAsk > 0) {
-      return `@$${this.currentTrendConfirmAsk.toFixed(2)} -> ${(this.currentTrendConfirmMs / 1000).toFixed(0)}s / short ${(this.currentTrendShortTriggerPct * 100).toFixed(2)}% / trend ${(this.currentTrendMediumTriggerPct * 100).toFixed(2)}% / vol ${(this.currentTrendVolatility * 100).toFixed(3)}% x${this.currentTrendVolatilityMultiplier.toFixed(2)}`;
-    }
-    return `≤$${EV_COMFORT_ENTRY_ASK.toFixed(2)}: 8s / $${EV_COMFORT_ENTRY_ASK.toFixed(2)}-$${EV_THIN_ENTRY_ASK.toFixed(2)}: 10s / $${EV_THIN_ENTRY_ASK.toFixed(2)}-$${EV_MAX_ENTRY_ASK.toFixed(2)}: 12s, 再乘波动因子`; 
-  }
-
-  private evaluateAdaptiveTrendOpportunity(params: {
-    secondsLeft: number;
-    upAsk: number;
-    downAsk: number;
-    shortMomentum: number;
-    trendMomentum: number;
-    directionalBias: "up" | "down" | "flat";
-  }): { opportunity: import("./strategyEngine").TrendOpportunity | null; profile: { shortTriggerPct: number; mediumTriggerPct: number; roundTriggerPct: number; confirmMinMs: number; realizedVolatility: number; volatilityMultiplier: number } | null } {
-    const { secondsLeft, upAsk, downAsk, shortMomentum, trendMomentum, directionalBias } = params;
-
-    if (directionalBias === "up" && upAsk > 0) {
-      const profile = this.getTrendEntryProfile(upAsk);
-      const opportunity = evaluateTrendOpportunity({
-        secondsLeft,
-        upAsk,
-        downAsk: 0,
-        shortMomentum,
-        trendMomentum,
-        directionalBias,
-        minEntrySecs: TREND_ENTRY_MIN_SECS,
-        maxEntrySecsLeft: TREND_ENTRY_MAX_SECS,
-        shortTriggerPct: profile.shortTriggerPct,
-        trendTriggerPct: profile.mediumTriggerPct,
-        maxEntryAsk: TREND_MAX_ENTRY_ASK,
-      });
-      return { opportunity, profile: opportunity ? profile : null };
-    }
-
-    if (directionalBias === "down" && downAsk > 0) {
-      const profile = this.getTrendEntryProfile(downAsk);
-      const opportunity = evaluateTrendOpportunity({
-        secondsLeft,
-        upAsk: 0,
-        downAsk,
-        shortMomentum,
-        trendMomentum,
-        directionalBias,
-        minEntrySecs: TREND_ENTRY_MIN_SECS,
-        maxEntrySecsLeft: TREND_ENTRY_MAX_SECS,
-        shortTriggerPct: profile.shortTriggerPct,
-        trendTriggerPct: profile.mediumTriggerPct,
-        maxEntryAsk: TREND_MAX_ENTRY_ASK,
-      });
-      return { opportunity, profile: opportunity ? profile : null };
-    }
-
-    return { opportunity: null, profile: null };
+    return this.trendSignalStreak;
   }
 
   private noteAdaptivePaperSkip(reason: "sum" | "entry-ask"): void {
@@ -823,8 +602,6 @@ export class Directional15mEngine {
     this.leg1AttemptedThisRound = true;
     this.adaptiveSumSkipRounds = 0;
     this.clearAdaptiveRoundSkipCounts();
-    const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-    this.trendPeakBid = entryPrice > 0 ? entryPrice : 0;
   }
 
   private isActiveRun(runId: number): boolean {
@@ -853,10 +630,8 @@ export class Directional15mEngine {
   private getAdaptiveLegBudgetPct(askPrice: number, oppCurrentAsk: number, preferredMaxSum: number, hardMaxSum: number): number {
     let budgetPct = BASE_BUDGET_PCT;
     const currentSum = oppCurrentAsk > 0 ? askPrice + oppCurrentAsk : 0;
-    if (askPrice >= EV_THIN_ENTRY_ASK) {
+    if (askPrice >= 0.40) {
       budgetPct = Math.min(budgetPct, HIGH_ASK_BUDGET_PCT);
-    } else if (askPrice >= EV_COMFORT_ENTRY_ASK) {
-      budgetPct = Math.min(budgetPct, THIN_EDGE_BUDGET_PCT);
     }
     if (oppCurrentAsk > 0 && askPrice + oppCurrentAsk >= preferredMaxSum - 0.005) {
       budgetPct = Math.min(budgetPct, THIN_EDGE_BUDGET_PCT);
@@ -867,104 +642,11 @@ export class Directional15mEngine {
     if (currentSum >= hardMaxSum - 0.01) {
       budgetPct = Math.min(budgetPct, PAPER_NEAR_CAP_SMALL_BUDGET_PCT);
     }
-    if (this.drawdownProtected) {
-      budgetPct = Math.min(budgetPct, PAPER_NEAR_CAP_SMALL_BUDGET_PCT);
-    }
     return budgetPct;
   }
 
   private getLeg1StopLossThreshold(): number {
     return LEG1_STOP_LOSS;
-  }
-
-  private getPositionCurrentAsk(): number {
-    if (this.leg1Dir === "up") return this.upAsk;
-    if (this.leg1Dir === "down") return this.downAsk;
-    return 0;
-  }
-
-  private getPositionOppositeAsk(): number {
-    if (this.leg1Dir === "up") return this.downAsk;
-    if (this.leg1Dir === "down") return this.upAsk;
-    return 0;
-  }
-
-  private isMomentumAdverseForPosition(shortMomentum: number, trendMomentum: number): boolean {
-    if (this.leg1Dir === "up") {
-      return shortMomentum <= -MOMENTUM_CONTRA_PCT && trendMomentum <= -(TREND_CONTRA_PCT * 0.5);
-    }
-    if (this.leg1Dir === "down") {
-      return shortMomentum >= MOMENTUM_CONTRA_PCT && trendMomentum >= (TREND_CONTRA_PCT * 0.5);
-    }
-    return false;
-  }
-
-  private getMispricingExitSumThreshold(entryPrice: number): number {
-    const clamped = Math.max(MIN_ENTRY_ASK, Math.min(EV_MAX_ENTRY_ASK, entryPrice));
-    const ratio = (clamped - MIN_ENTRY_ASK) / (EV_MAX_ENTRY_ASK - MIN_ENTRY_ASK);
-    const buffer = EARLY_EXIT_SUM_BUFFER_BASE + (EARLY_EXIT_SUM_BUFFER_HIGH - EARLY_EXIT_SUM_BUFFER_BASE) * ratio;
-    return 1 + buffer;
-  }
-
-  private getMispricingTimeoutProfile(entryPrice: number): {
-    timeoutMs: number;
-    bidFloor: number;
-    minSecsLeft: number;
-    sumThreshold: number;
-  } {
-    if (entryPrice >= EV_THIN_ENTRY_ASK) {
-      return {
-        timeoutMs: 180_000,
-        bidFloor: entryPrice * (this.leg1MakerFill ? 0.995 : 0.98),
-        minSecsLeft: 420,
-        sumThreshold: 1 + EARLY_EXIT_SUM_BUFFER_HIGH
-      };
-    }
-
-    if (entryPrice >= EV_COMFORT_ENTRY_ASK) {
-      return {
-        timeoutMs: NAKED_HARD_TIMEOUT_MS,
-        bidFloor: entryPrice * (this.leg1MakerFill ? 0.985 : 0.965),
-        minSecsLeft: MISPRICING_TIMEOUT_MIN_SECS_LEFT,
-        sumThreshold: 1 + 0.03
-      };
-    }
-
-    return {
-      timeoutMs: 360_000,
-      bidFloor: entryPrice * (this.leg1MakerFill ? 0.97 : 0.95),
-      minSecsLeft: 240,
-      sumThreshold: 1 + 0.05
-    };
-  }
-
-  private getTrendRiskProfile(entryPrice: number): {
-    fixedTakeProfitBid: number;
-    trailingPullback: number;
-    trailingArmBid: number;
-    relativeStopBid: number;
-    absoluteStopBid: number;
-    deadzoneExitBid: number;
-    lateExitBid: number;
-  } {
-    const highEntry = entryPrice >= EV_THIN_ENTRY_ASK;
-    const mediumEntry = entryPrice >= EV_COMFORT_ENTRY_ASK;
-    const fixedTakeProfitBid = highEntry ? 0.76 : mediumEntry ? 0.82 : TREND_TAKE_PROFIT_BID;
-    const trailingPullback = highEntry ? 0.08 : mediumEntry ? 0.10 : TREND_TRAILING_PULLBACK;
-    const trailingArmBid = Math.max(TREND_TRAILING_MIN_BID, entryPrice * (highEntry ? 1.03 : mediumEntry ? 1.06 : 1.10));
-    const relativeStopBid = entryPrice * (highEntry ? 0.92 : mediumEntry ? 0.86 : TREND_RELATIVE_STOP_LOSS);
-    const absoluteStopBid = Math.max(TREND_STOP_LOSS_BID, highEntry ? 0.48 : mediumEntry ? 0.45 : TREND_STOP_LOSS_BID);
-    const deadzoneExitBid = Math.max(TREND_DEADZONE_EXIT_BID, entryPrice * (highEntry ? 0.97 : mediumEntry ? 0.93 : 0.88));
-    const lateExitBid = Math.max(0.50, entryPrice * (highEntry ? 0.99 : mediumEntry ? 0.96 : 0.92));
-    return {
-      fixedTakeProfitBid,
-      trailingPullback,
-      trailingArmBid,
-      relativeStopBid,
-      absoluteStopBid,
-      deadzoneExitBid,
-      lateExitBid,
-    };
   }
 
   /** 记录一笔盈亏到滚动窗口 */
@@ -1000,86 +682,49 @@ export class Directional15mEngine {
     return Math.min(adaptiveCap, this.getEffectiveMaxAsk());
   }
 
+  private getLeg2Target(secs: number): number {
+    const base = this.getBaseSumTarget();
+    const max = this.getMaxSumTarget();
+    const near120 = Math.min(max, base + 0.01);
+    const near60 = Math.min(max, base + 0.02);
+    if (secs <= 30) return max;
+    if (secs <= 60) return near60;
+    if (secs <= 120) return near120;
+    return base;
+  }
+
   private getRoundPhase(): string {
     if (!this.running) return "idle";
-    if (this.positionState === "off") return "booting";
+    if (this.hedgeState === "off") return "booting";
     if (this.pendingSellOrderId) return "gtc_pending";
-    if (this.positionState === "leg1_pending") return "leg1_pending";
-    if (this.positionState === "leg1_filled") return "directional_hold";
-    if (this.positionState === "watching") {
+    if (this.hedgeState === "leg2_filled") return "hedged";
+    if (this.hedgeState === "leg1_pending") return "leg1_pending";
+    if (this.hedgeState === "leg1_filled") return "leg1_filled";
+    if (this.hedgeState === "watching") {
       if (this.secondsLeft < MIN_ENTRY_SECS) return "waiting_next_round";
       return "watching";
     }
-    if (this.positionState === "done") {
+    if (this.hedgeState === "done") {
       if (this.totalCost > 0) return "settling";
       return "waiting_next_round";
     }
-    return this.positionState;
+    return this.hedgeState;
   }
 
   private getRoundDecision(): string {
     if (!this.running) return "已停止";
-    if (this.positionState === "off") return this.status || "等待首轮市场数据";
+    if (this.hedgeState === "off") return this.status || "等待首轮市场数据";
     if (this.status.startsWith("跳过:")) return this.status;
     if (this.status === "窗口到期,无砸盘") return this.status;
     if (this.pendingSellOrderId) return "已挂GTC卖单, 等待成交";
-    if (this.positionState === "leg1_pending") return "Leg1 下单中";
-    if (this.positionState === "leg1_filled") {
-      if (this.activeStrategyMode === "trend") return "趋势单已建仓, 动态退出管理中";
-      if (this.activeStrategyMode === "mispricing") return "错价单已建仓, 失效退出监控中";
-      return "已建方向单, 持仓管理中";
-    }
-    if (this.positionState === "watching") return this.secondsLeft >= MIN_ENTRY_SECS ? "本轮仍在观察窗口" : "本轮入场窗已关闭";
+    if (this.hedgeState === "leg1_pending") return "Leg1 下单中";
+    if (this.hedgeState === "leg2_filled") return "双腿已锁定, 等退出/结算";
+    if (this.hedgeState === "leg1_filled") return "已成交Leg1, 持有到结算";
+    if (this.hedgeState === "watching") return this.secondsLeft >= MIN_ENTRY_SECS ? "本轮仍在观察窗口" : "本轮入场窗已关闭";
     return this.status || "等待中";
   }
 
-  private getPositionEntryKind(): string {
-    if (this.activeStrategyMode === "trend") {
-      return this.leg1EntrySource === "reactive-trend" ? "趋势单 / 动量追随" : "趋势单";
-    }
-    if (this.leg1EntrySource === "dual-side-preorder") {
-      return "错价单 / 双侧预挂";
-    }
-    if (this.activeStrategyMode === "mispricing") {
-      return this.leg1EntrySource === "reactive-mispricing" ? "错价单 / 反应式入场" : "错价单";
-    }
-    if (this.positionState === "watching") return "无持仓 / 观察中";
-    if (this.pendingSellOrderId) return "退出中 / GTC管理";
-    return "无持仓";
-  }
-
-  private getTrendProtectionStatus(): string {
-    const status = this.status || "";
-    if (this.activeStrategyMode === "mispricing") {
-      if (status.startsWith("失效退出:")) return "已触发错价失效退出";
-      if (status.startsWith("超时割肉:")) return "已触发超时退出";
-      if (this.pendingSellOrderId) return "退出挂单管理中";
-      if (this.positionState === "leg1_filled") return "监控 反向动量 / sum失效 / 超时退出";
-      return "仅持仓时启用";
-    }
-    if (this.activeStrategyMode !== "trend") {
-      return this.positionState === "leg1_filled" ? "持仓管理待定" : "仅持仓时启用";
-    }
-    if (status.startsWith("止盈:")) return "已触发止盈";
-    if (status.startsWith("中途止损:")) return "已触发止损";
-    if (status.startsWith("超时割肉:")) return "已触发超时退出";
-    if (this.pendingSellOrderId) return "退出挂单管理中";
-    if (this.positionState === "leg1_filled") {
-      const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-      const profile = this.getTrendRiskProfile(entryPrice);
-      return `监控 动态TP${profile.fixedTakeProfitBid.toFixed(2)} / Trailing${Math.round(profile.trailingPullback * 100)}% / SL${profile.relativeStopBid.toFixed(2)}`;
-    }
-    return "趋势单已结束";
-  }
-
-  private clearPendingSellTracking(): void {
-    this.pendingSellOrderId = "";
-    this.pendingSellOrderTime = 0;
-    this.pendingSellPrice = 0;
-    this.pendingExitRule = "";
-  }
-
-  getState(): Directional15mState {
+  getState(): Hedge15mState {
     const dp = getDynamicParams();
     const latency = getLatencySnapshot();
     const exec = getExecutionTelemetry();
@@ -1101,7 +746,7 @@ export class Directional15mEngine {
       roundElapsed,
       roundProgressPct,
       entryWindowLeft,
-      canOpenNewPosition: this.running && this.positionState === "watching" && secondsLeft >= MIN_ENTRY_SECS,
+      canOpenNewPosition: this.running && this.hedgeState === "watching" && secondsLeft >= MIN_ENTRY_SECS,
       nextRoundIn: secondsLeft,
       currentMarket: this.currentMarket,
       upAsk: this.upAsk,
@@ -1113,10 +758,11 @@ export class Directional15mEngine {
       skips: this.skips,
       totalRounds: this.totalRounds,
       history: this.history.slice(-100),
-      positionState: this.positionState,
-      positionLeg1Dir: this.leg1Dir,
-      positionLeg1Price: this.leg1Price,
-      positionTotalCost: this.totalCost,
+      hedgeState: this.hedgeState,
+      hedgeLeg1Dir: this.leg1Dir,
+      hedgeLeg1Price: this.leg1Price,
+      hedgeLeg2Price: this.leg2Price,
+      hedgeTotalCost: this.totalCost,
       expectedProfit: this.expectedProfit,
       dumpDetected: this.dumpDetected,
       tuningEnabled: this.tradingMode === "paper" && PAPER_DYNAMIC_TUNING_ENABLED,
@@ -1126,10 +772,6 @@ export class Directional15mEngine {
       adjustmentCount: this.adaptiveAdjustmentCount,
       lastAdjustment: this.adaptiveLastAdjustment,
       activeStrategyMode: this.activeStrategyMode,
-      positionEntryKind: this.getPositionEntryKind(),
-      trendProtectionStatus: this.getTrendProtectionStatus(),
-      entryEvSummary: this.getEntryEvSummary(),
-      trendConfirmSummary: this.getTrendConfirmSummary(),
       strategyPolicy: STRATEGY_POLICY,
       trendBias: this.currentTrendBias,
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
@@ -1139,6 +781,9 @@ export class Directional15mEngine {
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
+      leg2Maker: this.leg2MakerFill,
+      leg2GtcPrice: this.leg2GtcPrice,
+      leg2GtcShares: this.leg2GtcShares,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
       latencyNetworkSource: latency.networkSource,
@@ -1164,6 +809,8 @@ export class Directional15mEngine {
         execAckToFillP50: exec.ackToFill.p50,
         execSignalToFillP50: exec.signalToFill.p50,
         execSignalToFillP90: exec.signalToFill.p90,
+        execLeg2SignalToFillP50: exec.leg2SignalToFill.p50,
+        execLeg2SignalToFillP90: exec.leg2SignalToFill.p90,
         execExitSignalToFillP50: exec.exitSignalToFill.p50,
         execExitSignalToFillP90: exec.exitSignalToFill.p90,
         execGtcWaitToFillP50: exec.gtcWaitToFill.p50,
@@ -1189,7 +836,7 @@ export class Directional15mEngine {
       fs.renameSync(tmp, this.historyFile);
       this.savePaperRuntimeSnapshot();
     } catch (e: any) {
-      logger.warn(`Directional15m history save failed: ${e.message}`);
+      logger.warn(`Hedge15m history save failed: ${e.message}`);
     }
   }
 
@@ -1211,20 +858,17 @@ export class Directional15mEngine {
 
   private loadHistory(): void {
     try {
-      const historyReadPath = this.tradingMode === "paper"
-        ? resolveCompatiblePaperHistoryFilePath()
-        : resolveCompatibleLiveHistoryFilePath();
-      if (!fs.existsSync(historyReadPath)) return;
-      const d = JSON.parse(fs.readFileSync(historyReadPath, "utf8"));
-      if (Array.isArray(d.history)) this.history = d.history.slice(-200) as PositionHistoryEntry[];
+      if (!fs.existsSync(this.historyFile)) return;
+      const d = JSON.parse(fs.readFileSync(this.historyFile, "utf8"));
+      if (Array.isArray(d.history)) this.history = d.history.slice(-200);
       if (typeof d.wins === "number") this.wins = d.wins;
       if (typeof d.losses === "number") this.losses = d.losses;
       if (typeof d.skips === "number") this.skips = d.skips;
       if (typeof d.totalProfit === "number") this.totalProfit = d.totalProfit;
       if (typeof d.totalRounds === "number") this.totalRounds = d.totalRounds;
-      logger.info(`Directional15m history loaded from ${path.basename(historyReadPath)}: ${this.history.length} entries, P/L $${this.totalProfit.toFixed(2)}`);
+      logger.info(`Hedge15m history loaded: ${this.history.length} entries, P/L $${this.totalProfit.toFixed(2)}`);
     } catch (e: any) {
-      logger.warn(`Directional15m history load failed: ${e.message}`);
+      logger.warn(`Hedge15m history load failed: ${e.message}`);
     }
   }
 
@@ -1234,18 +878,11 @@ export class Directional15mEngine {
     return this.historyFile;
   }
 
-  async start(options: Directional15mStartOptions = {}): Promise<void> {
-    if (this.running) throw new Error("Directional15m already running");
-    const migratedFiles = migrateLegacyDirectionalFiles();
-    for (const move of migratedFiles) {
-      logger.info(`Directional15m migrated legacy data: ${path.basename(move.from)} -> ${path.basename(move.to)}`);
-    }
+  async start(options: Hedge15mStartOptions = {}): Promise<void> {
+    if (this.running) throw new Error("Hedge15m already running");
     this.tradingMode = options.mode || "live";
     this.paperSessionMode = options.paperSessionMode === "persistent" ? "persistent" : "session";
     this.historyFile = this.tradingMode === "paper" ? PAPER_HISTORY_FILE : HISTORY_FILE;
-    if (normalizeHistoryFileInPlace(this.historyFile)) {
-      logger.info(`Directional15m normalized history schema: ${path.basename(this.historyFile)}`);
-    }
     this.resetAdaptivePaperTuning();
     resetExecutionTelemetry();
     this.loopRunId += 1;
@@ -1321,11 +958,11 @@ export class Directional15mEngine {
     this.drawdownProtected = this.balance > 0 && -this.getRolling4hPnL() >= this.balance * DRAWDOWN_PROTECT_THRESHOLD;
     this.savePaperRuntimeSnapshot();
 
-    logger.info(`Directional15m started (${this.tradingMode}), balance=$${this.balance.toFixed(2)}`);
+    logger.info(`Hedge15m started (${this.tradingMode}), balance=$${this.balance.toFixed(2)}`);
 
     this.mainLoop(runId).catch((e) => {
       if (runId !== this.loopRunId) return;
-      logger.error(`Directional15m loop fatal: ${e.message}`);
+      logger.error(`Hedge15m loop fatal: ${e.message}`);
       this.status = `致命错误: ${e.message}`;
       this.running = false;
       if (this.trader) this.trader.cancelAll().catch(() => {});
@@ -1344,7 +981,7 @@ export class Directional15mEngine {
     stopLatencyMonitor();
     stopPriceFeed();
     this.servicesStarted = false;
-    logger.info(`Directional15m stopped. P/L: $${this.totalProfit.toFixed(2)}`);  
+    logger.info(`Hedge15m stopped. P/L: $${this.totalProfit.toFixed(2)}`);  
   }
 
   private async refreshBalance(): Promise<void> {
@@ -1364,11 +1001,14 @@ export class Directional15mEngine {
   }
 
   private resetRoundState(): void {
-    this.positionState = "watching";
+    this.hedgeState = "watching";
     this.leg1Dir = "";
     this.leg1Price = 0;
     this.leg1Shares = 0;
     this.leg1Token = "";
+    this.leg2Token = "";
+    this.leg2Price = 0;
+    this.leg2Shares = 0;
     this.totalCost = 0;
     this.expectedProfit = 0;
     this.dumpDetected = "";
@@ -1378,9 +1018,13 @@ export class Directional15mEngine {
     this.marketState.reset();
     this.roundStartBtcPrice = 0;
     this.negRisk = false;
-    this.clearPendingSellTracking();
+    this.pendingSellOrderId = "";
+    this.pendingSellOrderTime = 0;
+    this.pendingSellPrice = 0;
     this.leg1FillPrice = 0;
+    this.leg2FillPrice = 0;
     this.leg1OrderId = "";
+    this.leg2OrderId = "";
     this.leg1FilledAt = 0;
     this.leg1ThinEdgeEntry = false;
     this.leg1ThinEdgeObservedSum = 0;
@@ -1388,10 +1032,11 @@ export class Directional15mEngine {
     this.leg1ThinEdgeHardMaxSum = 0;
     this.leg1ThinEdgeDelayLoggedAt = 0;
     this.leg1Estimated = false;
-    this.leg1ObservedEntrySum = 0;
+    this.leg2Estimated = false;
     this.trendPeakBid = 0;
     this.currentDumpDrop = 0;
     this.leg1MakerFill = false;
+    this.leg2MakerFill = false;
     this.leg1EntrySource = "";
     this.leg1EntryTrendBias = "flat";
     this.preOrderUpId = "";
@@ -1403,6 +1048,12 @@ export class Directional15mEngine {
     this.preOrderUpToken = "";
     this.preOrderDownToken = "";
     this.preOrderLastRefresh = 0;
+    this.leg2GtcOrderId = "";
+    this.leg2GtcPrice = 0;
+    this.leg2GtcShares = 0;
+    this.leg2GtcToken = "";
+    this.leg2GtcPlacedAt = 0;
+    this.leg2GtcLastReprice = 0;
     this.leg1EntryInFlight = false;
     this.leg1AttemptedThisRound = false;
     this.resetRoundRejectStats();
@@ -1421,7 +1072,7 @@ export class Directional15mEngine {
         const rolling4hLoss = this.getRolling4hPnL();
         if (!this.drawdownProtected && this.balance > 0 && -rolling4hLoss >= this.balance * DRAWDOWN_PROTECT_THRESHOLD) {
           this.drawdownProtected = true;
-          logger.warn(`DRAWDOWN PROTECT ON: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} >= ${(DRAWDOWN_PROTECT_THRESHOLD*100).toFixed(0)}% of balance $${this.balance.toFixed(2)}, tightening MAX_ASK to $${DUAL_SIDE_MAX_ASK_PROTECTED} and shrinking directional size`);
+          logger.warn(`DRAWDOWN PROTECT ON: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} >= ${(DRAWDOWN_PROTECT_THRESHOLD*100).toFixed(0)}% of balance $${this.balance.toFixed(2)}, tightening MAX_ASK to $${DUAL_SIDE_MAX_ASK_PROTECTED}`);
         } else if (this.drawdownProtected && this.balance > 0 && -rolling4hLoss < this.balance * DRAWDOWN_RECOVER_THRESHOLD) {
           this.drawdownProtected = false;
           logger.info(`DRAWDOWN PROTECT OFF: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} < ${(DRAWDOWN_RECOVER_THRESHOLD*100).toFixed(0)}% of balance, restoring MAX_ASK to $${DUAL_SIDE_MAX_ASK}`);
@@ -1451,7 +1102,7 @@ export class Directional15mEngine {
         // New round
         if (cid !== curCid) {
           if (curCid && this.totalCost > 0) {
-            await this.settlePosition();
+            await this.settleHedge();
           }
           curCid = cid;
           this.resetRoundState();
@@ -1463,15 +1114,15 @@ export class Directional15mEngine {
           this.roundStartBtcPrice = getBtcPrice();
           setRoundStartPrice(); // 同步设置 btcPrice 模块的回合基准, 修正 Chainlink 方向判断
           this.negRisk = !!rnd.negRisk;
-          // 跳过剩余时间不足的回合 — 无法完成 dump检测 + 建仓执行
+          // 跳过剩余时间不足的回合 — 无法完成 dump检测 + 对冲
           if (secs < MIN_ENTRY_SECS) {
-            this.positionState = "done";
+            this.hedgeState = "done";
             this.status = `跳过: 剩余${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s`;
             this.skips++;
-            logger.info(`DIR15M SKIP LATE ROUND: ${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s minimum`);
+            logger.info(`HEDGE15M SKIP LATE ROUND: ${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s minimum`);
             this.writeRoundAudit("round-skip-late", { secondsLeft: secs, minimumEntrySeconds: MIN_ENTRY_SECS, negRisk: this.negRisk });
           } else {
-            logger.info(`DIR15M ROUND: ${rnd.question}, ${Math.floor(secs)}s left, BTC=$${this.roundStartBtcPrice.toFixed(0)}`);
+            logger.info(`HEDGE15M ROUND: ${rnd.question}, ${Math.floor(secs)}s left, BTC=$${this.roundStartBtcPrice.toFixed(0)}`);
             this.writeRoundAudit("round-start", { question: rnd.question, secondsLeft: secs, roundStartBtcPrice: this.roundStartBtcPrice, negRisk: this.negRisk });
           }
         }
@@ -1498,7 +1149,7 @@ export class Directional15mEngine {
 
         // ═══ State Machine ═══
 
-        if (this.positionState === "watching") {
+        if (this.hedgeState === "watching") {
           this.status = `监控砸盘 (${Math.floor(elapsed)}/${ENTRY_WINDOW_S}s)`;
 
           if (this.upAsk > 0 && this.downAsk > 0) {
@@ -1507,7 +1158,7 @@ export class Directional15mEngine {
 
             // ── 双侧预挂单做市: 检查成交 + 刷新挂单 ──
             await this.manageDualSideOrders(trader, rnd, secs);
-            if (this.positionState !== "watching") {
+            if (this.hedgeState !== "watching") {
               // 预挂单成交转入 leg1_filled, 跳过dump检测
             } else {
 
@@ -1540,131 +1191,27 @@ export class Directional15mEngine {
               });
 
               if (mispricing.bothSidesDumping) {
-                logger.warn(`DIR15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) — liquidity drain`);
+                logger.warn(`HEDGE15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) — liquidity drain`);
               } else {
                 if (mispricing.cautionMessage) {
-                  logger.warn(`DIR15M CAUTION: ${mispricing.cautionMessage} — proceeding with caution`);
+                  logger.warn(`HEDGE15M CAUTION: ${mispricing.cautionMessage} — proceeding with caution`);
                 }
                 const rejectSignature = mispricing.momentumRejects.join(" | ");
                 if (rejectSignature && rejectSignature !== this.lastMomentumRejectSignature) {
                   this.lastMomentumRejectSignature = rejectSignature;
                   this.roundMomentumRejects += mispricing.momentumRejects.length;
                   for (const rejectMessage of mispricing.momentumRejects) {
-                    logger.warn(`DIR15M MOMENTUM REJECT: ${rejectMessage}`);
+                    logger.warn(`HEDGE15M MOMENTUM REJECT: ${rejectMessage}`);
                   }
                 }
 
                 const candidate = mispricing.candidates[0];
-                const candidateDumpDrop = candidate ? (candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop) : 0;
-                const { opportunity: trendOpportunity, profile: trendProfile } = this.evaluateAdaptiveTrendOpportunity({
-                  secondsLeft: secs,
-                  upAsk: this.upAsk,
-                  downAsk: this.downAsk,
-                  shortMomentum,
-                  trendMomentum,
-                  directionalBias,
-                });
-                const now = Date.now();
-                let trendSignalMs = 0;
-                let trendReady = false;
-                let trendScore = Number.NEGATIVE_INFINITY;
-                let mispricingScore = candidate
-                  ? this.getMispricingOpportunityScore(candidate.askPrice, candidateDumpDrop)
-                  : Number.NEGATIVE_INFINITY;
-
-                if (trendOpportunity && trendProfile) {
-                  this.updateTrendConfirmContext(trendOpportunity.askPrice, trendProfile);
-                  const sustainedRoundTrend = trendOpportunity.dir === "up"
-                    ? roundDeltaPct >= trendProfile.roundTriggerPct
-                    : roundDeltaPct <= -trendProfile.roundTriggerPct;
-                  if (sustainedRoundTrend) {
-                    trendSignalMs = this.noteTrendSignal(trendOpportunity.dir, now);
-                    trendReady = trendSignalMs >= trendProfile.confirmMinMs;
-                  } else if (this.trendSignalDir === trendOpportunity.dir && this.isTrendSignalWithinGrace(now)) {
-                    trendSignalMs = this.getTrendSignalHeldMs(now);
-                    this.status = `趋势确认容错: ${trendOpportunity.dir.toUpperCase()} ${(trendSignalMs / 1000).toFixed(1)}/${(trendProfile.confirmMinMs / 1000).toFixed(0)}s @${trendOpportunity.askPrice.toFixed(2)}`;
-                  } else {
-                    this.noteTrendConfirmFailure("round-threshold-not-met", {
-                      askPrice: trendOpportunity.askPrice,
-                      confirmHeldMs: this.getTrendSignalHeldMs(now),
-                      confirmMinMs: trendProfile.confirmMinMs,
-                      roundDeltaPct,
-                      roundTriggerPct: trendProfile.roundTriggerPct,
-                    });
-                    this.resetTrendSignalTracking();
-                  }
-
-                  if (this.trendSignalDir === trendOpportunity.dir && this.trendSignalStartedAt > 0) {
-                    trendSignalMs = Math.max(trendSignalMs, this.getTrendSignalHeldMs(now));
-                  }
-
-                  trendScore = this.getTrendOpportunityScore({
-                    askPrice: trendOpportunity.askPrice,
-                    shortMomentum,
-                    trendMomentum,
-                    roundDeltaPct,
-                    confirmHeldMs: trendSignalMs,
-                    confirmMinMs: trendProfile.confirmMinMs,
-                    shortTriggerPct: trendProfile.shortTriggerPct,
-                    mediumTriggerPct: trendProfile.mediumTriggerPct,
-                    roundTriggerPct: trendProfile.roundTriggerPct,
-                  });
-
-                  if (!candidate && this.trendSignalDir === trendOpportunity.dir && this.trendSignalStartedAt > 0) {
-                    const heldSecs = Math.min(trendProfile.confirmMinMs, trendSignalMs) / 1000;
-                    this.status = `趋势确认中: ${trendOpportunity.dir.toUpperCase()} ${heldSecs.toFixed(1)}/${(trendProfile.confirmMinMs / 1000).toFixed(0)}s @${trendOpportunity.askPrice.toFixed(2)}`;
-                  }
-                } else if (this.trendSignalStartedAt > 0 && this.currentTrendConfirmAsk > 0) {
-                  if (this.isTrendSignalWithinGrace(now)) {
-                    trendSignalMs = this.getTrendSignalHeldMs(now);
-                    this.status = `趋势确认容错: ${this.trendSignalDir.toUpperCase()} ${(trendSignalMs / 1000).toFixed(1)}/${(this.currentTrendConfirmMs / 1000).toFixed(0)}s @$${this.currentTrendConfirmAsk.toFixed(2)}`;
-                  } else {
-                    this.noteTrendConfirmFailure("signal-lost-before-confirm", {
-                      askPrice: this.currentTrendConfirmAsk,
-                      confirmHeldMs: this.getTrendSignalHeldMs(now),
-                      confirmMinMs: this.currentTrendConfirmMs,
-                      roundDeltaPct,
-                      roundTriggerPct: this.currentTrendRoundTriggerPct,
-                    });
-                    this.resetTrendSignalTracking();
-                  }
-                }
-
-                const chooseTrend = Boolean(
-                  trendOpportunity &&
-                  trendProfile &&
-                  trendReady &&
-                  (!candidate || trendScore >= mispricingScore - TREND_SELECTION_SCORE_MARGIN)
-                );
-
-                if (chooseTrend && trendOpportunity && trendProfile) {
-                  this.activeStrategyMode = "trend";
-                  logger.info(`DIR15M ENTRY PICK: TREND score=${trendScore.toFixed(3)} mispricing=${candidate ? mispricingScore.toFixed(3) : "--"}`);
-                  logger.info(`DIR15M TREND SIGNAL: ${trendOpportunity.reason} round=${(roundDeltaPct * 100).toFixed(3)}% confirm=${(trendSignalMs / 1000).toFixed(1)}s/${(trendProfile.confirmMinMs / 1000).toFixed(0)}s`);
-                  await this.buyTrendLeg(
-                    trader,
-                    rnd,
-                    trendOpportunity.dir,
-                    trendOpportunity.askPrice,
-                    trendOpportunity.dir === "up" ? rnd.upToken : rnd.downToken,
-                    trendOpportunity.dir === "up" ? rnd.downToken : rnd.upToken,
-                  );
-                } else if (candidate) {
-                  if (this.trendSignalStartedAt > 0 && this.currentTrendConfirmAsk > 0) {
-                    this.noteTrendConfirmFailure("higher-quality-mispricing", {
-                      askPrice: this.currentTrendConfirmAsk,
-                      confirmHeldMs: this.getTrendSignalHeldMs(now),
-                      confirmMinMs: this.currentTrendConfirmMs,
-                      roundDeltaPct,
-                      roundTriggerPct: this.currentTrendRoundTriggerPct,
-                    });
-                  }
+                if (candidate) {
                   this.dumpDetected = candidate.dumpDetected;
-                  this.currentDumpDrop = candidateDumpDrop;
+                  this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                   this.activeStrategyMode = "mispricing";
                   this.resetTrendSignalTracking();
-                  logger.info(`DIR15M ENTRY PICK: MISPRICING score=${mispricingScore.toFixed(3)} trend=${Number.isFinite(trendScore) ? trendScore.toFixed(3) : "--"}`);
-                  logger.info(`DIR15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}: ${this.dumpDetected}`);
+                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}: ${this.dumpDetected}`);
                   await this.buyLeg1(
                     trader,
                     rnd,
@@ -1673,6 +1220,47 @@ export class Directional15mEngine {
                     rnd[candidate.buyTokenKey],
                     rnd[candidate.oppTokenKey],
                   );
+                } else if (STRATEGY_POLICY === "mispricing-first") {
+                  const trendOpportunity = evaluateTrendOpportunity({
+                    secondsLeft: secs,
+                    upAsk: this.upAsk,
+                    downAsk: this.downAsk,
+                    shortMomentum,
+                    trendMomentum,
+                    directionalBias,
+                    minEntrySecs: TREND_ENTRY_MIN_SECS,
+                    maxEntrySecsLeft: TREND_ENTRY_MAX_SECS,
+                    shortTriggerPct: TREND_SHORT_TRIGGER_PCT,
+                    trendTriggerPct: TREND_MEDIUM_TRIGGER_PCT,
+                    maxEntryAsk: TREND_MAX_ENTRY_ASK,
+                  });
+                  if (trendOpportunity) {
+                    const sustainedRoundTrend = trendOpportunity.dir === "up"
+                      ? roundDeltaPct >= TREND_ROUND_TRIGGER_PCT
+                      : roundDeltaPct <= -TREND_ROUND_TRIGGER_PCT;
+                    if (sustainedRoundTrend) {
+                      const streak = this.noteTrendSignal(trendOpportunity.dir);
+                      this.status = `趋势确认中: ${trendOpportunity.dir.toUpperCase()} ${streak}/${TREND_CONFIRM_TRIGGER}`;
+                      if (streak >= TREND_CONFIRM_TRIGGER) {
+                        this.activeStrategyMode = "trend";
+                        logger.info(`HEDGE15M TREND SIGNAL: ${trendOpportunity.reason} round=${(roundDeltaPct * 100).toFixed(3)}% confirm=${streak}/${TREND_CONFIRM_TRIGGER}`);
+                        await this.buyTrendLeg(
+                          trader,
+                          rnd,
+                          trendOpportunity.dir,
+                          trendOpportunity.askPrice,
+                          trendOpportunity.dir === "up" ? rnd.upToken : rnd.downToken,
+                          trendOpportunity.dir === "up" ? rnd.downToken : rnd.upToken,
+                        );
+                      }
+                    } else {
+                      this.resetTrendSignalTracking();
+                    }
+                  } else {
+                    this.resetTrendSignalTracking();
+                  }
+                } else {
+                  this.resetTrendSignalTracking();
                 }
               }
             }
@@ -1680,12 +1268,12 @@ export class Directional15mEngine {
           }
 
           // Window expired
-          if (elapsed >= ENTRY_WINDOW_S && this.positionState === "watching") {
+          if (elapsed >= ENTRY_WINDOW_S && this.hedgeState === "watching") {
             // 窗口到期, 取消预挂单
             if (this.preOrderUpId || this.preOrderDownId) {
               await this.cancelDualSideOrders(trader);
             }
-            this.positionState = "done";
+            this.hedgeState = "done";
             this.status = "窗口到期,无砸盘";
             this.skips++;
             this.logRoundRejectSummary("window expired without entry");
@@ -1693,44 +1281,57 @@ export class Directional15mEngine {
           }
         }
 
-        if (this.positionState === "leg1_filled") {
+        if (this.hedgeState === "leg1_filled") {
           try {
-            const leg1Res = await getHotBestPrices(trader, this.leg1Token);
+            const [leg1Res, oppRes] = await Promise.all([
+              getHotBestPrices(trader, this.leg1Token),
+              getHotBestPrices(trader, this.leg2Token),
+            ]);
             if (!this.isActiveRun(runId)) break;
             const leg1Bid = leg1Res?.bid ?? null;
+            const oppAsk = oppRes?.ask ?? null;
 
             // ── 优先管理已挂出的GTC卖单 (独立于TP/SL条件) ──
             if (this.pendingSellOrderId) {
               await this.managePendingSell(trader, leg1Bid, secs);
             }
 
-            // ── 无挂单时: 趋势单独立管理, 错价单监控失效退出 ──
-            if (!this.pendingSellOrderId && this.positionState === "leg1_filled") {
-              if (this.activeStrategyMode === "trend") {
-                await this.manageTrendLeg(trader, leg1Bid, secs);
-              } else if (this.activeStrategyMode === "mispricing") {
-                await this.manageMispricingLeg(trader, leg1Bid, secs);
-              } else {
-                const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-                if (leg1Bid != null && leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
-                this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left`;
+            // ── Leg2 GTC管理: 检查成交 + 时间推进重新定价 ──
+            if (this.leg2GtcOrderId && this.hedgeState === "leg1_filled" && !this.pendingSellOrderId) {
+              const leg2GtcDone = await this.manageLeg2Gtc(trader, secs, oppAsk);
+              if (leg2GtcDone) {
+                // Leg2 GTC成交! 双腿maker完成对冲
+                await this.refreshBalance();
               }
             }
 
-            // ── 旧注释保留区: 当前仅 none 模式会走纯持有日志 ──
+            // ── 无挂单时: 纯持有等结算 ──
+            if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled") {
+              // ── 方向性策略: 纯持有到结算, 零中途干预 ──
+              // 入场价≤0.35, 即使50%随机胜率也EV+$0.15/share
+              // 卖出要付2% taker fee, 持有到结算 0 fee
+              // 因此任何中途卖出都是EV-
+              {
+              const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+              if (leg1Bid != null && leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
+              this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left → 等结算`;
+              }
+            }
+
+            // ── 最后30秒: 方向可能错误时割肉, 否则持有到结算 ──
             // EV分析: 卖出回收 = bid*0.98; 持有EV = bid*$1 + (1-bid)*$0
             // 卖出更优当: bid*0.98 > bid → 永远不成立 (0.98<1)
             // 但如果方向错误(bid很低), 卖出回收 bid*0.98 > 0 (vs 结算得$0)
             // 真实EV: 卖出=bid*0.98; 持有=bid (bid是市场概率估计)
             // bid<0.50时方向可能错, 但卖出回收也很低; 只有bid在“不确定区”时割肉才有意义
-            // 旧说明保留区: 当前错价单已转为失效退出/超时退出管理, 不再依赖单一价格阈值
+            // 实际策略: bid<0.35时割肉(方向极可能错, 收回残值>0 优于结算得$0)
             // ── 方向性策略: 纯持有, 不做最后时刻割肉 ──
             // 卖出回收 bid*0.98 < 持有EV bid, 任何中途卖出都是EV-
-            if (!this.pendingSellOrderId && this.positionState === "leg1_filled" && this.activeStrategyMode === "none" && secs <= 15) {
-              logger.info(`DIR15M HOLD TO SETTLE: bid=${(leg1Bid??0).toFixed(2)}, holding for settlement`);
+            if (!this.pendingSellOrderId && this.hedgeState === "leg1_filled" && secs <= 15) {
+              logger.info(`HEDGE15M HOLD TO SETTLE: bid=${(leg1Bid??0).toFixed(2)}, holding for settlement`);
             }
           } catch (e: any) {
-            logger.warn(`Directional position monitor error: ${e.message}`);
+            logger.warn(`Leg2 monitor error: ${e.message}`);
           }
         }
 
@@ -1751,7 +1352,7 @@ export class Directional15mEngine {
             const gtcDetails = await trader.getOrderFillDetails(this.pendingSellOrderId);
             if (gtcDetails.filled > 0 && gtcDetails.filled <= this.leg1Shares) {
               const realPrice = gtcDetails.avgPrice > 0 ? gtcDetails.avgPrice : (this.pendingSellPrice > 0 ? this.pendingSellPrice : this.leg1Price);
-              logger.info(`DIR15M 回合结束: GTC已成交 ${gtcDetails.filled.toFixed(0)}份 @${realPrice.toFixed(2)}`);
+              logger.info(`HEDGE15M 回合结束: GTC已成交 ${gtcDetails.filled.toFixed(0)}份 @${realPrice.toFixed(2)}`);
               const recovered = gtcDetails.filled * realPrice * (1 - TAKER_FEE);
               const l1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
               const soldCostBasis = gtcDetails.filled * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
@@ -1762,12 +1363,19 @@ export class Directional15mEngine {
               this.leg1Shares -= gtcDetails.filled;
               this.totalCost = this.leg1Shares > 0 ? this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee) : 0;
               this.balance += recovered;
-              logger.info(`DIR15M GTC部分结算: 卖出${gtcDetails.filled.toFixed(0)}份@${realPrice.toFixed(2)} P/L=$${partialProfit.toFixed(2)} 剩余${this.leg1Shares.toFixed(0)}份`);
+              logger.info(`HEDGE15M GTC部分结算: 卖出${gtcDetails.filled.toFixed(0)}份@${realPrice.toFixed(2)} P/L=$${partialProfit.toFixed(2)} 剩余${this.leg1Shares.toFixed(0)}份`);
             }
             this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
           }
+          // 回合结束前检查Leg2 GTC是否最后时刻成交
+          if (this.leg2GtcOrderId) {
+            const leg2GtcDone = await this.checkAndHandleLeg2GtcFill(trader, this.leg2GtcPrice);
+            if (!leg2GtcDone) {
+              await this.cancelLeg2Gtc(trader);
+            }
+          }
           if (this.totalCost > 0) {
-            await this.settlePosition();
+            await this.settleHedge();
           }
           await trader.cancelAll();
           curCid = "";
@@ -1781,12 +1389,12 @@ export class Directional15mEngine {
         const aggressiveWatchMs = this.currentTrendBias === "flat" ? watchPollMs : Math.max(25, Math.floor(watchPollMs * 0.5));
         await trader.waitForOrderbookUpdate(
           loopVersion,
-          this.positionState === "watching" ? aggressiveWatchMs : idlePollMs,
+          this.hedgeState === "watching" ? aggressiveWatchMs : idlePollMs,
         );
 
       } catch (e: any) {
         if (!this.isActiveRun(runId)) break;
-        logger.error(`Directional15m loop error: ${e.message}`);
+        logger.error(`Hedge15m loop error: ${e.message}`);
         await sleep(5000);
       }
     }
@@ -1802,9 +1410,9 @@ export class Directional15mEngine {
     buyToken: string,
     oppToken: string,
   ): Promise<void> {
-    if (this.positionState !== "watching" || this.leg1EntryInFlight) return;
+    if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) {
-      logger.warn("Directional15m Leg1 skipped: order already attempted this round, avoiding duplicate exposure");
+      logger.warn("Hedge15m Leg1 skipped: order already attempted this round, avoiding duplicate exposure");
       return;
     }
 
@@ -1824,7 +1432,7 @@ export class Directional15mEngine {
       entryQualityMaxSum = Math.min(maxSumTarget, entryQualityMaxSum + DIRECTIONAL_ENTRY_SUM_BONUS);
     }
 
-    const plan = planDirectionalEntry({
+    const plan = planHedgeEntry({
       dir: dir as "up" | "down",
       askPrice,
       oppCurrentAsk,
@@ -1838,7 +1446,7 @@ export class Directional15mEngine {
       if (plan.reason?.includes("MAX_ENTRY_ASK")) this.noteAdaptivePaperSkip("entry-ask");
       if (plan.reason?.includes("sum=")) this.noteAdaptivePaperSkip("sum");
       this.trackRoundRejectReason(`plan: ${plan.reason}`);
-      logger.warn(`Directional15m Leg1 skipped: ${plan.reason}`);
+      logger.warn(`Hedge15m Leg1 skipped: ${plan.reason}`);
       return;
     }
 
@@ -1848,13 +1456,13 @@ export class Directional15mEngine {
       const projProfitPerShare = 1 - observedEntrySum * (1 + TAKER_FEE);
       if (projProfitPerShare < THIN_EDGE_MIN_PROFIT_PER_SHARE) {
         logger.warn(
-          `DIR15M THIN EDGE REJECTED: sum=${observedEntrySum.toFixed(3)} projected profit/share=$${projProfitPerShare.toFixed(4)} < min $${THIN_EDGE_MIN_PROFIT_PER_SHARE}`,
+          `HEDGE15M THIN EDGE REJECTED: sum=${observedEntrySum.toFixed(3)} projected profit/share=$${projProfitPerShare.toFixed(4)} < min $${THIN_EDGE_MIN_PROFIT_PER_SHARE}`,
         );
         this.trackRoundRejectReason("thin-edge-profit-too-low");
         return;
       }
       logger.info(
-        `DIR15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, projected profit/share=$${projProfitPerShare.toFixed(4)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
+        `HEDGE15M THIN EDGE ENTRY: sum=${observedEntrySum.toFixed(2)} above preferred=${entryQualityMaxSum.toFixed(2)}, projected profit/share=$${projProfitPerShare.toFixed(4)}, reduced budget to ${(budgetPct * 100).toFixed(1)}% (hard cap ${maxSumTarget.toFixed(2)})`,
       );
     }
     await this.openLeg1Position(
@@ -1883,7 +1491,7 @@ export class Directional15mEngine {
     buyToken: string,
     oppToken: string,
   ): Promise<void> {
-    if (this.positionState !== "watching" || this.leg1EntryInFlight) return;
+    if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) return;
 
     // 取消双侧预挂单
@@ -1900,7 +1508,7 @@ export class Directional15mEngine {
       budgetPct: TREND_BUDGET_PCT,
     });
     if (!plan.allowed) {
-      logger.warn(`DIR15M TREND skipped: ${plan.reason}`);
+      logger.warn(`HEDGE15M TREND skipped: ${plan.reason}`);
       return;
     }
 
@@ -1937,7 +1545,7 @@ export class Directional15mEngine {
    * 当市场下砸到目标价时以 maker 费率(0%)成交, 实现:
    * 1. 比反应式下单更快 (单已在book中)
    * 2. 省 2% taker fee
-  * 3. 如果一侧被吃到 → 等于拿到便宜的方向单, 后续转入错价持仓管理
+   * 3. 如果一侧被吃到 → 等于拿到便宜的 Leg1, 接续正常 Leg2 逻辑
    */
   private async manageDualSideOrders(
     trader: Trader,
@@ -1945,7 +1553,7 @@ export class Directional15mEngine {
     secs: number,
   ): Promise<void> {
     if (!DUAL_SIDE_ENABLED) return;
-    if (this.positionState !== "watching") return;
+    if (this.hedgeState !== "watching") return;
     if (this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
     if (secs < DUAL_SIDE_MIN_SECS) {
       // 时间不足, 取消预挂单
@@ -1993,7 +1601,7 @@ export class Directional15mEngine {
           this.preOrderDownShares = 0;
         }
         this.transitionPreOrderToLeg1(
-          "up", this.preOrderUpToken,
+          "up", this.preOrderUpToken, rnd.downToken,
           upFill.filled, upFill.avgPrice > 0 ? upFill.avgPrice : this.preOrderUpPrice,
           this.preOrderUpId,
           (upFill.avgPrice > 0 ? upFill.avgPrice : this.preOrderUpPrice) + downAsk,
@@ -2033,7 +1641,7 @@ export class Directional15mEngine {
           this.preOrderUpShares = 0;
         }
         this.transitionPreOrderToLeg1(
-          "down", this.preOrderDownToken,
+          "down", this.preOrderDownToken, rnd.upToken,
           dnFill.filled, dnFill.avgPrice > 0 ? dnFill.avgPrice : this.preOrderDownPrice,
           this.preOrderDownId,
           (dnFill.avgPrice > 0 ? dnFill.avgPrice : this.preOrderDownPrice) + upAsk,
@@ -2196,12 +1804,13 @@ export class Directional15mEngine {
   private transitionPreOrderToLeg1(
     dir: string,
     leg1Token: string,
+    leg2Token: string,
     filledShares: number,
     fillPrice: number,
     orderId: string,
     observedSum = 0,
   ): void {
-    this.positionState = "leg1_filled";
+    this.hedgeState = "leg1_filled";
     this.activeStrategyMode = "mispricing";
     this.leg1Dir = dir;
     this.leg1Price = fillPrice;
@@ -2215,10 +1824,10 @@ export class Directional15mEngine {
     this.leg1ThinEdgeDelayLoggedAt = 0;
     this.leg1Shares = filledShares;
     this.leg1Token = leg1Token;
+    this.leg2Token = leg2Token;
     this.leg1MakerFill = true; // 预挂单永远是 maker
     this.leg1EntrySource = "dual-side-preorder";
     this.leg1EntryTrendBias = this.currentTrendBias;
-    this.leg1ObservedEntrySum = observedSum;
     this.leg1AttemptedThisRound = true;
     this.totalCost = filledShares * fillPrice; // maker fee = 0
     // paper 模式下 placeGtcBuy 已预扣 paperBalance, 不要重复扣; 直接同步
@@ -2228,8 +1837,8 @@ export class Directional15mEngine {
     // 在 manageDualSideOrders 调用 transition 前后会 refreshBalance
     // 这里仅设 totalCost 用于后续 P/L 计算, 不扣 balance
     this.onLeg1Opened();
-    this.status = `方向单预挂成交 ${dir.toUpperCase()} @${fillPrice.toFixed(2)} x${filledShares.toFixed(0)} maker, 进入错价管理`;
-    logger.info(`DIR15M DUAL SIDE → DIRECTIONAL: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 @${fillPrice.toFixed(2)} maker orderId=${orderId.slice(0, 12)}`);
+    this.status = `Leg1预挂成交 ${dir.toUpperCase()} @${fillPrice.toFixed(2)} x${filledShares.toFixed(0)} maker, 等Leg2`;
+    logger.info(`HEDGE15M DUAL SIDE → LEG1: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 @${fillPrice.toFixed(2)} maker orderId=${orderId.slice(0, 12)}`);
     this.writeRoundAudit("leg1-filled", {
       strategyMode: "mispricing",
       dir,
@@ -2382,7 +1991,7 @@ export class Directional15mEngine {
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
     if (shares < MIN_SHARES) {
       this.trackRoundRejectReason(`${strategyMode}: shares ${shares} < ${MIN_SHARES}`);
-      logger.warn(`Directional15m Leg1 skipped: ${shares}份 < ${MIN_SHARES} (balance=$${this.balance.toFixed(2)}, ask=$${askPrice.toFixed(2)})`);
+      logger.warn(`Hedge15m Leg1 skipped: ${shares}份 < ${MIN_SHARES} (balance=$${this.balance.toFixed(2)}, ask=$${askPrice.toFixed(2)})`);
       return;
     }
 
@@ -2398,7 +2007,7 @@ export class Directional15mEngine {
     });
     if (!orderbookPlan.allowed) {
       this.trackRoundRejectReason(`orderbook: ${orderbookPlan.reason}`);
-      logger.warn(`Directional15m Leg1 skipped: ${orderbookPlan.reason}`);
+      logger.warn(`Hedge15m Leg1 skipped: ${orderbookPlan.reason}`);
       return;
     }
 
@@ -2406,14 +2015,14 @@ export class Directional15mEngine {
     const entryShares = Math.min(MAX_SHARES, Math.floor(budget / entryAsk));
     if (entryShares < MIN_SHARES) {
       this.trackRoundRejectReason(`${strategyMode}: fresh shares ${entryShares} < ${MIN_SHARES}`);
-      logger.warn(`Directional15m Leg1 skipped (fresh): ${entryShares}份 < ${MIN_SHARES} @${entryAsk.toFixed(2)}`);
+      logger.warn(`Hedge15m Leg1 skipped (fresh): ${entryShares}份 < ${MIN_SHARES} @${entryAsk.toFixed(2)}`);
       return;
     }
     const entryCost = entryShares * entryAsk;
 
     this.leg1EntryInFlight = true;
     this.leg1AttemptedThisRound = true;
-    this.positionState = "leg1_pending";
+    this.hedgeState = "leg1_pending";
     this.status = strategyMode === "trend"
       ? `趋势单下单中: ${dir.toUpperCase()} @${entryAsk.toFixed(2)} x${entryShares.toFixed(0)}`
       : `Leg1下单中: ${dir.toUpperCase()} @${entryAsk.toFixed(2)} x${entryShares.toFixed(0)}`;
@@ -2438,7 +2047,7 @@ export class Directional15mEngine {
       }
 
       const adjustedCost = adjustedShares * entryAsk;
-      logger.info(`DIR15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
+      logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
       const orderSubmitStartedAt = Date.now();
       recordExecutionLatency("signalToSubmit", orderSubmitStartedAt - signalDetectedAt);
 
@@ -2454,7 +2063,7 @@ export class Directional15mEngine {
 
       if (!fillResult) {
         this.status = "Leg1下单失败, 本轮不重试";
-        logger.warn("DIR15M Leg1 entry failed (limit race + FAK)");
+        logger.warn("HEDGE15M Leg1 entry failed (limit race + FAK)");
         return;
       }
 
@@ -2466,7 +2075,7 @@ export class Directional15mEngine {
       const isMaker = fillResult.maker;
       const actualFee = isMaker ? 0 : TAKER_FEE;
 
-      this.positionState = "leg1_filled";
+      this.hedgeState = "leg1_filled";
       this.activeStrategyMode = strategyMode;
       this.leg1Dir = dir;
       this.leg1Price = entryAsk;
@@ -2478,9 +2087,9 @@ export class Directional15mEngine {
       this.leg1ThinEdgePreferredSum = edgeEntry?.preferredSum || 0;
       this.leg1ThinEdgeHardMaxSum = edgeEntry?.hardMaxSum || 0;
       this.leg1ThinEdgeDelayLoggedAt = 0;
-      this.leg1ObservedEntrySum = edgeEntry?.observedEntrySum || 0;
       this.leg1Shares = filledShares;
       this.leg1Token = buyToken;
+      this.leg2Token = oppToken;
       this.leg1MakerFill = isMaker;
       this.leg1EntrySource = strategyMode === "trend" ? "reactive-trend" : "reactive-mispricing";
       this.leg1EntryTrendBias = this.currentTrendBias;
@@ -2489,8 +2098,8 @@ export class Directional15mEngine {
       this.onLeg1Opened();
       this.status = strategyMode === "trend"
         ? `趋势持仓 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}`
-        : `方向持仓 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}${isMaker ? " maker" : ""}, 进入错价管理`;
-      logger.info(`DIR15M LEG1 FILLED [${strategyMode.toUpperCase()}]: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)} maker=${isMaker} fee=${(actualFee * 100).toFixed(0)}%`);
+        : `Leg1 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}${isMaker ? " maker" : ""}, 等Leg2`;
+      logger.info(`HEDGE15M LEG1 FILLED [${strategyMode.toUpperCase()}]: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)} maker=${isMaker} fee=${(actualFee * 100).toFixed(0)}%`);
       this.writeRoundAudit("leg1-filled", {
         strategyMode,
         dir,
@@ -2507,123 +2116,421 @@ export class Directional15mEngine {
       });
     } finally {
       this.leg1EntryInFlight = false;
-      if (this.positionState === "leg1_pending") {
-        this.positionState = "watching";
+      if (this.hedgeState === "leg1_pending") {
+        this.hedgeState = "watching";
       }
     }
   }
 
-  private async manageMispricingLeg(trader: Trader, leg1Bid: number | null, secs: number): Promise<void> {
-    if (this.positionState !== "leg1_filled") return;
-    if (leg1Bid == null || leg1Bid <= 0) return;
-
-    const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-    const currentAsk = this.getPositionCurrentAsk();
-    const oppositeAsk = this.getPositionOppositeAsk();
-    const heldMs = Math.max(0, Date.now() - this.leg1FilledAt);
-    const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
-    const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
-    const adverseMomentum = this.isMomentumAdverseForPosition(shortMomentum, trendMomentum);
-    const liveSum = currentAsk > 0 && oppositeAsk > 0 ? currentAsk + oppositeAsk : 0;
-    const exitSumThreshold = this.getMispricingExitSumThreshold(entryPrice);
-    const timeoutProfile = this.getMispricingTimeoutProfile(entryPrice);
-    const invalidateBidFloor = entryPrice * (this.leg1MakerFill ? 0.97 : 0.95);
-
-    this.status = `错价持仓中: ${this.leg1Dir.toUpperCase()} bid=${leg1Bid.toFixed(2)} sum=${liveSum > 0 ? liveSum.toFixed(2) : "--"} ${secs.toFixed(0)}s left`;
-
-    if (
-      heldMs <= ADVERSE_FILL_CHECK_MS &&
-      liveSum > 0 &&
-      liveSum >= ADVERSE_FILL_EXIT_SUM &&
-      adverseMomentum &&
-      leg1Bid < entryPrice * 0.94
-    ) {
-      logger.info(`DIR15M MISPRICING ADVERSE-FILL: bid=${leg1Bid.toFixed(2)} sum=${liveSum.toFixed(2)} adverse=true`);
-      await this.emergencySellLeg1(trader, "失效退出", leg1Bid);
-      return;
-    }
-
-    if (
-      heldMs >= EARLY_EXIT_AFTER_MS &&
-      liveSum > 0 &&
-      liveSum >= exitSumThreshold &&
-      adverseMomentum &&
-      leg1Bid < invalidateBidFloor
-    ) {
-      logger.info(`DIR15M MISPRICING INVALIDATED: held=${(heldMs / 1000).toFixed(0)}s bid=${leg1Bid.toFixed(2)} sum=${liveSum.toFixed(2)} threshold=${exitSumThreshold.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "失效退出", leg1Bid);
-      return;
-    }
-
-    if (
-      heldMs >= timeoutProfile.timeoutMs &&
-      secs <= timeoutProfile.minSecsLeft &&
-      liveSum > 0 &&
-      liveSum >= timeoutProfile.sumThreshold &&
-      adverseMomentum &&
-      leg1Bid < timeoutProfile.bidFloor
-    ) {
-      logger.info(`DIR15M MISPRICING TIMEOUT EXIT: held=${(heldMs / 1000).toFixed(0)}s left=${secs.toFixed(0)}s bid=${leg1Bid.toFixed(2)} sum=${liveSum.toFixed(2)} threshold=${timeoutProfile.sumThreshold.toFixed(2)} adverse=true`);
-      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
-      return;
-    }
-  }
-
   private async manageTrendLeg(trader: Trader, leg1Bid: number | null, secs: number): Promise<void> {
-    if (this.positionState !== "leg1_filled") return;
+    if (this.hedgeState !== "leg1_filled") return;
     if (leg1Bid == null || leg1Bid <= 0) return;
 
     // 更新峰值bid
     if (leg1Bid > this.trendPeakBid) this.trendPeakBid = leg1Bid;
     const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-    const profile = this.getTrendRiskProfile(entryPrice);
 
-    this.status = `趋势持仓中: ${this.leg1Dir.toUpperCase()} bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} TP${profile.fixedTakeProfitBid.toFixed(2)} SL${profile.relativeStopBid.toFixed(2)} ${secs.toFixed(0)}s left`;
+    this.status = `趋势持仓中: ${this.leg1Dir.toUpperCase()} bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} ${secs.toFixed(0)}s left`;
 
     // ① 固定止盈: bid ≥ 0.90 且剩余 >180s
-    if (leg1Bid >= profile.fixedTakeProfitBid && secs > 180) {
-      logger.info(`DIR15M TREND TAKE-PROFIT: bid=${leg1Bid.toFixed(2)} >= ${profile.fixedTakeProfitBid.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "止盈", leg1Bid, "trend-fixed-tp");
+    if (leg1Bid >= TREND_TAKE_PROFIT_BID && secs > 180) {
+      logger.info(`HEDGE15M TREND TAKE-PROFIT: bid=${leg1Bid.toFixed(2)} >= ${TREND_TAKE_PROFIT_BID.toFixed(2)}`);
+      await this.emergencySellLeg1(trader, "止盈", leg1Bid);
       return;
     }
 
     // ② 移动止盈: 峰值回撤15% 且 bid ≥ 0.55 且剩余 >60s
     if (
-      this.trendPeakBid >= profile.trailingArmBid &&
-      leg1Bid <= this.trendPeakBid * (1 - profile.trailingPullback) &&
+      this.trendPeakBid >= TREND_TRAILING_MIN_BID &&
+      leg1Bid <= this.trendPeakBid * (1 - TREND_TRAILING_PULLBACK) &&
       secs > 60
     ) {
-      logger.info(`DIR15M TREND TRAILING-STOP: bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} pullback=${((1 - leg1Bid / this.trendPeakBid) * 100).toFixed(1)}%`);
-      await this.emergencySellLeg1(trader, "止盈", leg1Bid, "trend-trailing-stop");
+      logger.info(`HEDGE15M TREND TRAILING-STOP: bid=${leg1Bid.toFixed(2)} peak=${this.trendPeakBid.toFixed(2)} pullback=${((1 - leg1Bid / this.trendPeakBid) * 100).toFixed(1)}%`);
+      await this.emergencySellLeg1(trader, "止盈", leg1Bid);
       return;
     }
 
     // ③ 相对止损: bid < 入场价*75%
-    if (leg1Bid < profile.relativeStopBid && secs > 60) {
-      logger.info(`DIR15M TREND RELATIVE-SL: bid=${leg1Bid.toFixed(2)} < dynamicStop=${profile.relativeStopBid.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "中途止损", leg1Bid, "trend-relative-sl");
+    if (leg1Bid < entryPrice * TREND_RELATIVE_STOP_LOSS && secs > 60) {
+      logger.info(`HEDGE15M TREND RELATIVE-SL: bid=${leg1Bid.toFixed(2)} < entry=${entryPrice.toFixed(2)}*${TREND_RELATIVE_STOP_LOSS}=${(entryPrice * TREND_RELATIVE_STOP_LOSS).toFixed(2)}`);
+      await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
       return;
     }
 
     // ④ 绝对止损: bid ≤ 0.42 (无论入场价多少)
-    if (leg1Bid <= profile.absoluteStopBid && secs > 60) {
-      logger.info(`DIR15M TREND STOP-LOSS: bid=${leg1Bid.toFixed(2)} <= ${profile.absoluteStopBid.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "中途止损", leg1Bid, "trend-absolute-sl");
+    if (leg1Bid <= TREND_STOP_LOSS_BID && secs > 60) {
+      logger.info(`HEDGE15M TREND STOP-LOSS: bid=${leg1Bid.toFixed(2)} <= ${TREND_STOP_LOSS_BID.toFixed(2)}`);
+      await this.emergencySellLeg1(trader, "中途止损", leg1Bid);
       return;
     }
 
     // ⑤ 死区填补: 60-180s 且 bid < 0.50
-    if (secs <= 180 && secs > 45 && leg1Bid < profile.deadzoneExitBid) {
-      logger.info(`DIR15M TREND DEADZONE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < ${profile.deadzoneExitBid.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid, "trend-deadzone-exit");
+    if (secs <= 180 && secs > 45 && leg1Bid < TREND_DEADZONE_EXIT_BID) {
+      logger.info(`HEDGE15M TREND DEADZONE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < ${TREND_DEADZONE_EXIT_BID}`);
+      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
       return;
     }
 
     // ⑥ 超时割肉: ≤45s 且 bid < 0.55
-    if (secs <= 45 && leg1Bid < profile.lateExitBid) {
-      logger.info(`DIR15M TREND LATE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < ${profile.lateExitBid.toFixed(2)}`);
-      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid, "trend-late-exit");
+    if (secs <= 45 && leg1Bid < 0.55) {
+      logger.info(`HEDGE15M TREND LATE EXIT: ${secs.toFixed(0)}s left, bid=${leg1Bid.toFixed(2)} < 0.55`);
+      await this.emergencySellLeg1(trader, "超时割肉", leg1Bid);
     }
+  }
+
+  private async buyLeg2(trader: Trader, oppAsk: number, sumTarget: number): Promise<void> {
+    // 买Leg2前先取消Leg2 GTC(如有), 检查是否已成交
+    if (this.leg2GtcOrderId) {
+      const handled = await this.checkAndHandleLeg2GtcFill(trader, oppAsk);
+      if (handled) return; // Leg2 GTC已成交, 不需要再买
+      // 未成交, 取消Leg2 GTC让buyLeg2走正常流程
+      await this.cancelLeg2Gtc(trader);
+    }
+    const leg2SignalAt = Date.now();
+    // 匹配Leg1实际成交份数, 保证对称对冲
+    const sharesToBuy = this.leg1Shares;
+
+    // ── Leg2 Spread/深度保护 ──
+    const leg2Book = await getHotBestPrices(trader, this.leg2Token);
+    if (leg2Book && leg2Book.ask != null && leg2Book.bid != null) {
+      const spread = leg2Book.ask - leg2Book.bid;
+      if (spread > 0.15) {
+        logger.warn(`Hedge15m Leg2 skipped: spread=$${spread.toFixed(2)} > $0.15`);
+        return;
+      }
+      if (leg2Book.askDepth < sharesToBuy * 0.5) {
+        logger.warn(`Hedge15m Leg2 skipped: askDepth=${leg2Book.askDepth.toFixed(0)} < ${(sharesToBuy * 0.5).toFixed(0)} needed`);
+        return;
+      }
+      if (leg2Book.ask > oppAsk * 1.08) {
+        logger.warn(`Hedge15m Leg2 skipped: fresh ask $${leg2Book.ask.toFixed(2)} >> passed $${oppAsk.toFixed(2)}`);
+        return;
+      }
+    }
+
+    // 使用实时盘口ask(如可用), 避免滞后的oppAsk导致cost偏差
+    let actualAsk = oppAsk;
+    if (leg2Book && leg2Book.ask != null && leg2Book.ask > 0) {
+      actualAsk = leg2Book.ask;
+    }
+    const actualCost = sharesToBuy * actualAsk;
+    const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+
+    // ── Sum re-check: 用实时ask重新验证, 防止ask上涨导致sum超标 ──
+    if (fillPrice + actualAsk > sumTarget) {
+      logger.warn(`Hedge15m Leg2 skipped: sum=${(fillPrice + actualAsk).toFixed(2)} > target=${sumTarget.toFixed(2)} (actualAsk=${actualAsk.toFixed(2)})`);
+      return;
+    }
+
+    // ── Profit gate: 锁利过薄不做Leg2 ──
+    {
+      const leg1ActualFee = this.leg1MakerFill ? 0 : TAKER_FEE;
+      const projectedLockedCost = sharesToBuy * fillPrice * (1 + leg1ActualFee) + sharesToBuy * actualAsk * (1 + TAKER_FEE);
+      const projectedLockedProfit = sharesToBuy - projectedLockedCost;
+      const projectedLockedRoi = projectedLockedCost > 0 ? projectedLockedProfit / projectedLockedCost : 0;
+      if (
+        projectedLockedProfit < this.minLockedProfit ||
+        projectedLockedRoi < this.minLockedRoi
+      ) {
+        this.status = `Leg2跳过: 锁利过薄 +$${projectedLockedProfit.toFixed(2)} (${(projectedLockedRoi * 100).toFixed(2)}%)`;
+        logger.warn(`Hedge15m Leg2 skipped: locked profit $${projectedLockedProfit.toFixed(2)} / ROI ${(projectedLockedRoi * 100).toFixed(2)}% below floor $${this.minLockedProfit.toFixed(2)} / ${(this.minLockedRoi * 100).toFixed(2)}%`);
+        return;
+      }
+    }
+
+    // ── Affordability check: 完整对冲sum≤target必盈利, 仅检查余额是否足够 ──
+    const leg2CostWithFee = actualCost * (1 + TAKER_FEE);
+    if (leg2CostWithFee > this.balance) {
+      logger.warn(`Hedge15m Leg2 skipped: cost+fee $${leg2CostWithFee.toFixed(2)} > balance $${this.balance.toFixed(2)}`);
+      return;
+    }
+    const leg2Dir = this.leg1Dir === "up" ? "DOWN" : "UP";
+    logger.info(`HEDGE15M LEG2: ${leg2Dir} ${sharesToBuy.toFixed(0)}份 @${actualAsk.toFixed(2)} (passed=${oppAsk.toFixed(2)}) limitRace=${LIMIT_LEG2_ENABLED}`);
+    const leg2SubmitAt = Date.now();
+    recordExecutionLatency("leg2SignalToSubmit", leg2SubmitAt - leg2SignalAt);
+
+    let leg2Fill: { orderId: string; filled: number; avgPrice: number; maker: boolean } | null = null;
+    if (LIMIT_LEG2_ENABLED) {
+      leg2Fill = await this.limitRaceBuy(trader, this.leg2Token, sharesToBuy, actualAsk, LIMIT_LEG2_OFFSET, LIMIT_LEG2_TIMEOUT_MS, this.negRisk);
+    } else {
+      leg2Fill = await this.fakBuyFallback(trader, this.leg2Token, sharesToBuy, actualAsk, this.negRisk);
+    }
+
+    const leg2AckAt = Date.now();
+    recordExecutionLatency("leg2SubmitToAck", leg2AckAt - leg2SubmitAt);
+
+    if (!leg2Fill) {
+      logger.warn("HEDGE15M Leg2 entry failed (limit race + FAK), Leg1 unhedged");
+      return;
+    }
+
+    recordExecutionLatency("leg2SignalToFill", leg2AckAt - leg2SignalAt);
+
+    const orderId = leg2Fill.orderId;
+    let filledShares = leg2Fill.filled;
+    let leg2RealPrice = leg2Fill.avgPrice;
+    const leg2IsMaker = leg2Fill.maker;
+    const leg2Fee = leg2IsMaker ? 0 : TAKER_FEE;
+
+    // ── Leg2 部分成交: 卖掉多余 Leg1 份数, 避免裸仓风险 ──
+    if (filledShares < this.leg1Shares) {
+      const unhedged = this.leg1Shares - filledShares;
+      logger.warn(`HEDGE15M Leg2 partial: ${filledShares.toFixed(0)}/${this.leg1Shares.toFixed(0)} → selling ${unhedged.toFixed(0)} unhedged Leg1`);
+      const leg1Prices = await getHotBestPrices(trader, this.leg1Token);
+      const leg1Bid = leg1Prices?.bid ?? this.leg1Price * 0.85;
+      const sellRes = await trader.placeFakSell(this.leg1Token, unhedged, this.negRisk);
+      if (sellRes) {
+        const sellOrderId = sellRes?.orderID || sellRes?.order_id || "";
+        let actualSold = unhedged;
+        let actualPrice = leg1Bid;
+        if (sellOrderId) {
+          const sellDetails = await trader.waitForOrderFillDetails(sellOrderId, getDynamicParams().fillCheckMs);
+          if (sellDetails.filled > 0) {
+            actualSold = sellDetails.filled;
+            if (sellDetails.avgPrice > 0) actualPrice = sellDetails.avgPrice;
+          }
+        }
+        const sellRecovered = actualSold * actualPrice * (1 - TAKER_FEE);
+        const leg1CostFee = this.leg1MakerFill ? 0 : TAKER_FEE;
+        const soldCostBasis = actualSold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1CostFee);
+        const excessPnl = sellRecovered - soldCostBasis;
+        this.totalProfit += excessPnl;
+        this.sessionProfit += excessPnl;
+        this.recordRollingPnL(excessPnl);
+        this.balance += sellRecovered;
+        this.totalCost = Math.max(0, this.totalCost - soldCostBasis);
+        this.leg1Shares = this.leg1Shares - actualSold;
+        if (actualSold < unhedged) {
+          logger.warn(`HEDGE15M: partial sell of excess Leg1: ${actualSold.toFixed(0)}/${unhedged.toFixed(0)}, ${(unhedged - actualSold).toFixed(0)} still at risk`);
+        }
+        logger.info(`HEDGE15M: sold ${actualSold.toFixed(0)} excess Leg1 @${actualPrice.toFixed(2)}, recovered=$${sellRecovered.toFixed(2)} costBasis=$${soldCostBasis.toFixed(2)} P/L=$${excessPnl.toFixed(2)}`);
+      } else {
+        logger.warn(`HEDGE15M: failed to sell unhedged Leg1, ${unhedged.toFixed(0)} shares at risk`);
+      }
+    }
+
+    this.leg2Price = oppAsk;
+    this.leg2FillPrice = leg2RealPrice;
+    this.leg2OrderId = orderId ? orderId.slice(0, 12) : "";
+    this.leg2Shares = filledShares;
+    this.leg2MakerFill = leg2IsMaker;
+    const leg2Cost = filledShares * leg2RealPrice * (1 + leg2Fee);
+    this.totalCost += leg2Cost;
+    this.balance -= leg2Cost;
+    this.hedgeState = "leg2_filled";
+
+    const hedgedShares = Math.min(this.leg1Shares, filledShares);
+    const residualShares = Math.max(0, this.leg1Shares - hedgedShares);
+    const leg1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+    const leg1UnitCost = (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1Fee);
+    const lockedCost = hedgedShares * leg1UnitCost + filledShares * leg2RealPrice * (1 + leg2Fee);
+    this.expectedProfit = hedgedShares > 0 ? hedgedShares - lockedCost : 0;
+    this.status = residualShares > 0
+      ? `部分对冲: 锁定+$${this.expectedProfit.toFixed(2)}, 裸露${residualShares.toFixed(0)}份`
+      : `双腿锁定! L1=${this.leg1Dir.toUpperCase()}@${this.leg1FillPrice.toFixed(2)} L2=@${leg2RealPrice.toFixed(2)} 预期+$${this.expectedProfit.toFixed(2)}${this.leg1MakerFill || leg2IsMaker ? " 🏷maker" : ""}`;
+    logger.info(`HEDGE15M LOCKED: hedged=${hedgedShares.toFixed(0)} residual=${residualShares.toFixed(0)} L1 fill=${this.leg1FillPrice.toFixed(2)}(${this.leg1MakerFill ? "M" : "T"}) L2 fill=${leg2RealPrice.toFixed(2)}(${leg2IsMaker ? "M" : "T"}) totalCost=$${this.totalCost.toFixed(2)} lockedProfit=$${this.expectedProfit.toFixed(2)}`);
+    this.writeRoundAudit("hedge-locked", {
+      hedgedShares,
+      residualShares,
+      leg2FillPrice: leg2RealPrice,
+      leg1Maker: this.leg1MakerFill,
+      leg2Maker: leg2IsMaker,
+      lockedProfit: this.expectedProfit,
+    });
+  }
+
+  // ── Leg2 GTC Limit Order Management ──
+
+  /**
+   * Leg1成交后立即挂Leg2 GTC limit buy, 争取maker成交(0% fee)
+   * 价格 = min(sumTarget - leg1FillPrice, currentOppAsk - 0.01)
+   */
+  private async placeLeg2Gtc(trader: Trader, token: string, shares: number, secs: number): Promise<void> {
+    if (!LEG2_GTC_ENABLED) return;
+    if (this.leg2GtcOrderId) return; // 已有Leg2 GTC
+
+    const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+    const target = this.getLeg2Target(secs);
+    const maxLeg2Price = Math.round((target - fillPrice) * 100) / 100;
+
+    if (maxLeg2Price < 0.10 || maxLeg2Price > 0.80) return;
+
+    // 检查余额是否足够(maker fee=0)
+    if (shares * maxLeg2Price > this.balance) {
+      logger.warn(`LEG2 GTC: insufficient balance $${this.balance.toFixed(2)} < $${(shares * maxLeg2Price).toFixed(2)}`);
+      return;
+    }
+
+    const oid = await trader.placeGtcBuy(token, shares, maxLeg2Price, this.negRisk);
+    if (oid) {
+      this.leg2GtcOrderId = oid;
+      this.leg2GtcPrice = maxLeg2Price;
+      this.leg2GtcShares = shares;
+      this.leg2GtcToken = token;
+      this.leg2GtcPlacedAt = Date.now();
+      this.leg2GtcLastReprice = Date.now();
+      logger.info(`LEG2 GTC: placed ${shares}份 @${maxLeg2Price.toFixed(2)} (target sum=${target.toFixed(2)}, L1=${fillPrice.toFixed(2)})`);
+    }
+  }
+
+  /** 取消Leg2 GTC, 检查是否有意外成交 */
+  private async cancelLeg2Gtc(trader: Trader): Promise<void> {
+    if (!this.leg2GtcOrderId) return;
+    await trader.cancelOrder(this.leg2GtcOrderId).catch(() => {});
+    this.leg2GtcOrderId = "";
+    this.leg2GtcPrice = 0;
+    this.leg2GtcShares = 0;
+    this.leg2GtcToken = "";
+    this.leg2GtcPlacedAt = 0;
+    this.leg2GtcLastReprice = 0;
+  }
+
+  /**
+   * 检查Leg2 GTC是否成交, 成交则完成对冲(双腿maker)
+   * @returns true 如果Leg2已成交并完成处理
+   */
+  private async checkAndHandleLeg2GtcFill(trader: Trader, oppAsk: number): Promise<boolean> {
+    if (!this.leg2GtcOrderId || this.hedgeState !== "leg1_filled") return false;
+
+    const details = await trader.getOrderFillDetails(this.leg2GtcOrderId);
+    if (details.filled <= 0) return false;
+
+    // 有成交! 取消剩余(部分成交时)
+    if (details.filled < this.leg2GtcShares) {
+      await trader.cancelOrder(this.leg2GtcOrderId).catch(() => {});
+      const afterCancel = await trader.getOrderFillDetails(this.leg2GtcOrderId);
+      if (afterCancel.filled > details.filled) {
+        details.filled = afterCancel.filled;
+        details.avgPrice = afterCancel.avgPrice;
+      }
+    }
+
+    logger.info(`LEG2 GTC FILLED: ${details.filled.toFixed(0)}份 @${details.avgPrice.toFixed(2)} MAKER! (双腿都是maker)`);
+
+    // ── 处理Leg2成交: 复用buyLeg2的post-fill逻辑 ──
+    const filledShares = details.filled;
+    const leg2RealPrice = details.avgPrice > 0 ? details.avgPrice : this.leg2GtcPrice;
+    const leg2Fee = 0; // maker fee = 0
+
+    // 部分成交处理: 卖掉多余Leg1份数
+    if (filledShares < this.leg1Shares) {
+      const unhedged = this.leg1Shares - filledShares;
+      logger.warn(`LEG2 GTC partial: ${filledShares.toFixed(0)}/${this.leg1Shares.toFixed(0)} → selling ${unhedged.toFixed(0)} unhedged Leg1`);
+      const leg1Prices = await getHotBestPrices(trader, this.leg1Token);
+      const leg1Bid = leg1Prices?.bid ?? this.leg1Price * 0.85;
+      const sellRes = await trader.placeFakSell(this.leg1Token, unhedged, this.negRisk);
+      if (sellRes) {
+        const sellOrderId = sellRes?.orderID || sellRes?.order_id || "";
+        let actualSold = unhedged;
+        let actualPrice = leg1Bid;
+        if (sellOrderId) {
+          const sellDetails = await trader.waitForOrderFillDetails(sellOrderId, getDynamicParams().fillCheckMs);
+          if (sellDetails.filled > 0) {
+            actualSold = sellDetails.filled;
+            if (sellDetails.avgPrice > 0) actualPrice = sellDetails.avgPrice;
+          }
+        }
+        const sellRecovered = actualSold * actualPrice * (1 - TAKER_FEE);
+        const leg1CostFee = this.leg1MakerFill ? 0 : TAKER_FEE;
+        const soldCostBasis = actualSold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1CostFee);
+        const excessPnl = sellRecovered - soldCostBasis;
+        this.totalProfit += excessPnl;
+        this.sessionProfit += excessPnl;
+        this.recordRollingPnL(excessPnl);
+        this.balance += sellRecovered;
+        this.totalCost = Math.max(0, this.totalCost - soldCostBasis);
+        this.leg1Shares -= actualSold;
+        logger.info(`LEG2 GTC: sold ${actualSold.toFixed(0)} excess Leg1 @${actualPrice.toFixed(2)}, P/L=$${excessPnl.toFixed(2)}`);
+      }
+    }
+
+    this.leg2Price = oppAsk;
+    this.leg2FillPrice = leg2RealPrice;
+    this.leg2OrderId = this.leg2GtcOrderId.slice(0, 12);
+    this.leg2Shares = filledShares;
+    this.leg2MakerFill = true;
+    const leg2Cost = filledShares * leg2RealPrice; // maker fee = 0
+    this.totalCost += leg2Cost;
+    this.balance -= leg2Cost;
+    this.hedgeState = "leg2_filled";
+
+    const hedgedShares = Math.min(this.leg1Shares, filledShares);
+    const residualShares = Math.max(0, this.leg1Shares - hedgedShares);
+    const leg1Fee = this.leg1MakerFill ? 0 : TAKER_FEE;
+    const leg1UnitCost = (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + leg1Fee);
+    const lockedCost = hedgedShares * leg1UnitCost + filledShares * leg2RealPrice;
+    this.expectedProfit = hedgedShares > 0 ? hedgedShares - lockedCost : 0;
+    this.status = residualShares > 0
+      ? `部分对冲: 锁定+$${this.expectedProfit.toFixed(2)}, 裸露${residualShares.toFixed(0)}份`
+      : `双腿锁定! L1=${this.leg1Dir.toUpperCase()}@${this.leg1FillPrice.toFixed(2)} L2=@${leg2RealPrice.toFixed(2)} 预期+$${this.expectedProfit.toFixed(2)} 🏷双maker`;
+    logger.info(`HEDGE15M LOCKED (DUAL MAKER): hedged=${hedgedShares.toFixed(0)} L1=${this.leg1FillPrice.toFixed(2)}(M) L2=${leg2RealPrice.toFixed(2)}(M) cost=$${this.totalCost.toFixed(2)} profit=$${this.expectedProfit.toFixed(2)}`);
+    this.writeRoundAudit("hedge-locked", {
+      hedgedShares,
+      residualShares,
+      leg2FillPrice: leg2RealPrice,
+      leg1Maker: true,
+      leg2Maker: true,
+      lockedProfit: this.expectedProfit,
+    });
+
+    // 清理Leg2 GTC状态
+    this.leg2GtcOrderId = "";
+    this.leg2GtcPrice = 0;
+    this.leg2GtcShares = 0;
+    this.leg2GtcToken = "";
+    this.leg2GtcPlacedAt = 0;
+    this.leg2GtcLastReprice = 0;
+
+    return true;
+  }
+
+  /**
+   * 管理Leg2 GTC: 检查成交、根据时间推进重新定价
+   * 从main loop调用, 在止损/止盈检查之前
+   */
+  private async manageLeg2Gtc(trader: Trader, secs: number, oppAsk: number | null): Promise<boolean> {
+    if (!this.leg2GtcOrderId || this.hedgeState !== "leg1_filled") return false;
+
+    // 1. 检查是否成交
+    const filled = await this.checkAndHandleLeg2GtcFill(trader, oppAsk ?? 0);
+    if (filled) return true;
+
+    // 2. 检查是否需要重新定价 (sum target随时间放宽)
+    const now = Date.now();
+    if (now - this.leg2GtcLastReprice >= LEG2_GTC_REPRICE_MS) {
+      const fillPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
+      const newTarget = this.getLeg2Target(secs);
+      const newMaxPrice = Math.round((newTarget - fillPrice) * 100) / 100;
+
+      if (newMaxPrice > this.leg2GtcPrice + 0.005 && newMaxPrice >= 0.10 && newMaxPrice <= 0.80) {
+        // Target放宽, 提高Leg2挂单价 → 更容易成交
+        await trader.cancelOrder(this.leg2GtcOrderId).catch(() => {});
+        // 取消期间可能成交
+        const afterCancel = await trader.getOrderFillDetails(this.leg2GtcOrderId);
+        if (afterCancel.filled > 0) {
+          // 取消期间成交了!
+          const handled = await this.checkAndHandleLeg2GtcFill(trader, oppAsk ?? 0);
+          if (handled) return true;
+        }
+        // 重新挂单
+        if (this.leg2GtcShares * newMaxPrice <= this.balance) {
+          const newOid = await trader.placeGtcBuy(this.leg2GtcToken, this.leg2GtcShares, newMaxPrice, this.negRisk);
+          if (newOid) {
+            this.leg2GtcOrderId = newOid;
+            this.leg2GtcPrice = newMaxPrice;
+            this.leg2GtcLastReprice = now;
+            logger.info(`LEG2 GTC repriced: @${newMaxPrice.toFixed(2)} (target sum=${newTarget.toFixed(2)})`);
+          } else {
+            this.leg2GtcOrderId = "";
+            this.leg2GtcPrice = 0;
+            this.leg2GtcShares = 0;
+          }
+        }
+      }
+      this.leg2GtcLastReprice = now;
+    }
+
+    return false;
   }
 
   /** 独立管理 GTC 挂单: 检查成交、自动降价追单、超时处理 */
@@ -2658,13 +2565,13 @@ export class Directional15mEngine {
       this.balance += recovered;
       this.history.push({
         time: timeStr(), result, leg1Dir: this.leg1Dir.toUpperCase(),
-        leg1Price: this.leg1Price, totalCost: soldCost,
+        leg1Price: this.leg1Price, leg2Price: this.leg2Price, totalCost: soldCost,
         profit, cumProfit: this.totalProfit,
         exitType: "gtc-fill",
         exitReason: `GTC限价卖单成交: ${soldShares.toFixed(0)}份@$${sellPrice.toFixed(2)}${unsold > 0 ? `, 剩余${unsold.toFixed(0)}份待结算` : ''}`,
         profitBreakdown: `回收$${recovered.toFixed(2)}(${soldShares.toFixed(0)}×$${sellPrice.toFixed(2)}×0.98) - 成本$${soldCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
-        leg1Shares: this.leg1Shares,
-        leg1FillPrice: this.leg1FillPrice,
+        leg1Shares: this.leg1Shares, leg2Shares: this.leg2Shares,
+        leg1FillPrice: this.leg1FillPrice, leg2FillPrice: this.leg2FillPrice,
         sellPrice, sellShares: soldShares,
         orderId: this.leg1OrderId,
         sellOrderId: this.pendingSellOrderId.slice(0, 12),
@@ -2672,7 +2579,6 @@ export class Directional15mEngine {
         strategyMode: this.activeStrategyMode,
         entrySource: this.leg1EntrySource,
         entryTrendBias: this.leg1EntryTrendBias,
-        trendExitRule: this.pendingExitRule || undefined,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
@@ -2680,18 +2586,17 @@ export class Directional15mEngine {
         this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
         this.leg1Shares = unsold;
       } else {
-        this.totalCost = 0; this.leg1Shares = 0; this.positionState = "done";
+        this.totalCost = 0; this.leg1Shares = 0; this.hedgeState = "done";
       }
-      this.clearPendingSellTracking();
+      this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
       this.status = `GTC成交: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}`;
-      logger.info(`DIR15M GTC FILLED: sold ${soldShares.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
+      logger.info(`HEDGE15M GTC FILLED: sold ${soldShares.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
       this.writeRoundAudit("gtc-filled", {
         soldShares,
         unsold,
         sellPrice,
         profit,
         result,
-        trendExitRule: this.pendingExitRule || undefined,
       });
       return;
     }
@@ -2706,10 +2611,9 @@ export class Directional15mEngine {
       if (lastCheck > 0) {
         return this.managePendingSell(trader, currentBid, secs);
       }
-      logger.info(`DIR15M: ${secs.toFixed(0)}s left, cancel GTC → immediate FAK sell`);
+      logger.info(`HEDGE15M: ${secs.toFixed(0)}s left, cancel GTC → immediate FAK sell`);
       await trader.cancelOrder(this.pendingSellOrderId);
-      const pendingExitRule = this.pendingExitRule;
-      this.clearPendingSellTracking();
+      this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
       // 立即尝试FAK卖出, 不留15-20秒空隙
       if (this.leg1Shares > 0 && this.leg1Token) {
         const sellRes = await trader.placeFakSell(this.leg1Token, this.leg1Shares, this.negRisk);
@@ -2733,13 +2637,13 @@ export class Directional15mEngine {
               const isEstimated = det.avgPrice <= 0;
               this.history.push({
                 time: timeStr(), result, leg1Dir: this.leg1Dir.toUpperCase(),
-                leg1Price: this.leg1Price, totalCost: soldCost,
+                leg1Price: this.leg1Price, leg2Price: this.leg2Price, totalCost: soldCost,
                 profit, cumProfit: this.totalProfit,
                 exitType: "force-exit",
                 exitReason: `最后${secs.toFixed(0)}s: GTC未成交→FAK强卖${det.filled.toFixed(0)}份@$${sellPrice.toFixed(2)}`,
                 profitBreakdown: `回收$${recovered.toFixed(2)}(${det.filled.toFixed(0)}×$${sellPrice.toFixed(2)}×0.98) - 成本$${soldCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
-                leg1Shares: this.leg1Shares,
-                leg1FillPrice: this.leg1FillPrice,
+                leg1Shares: this.leg1Shares, leg2Shares: this.leg2Shares,
+                leg1FillPrice: this.leg1FillPrice, leg2FillPrice: this.leg2FillPrice,
                 sellPrice, sellShares: det.filled,
                 orderId: this.leg1OrderId,
                 sellOrderId: sellId.slice(0, 12),
@@ -2747,20 +2651,19 @@ export class Directional15mEngine {
                 strategyMode: this.activeStrategyMode,
                 entrySource: this.leg1EntrySource,
                 entryTrendBias: this.leg1EntryTrendBias,
-                trendExitRule: pendingExitRule || undefined,
               });
               if (this.history.length > 200) this.history.shift();
               this.saveHistory();
               this.leg1Shares -= det.filled;
-              if (this.leg1Shares <= 0) { this.totalCost = 0; this.positionState = "done"; }
+              if (this.leg1Shares <= 0) { this.totalCost = 0; this.hedgeState = "done"; }
               else { this.totalCost = this.leg1Shares * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee2); }
-              logger.info(`DIR15M GTC→FAK: sold ${det.filled.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
+              logger.info(`HEDGE15M GTC→FAK: sold ${det.filled.toFixed(0)} @${sellPrice.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
               return;
             }
           }
         }
         // FAK也失败: 持仓等待结算(最后~15秒, 不再挂新单)
-        logger.warn(`DIR15M: GTC→FAK sell failed at ${secs.toFixed(0)}s, holding to settlement`);
+        logger.warn(`HEDGE15M: GTC→FAK sell failed at ${secs.toFixed(0)}s, holding to settlement`);
       }
       return;
     }
@@ -2770,7 +2673,7 @@ export class Directional15mEngine {
       // 先再次检查成交, 防止cancel前刚好被吃到导致重复挂单
       const recheck = await trader.getOrderFilled(this.pendingSellOrderId);
       if (recheck > 0) {
-        logger.info(`DIR15M: GTC filled during reprice check (${recheck} shares), delegating to fill handler`);
+        logger.info(`HEDGE15M: GTC filled during reprice check (${recheck} shares), delegating to fill handler`);
         // 递归调用自身处理成交逻辑(filled > 0分支)
         return this.managePendingSell(trader, currentBid, secs);
       }
@@ -2780,10 +2683,10 @@ export class Directional15mEngine {
       const newPrice = Math.max(0.01, Math.round((basePrice - 0.01) * 100) / 100);
 
       if (newPrice < 0.05) {
-        // 价格过低, 取消挂单等待后续处理(避免在极差价格强行卖出)
-        logger.info(`DIR15M: GTC price would be ${newPrice.toFixed(2)} < 0.05, cancel and hold to settlement`);
+        // 价格过低, 取消挂单持有到结算(结算赢了拿$1比卖$0.04好)
+        logger.info(`HEDGE15M: GTC price would be ${newPrice.toFixed(2)} < 0.05, cancel and hold to settlement`);
         await trader.cancelOrder(this.pendingSellOrderId);
-        this.clearPendingSellTracking();
+        this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
         return;
       }
 
@@ -2791,7 +2694,7 @@ export class Directional15mEngine {
       // cancel 后 final check: 防止 cancel 前一刻成交
       const postCancelFill = await trader.getOrderFilled(this.pendingSellOrderId);
       if (postCancelFill > 0) {
-        logger.info(`DIR15M: GTC filled during reprice cancel (${postCancelFill} shares)`);
+        logger.info(`HEDGE15M: GTC filled during reprice cancel (${postCancelFill} shares)`);
         return this.managePendingSell(trader, currentBid, secs);
       }
       const gtcId = await trader.placeGtcSell(this.leg1Token, this.leg1Shares, newPrice, this.negRisk);
@@ -2800,10 +2703,10 @@ export class Directional15mEngine {
         this.pendingSellOrderTime = Date.now();
         this.pendingSellPrice = newPrice;
         this.status = `GTC降价追单: @${newPrice.toFixed(2)} (${this.leg1Shares.toFixed(0)}份)`;
-        logger.info(`DIR15M GTC REPRICE: @${newPrice.toFixed(2)} (was @${basePrice.toFixed(2)})`);
+        logger.info(`HEDGE15M GTC REPRICE: @${newPrice.toFixed(2)} (was @${basePrice.toFixed(2)})`);
       } else {
-        this.clearPendingSellTracking();
-        logger.warn(`DIR15M: GTC reprice failed, order cancelled, holding`);
+        this.pendingSellOrderId = ""; this.pendingSellOrderTime = 0; this.pendingSellPrice = 0;
+        logger.warn(`HEDGE15M: GTC reprice failed, order cancelled, holding`);
       }
       return;
     }
@@ -2813,43 +2716,36 @@ export class Directional15mEngine {
   }
 
   /** GTC 限价卖单回退: FAK失败时挂单, 低于bid一个tick主动吃单 */
-  private async placeGtcSellFallback(trader: Trader, reason: string, currentBid?: number, trendExitRule = ""): Promise<void> {
+  private async placeGtcSellFallback(trader: Trader, reason: string, currentBid?: number): Promise<void> {
     const bidPrice = currentBid && currentBid > 0 ? currentBid : this.leg1Price * 0.85;
     // 低于当前 bid 一个 tick ($0.01), 主动穿越价差以提高成交概率
     const gtcPrice = Math.max(0.01, Math.round((bidPrice - 0.01) * 100) / 100);
-    logger.warn(`DIR15M ${reason}: FAK未成交, 挂GTC @${gtcPrice.toFixed(2)} (bid=${bidPrice.toFixed(2)}-0.01) ${this.leg1Shares.toFixed(0)}份`);
+    logger.warn(`HEDGE15M ${reason}: FAK未成交, 挂GTC @${gtcPrice.toFixed(2)} (bid=${bidPrice.toFixed(2)}-0.01) ${this.leg1Shares.toFixed(0)}份`);
     const gtcId = await trader.placeGtcSell(this.leg1Token, this.leg1Shares, gtcPrice, this.negRisk);
     if (gtcId) {
       this.pendingSellOrderId = gtcId;
       this.pendingSellOrderTime = Date.now();
       this.pendingSellPrice = gtcPrice;
-      this.pendingExitRule = trendExitRule;
-      this.positionState = "leg1_filled"; // 确保mainLoop的managePendingSell能管理此GTC
+      this.hedgeState = "leg1_filled"; // 确保mainLoop的managePendingSell能管理此GTC
       this.status = `${reason}: GTC @${gtcPrice.toFixed(2)} 等待成交`;
     } else {
-      logger.warn(`DIR15M ${reason}: GTC挂单也失败, 持仓等待结算`);
-      this.positionState = "leg1_filled"; // 恢复状态让主循环继续管理
+      logger.warn(`HEDGE15M ${reason}: GTC挂单也失败, 持仓等待结算`);
+      this.hedgeState = "leg1_filled"; // 恢复状态让主循环继续管理
     }
   }
 
   /** 紧急卖出Leg1: 止盈/止损/超时退出 (仅在无挂单时调用) */
-  private async emergencySellLeg1(trader: Trader, reason: string, currentBid?: number, trendExitRule = ""): Promise<void> {
+  private async emergencySellLeg1(trader: Trader, reason: string, currentBid?: number): Promise<void> {
     if (this.leg1Shares <= 0 || !this.leg1Token) return;
     if (this.pendingSellOrderId) return; // 有挂单时由 managePendingSell 管理
 
-    if (this.activeStrategyMode === "trend" && trendExitRule) {
-      this.writeRoundAudit("trend-exit-trigger", {
-        trendExitRule,
-        reason,
-        currentBid: currentBid ?? 0,
-        peakBid: this.trendPeakBid,
-        entryPrice: this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price,
-        secondsLeft: this.secondsLeft,
-      });
+    // 先取消Leg2 GTC(如有)
+    if (this.leg2GtcOrderId) {
+      await this.cancelLeg2Gtc(trader);
     }
 
     // 标记正在卖出, 防止主循环并发触发重复卖出
-    this.positionState = "done";
+    this.hedgeState = "done";
     const sharesToSell = this.leg1Shares;  // 缓存, emergencySell期间不应变
     const exitSignalAt = Date.now();
     recordExecutionLatency("exitSignalToSubmit", 0);
@@ -2872,13 +2768,13 @@ export class Directional15mEngine {
           realSellPrice = details.avgPrice;
         } else {
           // FAK 返回了 orderId 但0成交 → 挂 GTC
-          this.positionState = "leg1_filled"; // 恢复状态让 GTC 管理
-          await this.placeGtcSellFallback(trader, reason, currentBid, trendExitRule);
+          this.hedgeState = "leg1_filled"; // 恢复状态让 GTC 管理
+          await this.placeGtcSellFallback(trader, reason, currentBid);
           return;
         }
       } else {
         // FAK 无 orderID: SDK 可能已成交但未返回ID, 查余额确认后再决定
-        logger.warn(`DIR15M ${reason}: FAK returned no orderID, checking balance to avoid duplicate sell`);
+        logger.warn(`HEDGE15M ${reason}: FAK returned no orderID, checking balance to avoid duplicate sell`);
         const balBefore = this.balance;
         await this.refreshBalance();
         // 如果余额增加了(说明FAK已成交), 不再重复卖出
@@ -2886,14 +2782,14 @@ export class Directional15mEngine {
           const exitFillAt = Date.now();
           recordExecutionLatency("exitAckToFill", exitFillAt - exitAckAt);
           recordExecutionLatency("exitSignalToFill", exitFillAt - exitSignalAt);
-          logger.info(`DIR15M ${reason}: balance increased $${balBefore.toFixed(2)}→$${this.balance.toFixed(2)}, FAK likely filled`);
+          logger.info(`HEDGE15M ${reason}: balance increased $${balBefore.toFixed(2)}→$${this.balance.toFixed(2)}, FAK likely filled`);
           // 用估算价格记录
           soldShares = this.leg1Shares;
           realSellPrice = currentBid && currentBid > 0 ? currentBid : this.leg1Price * 0.85;
         } else {
           // 余额未变, 可能确实没成交 → 挂 GTC
-          this.positionState = "leg1_filled";
-          await this.placeGtcSellFallback(trader, reason, currentBid, trendExitRule);
+          this.hedgeState = "leg1_filled";
+          await this.placeGtcSellFallback(trader, reason, currentBid);
           return;
         }
       }
@@ -2914,22 +2810,12 @@ export class Directional15mEngine {
       this.recordRollingPnL(profit);
       this.balance += recovered;
 
-      const exitType = reason === "止盈" ? "take-profit" : reason === "超时割肉" || reason === "配对超时" ? "force-exit" : "stop-loss";
+      const exitType = reason === "止盈" ? "take-profit" : reason === "超时割肉" || reason === "对冲超时" ? "force-exit" : "stop-loss";
       const exitReasons: Record<string, string> = {
         "止盈": `bid=$${(currentBid??0).toFixed(2)}≥0.95且>300s, 锁定利润防反转(回收${((currentBid??0)*0.98*100).toFixed(1)}%)`,
         "中途止损": `bid=$${(currentBid??0).toFixed(2)}跌破止损线(entry*${LEG1_STOP_LOSS}或<$${LEG1_STOP_ABS}), 截断亏损`,
-        "失效退出": `错价失效: 反向动量持续且盘口sum走坏, bid=$${(currentBid??0).toFixed(2)}，提前回收仓位`,
-        "配对超时": `旧Leg2配对链路已下线, 当前仅保留该历史退出类型的兼容文案`,
-        "超时割肉": `持仓超时且 bid=$${(currentBid??0).toFixed(2)} 仍无修复, 提前回收残值`,
-      };
-      const trendProfile = this.getTrendRiskProfile(this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price);
-      const trendExitReasons: Record<string, string> = {
-        "trend-fixed-tp": `趋势固定止盈: bid=$${(currentBid??0).toFixed(2)}≥${trendProfile.fixedTakeProfitBid.toFixed(2)} 且剩余>${180}s`,
-        "trend-trailing-stop": `趋势移动止盈: bid=$${(currentBid??0).toFixed(2)} 较峰值$${this.trendPeakBid.toFixed(2)} 回撤达到${(trendProfile.trailingPullback * 100).toFixed(0)}%`,
-        "trend-relative-sl": `趋势相对止损: bid=$${(currentBid??0).toFixed(2)} < 动态止损$${trendProfile.relativeStopBid.toFixed(2)}`,
-        "trend-absolute-sl": `趋势绝对止损: bid=$${(currentBid??0).toFixed(2)} ≤ ${trendProfile.absoluteStopBid.toFixed(2)}`,
-        "trend-deadzone-exit": `趋势死区退出: ${this.secondsLeft.toFixed(0)}s left 且 bid=$${(currentBid??0).toFixed(2)} < ${trendProfile.deadzoneExitBid.toFixed(2)}`,
-        "trend-late-exit": `趋势尾段退出: ${this.secondsLeft.toFixed(0)}s left 且 bid=$${(currentBid??0).toFixed(2)} < ${trendProfile.lateExitBid.toFixed(2)}`,
+        "对冲超时": `剩余${LEG1_HEDGE_TIMEOUT_MIN_SECS}-${LEG1_HEDGE_TIMEOUT_SECS}s仍未对冲, 且sum持续劣化, 主动退出裸仓`,
+        "超时割肉": `剩余≤30s, bid=$${(currentBid??0).toFixed(2)}<0.35, 回收残值优于结算得$0`,
       };
       const isEstimated = realSellPrice <= 0 || !orderId;
       this.history.push({
@@ -2937,13 +2823,17 @@ export class Directional15mEngine {
         result,
         leg1Dir: this.leg1Dir.toUpperCase(),
         leg1Price: this.leg1Price,
+        leg2Price: this.leg2Price,
         totalCost: soldCost,
         profit,
         cumProfit: this.totalProfit,
         exitType,
+        exitReason: exitReasons[reason] || reason,
         profitBreakdown: `回收$${recovered.toFixed(2)}(${soldShares.toFixed(0)}×$${sellPrice.toFixed(2)}×0.98) - 成本$${soldCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
         leg1Shares: sharesToSell,
+        leg2Shares: this.leg2Shares,
         leg1FillPrice: this.leg1FillPrice,
+        leg2FillPrice: this.leg2FillPrice,
         sellPrice,
         sellShares: soldShares,
         orderId: this.leg1OrderId,
@@ -2952,27 +2842,25 @@ export class Directional15mEngine {
         strategyMode: this.activeStrategyMode,
         entrySource: this.leg1EntrySource,
         entryTrendBias: this.leg1EntryTrendBias,
-        exitReason: trendExitRule && trendExitReasons[trendExitRule] ? trendExitReasons[trendExitRule] : (exitReasons[reason] || reason),
-        trendExitRule: trendExitRule || undefined,
       });
       if (this.history.length > 200) this.history.shift();
       this.saveHistory();
 
       if (unsold > 0) {
-        logger.warn(`DIR15M ${reason}: 部分成交 ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)}, ${unsold.toFixed(0)}份未卖出`);
+        logger.warn(`HEDGE15M ${reason}: 部分成交 ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)}, ${unsold.toFixed(0)}份未卖出`);
         this.totalCost = unsold * (this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price) * (1 + l1Fee);
         this.leg1Shares = unsold;
         // 未卖出部分挂 GTC 继续追卖, 不干等结算
-        await this.placeGtcSellFallback(trader, reason, currentBid, trendExitRule);
+        await this.placeGtcSellFallback(trader, reason, currentBid);
       } else {
-        // 全部卖出: 清零 totalCost 防止重复结算
+        // 全部卖出: 清零 totalCost 防止 settleHedge 再次触发
         this.totalCost = 0;
         this.leg1Shares = 0;
-        this.positionState = "done";
+        this.hedgeState = "done";
       }
 
       this.status = `${reason}: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}${unsold > 0 ? ` (${unsold.toFixed(0)}份待结算)` : ''}`;
-      logger.info(`DIR15M ${reason}: sold ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)} Leg1 ${this.leg1Dir.toUpperCase()}, recovered≈$${recovered.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
+      logger.info(`HEDGE15M ${reason}: sold ${soldShares.toFixed(0)}/${sharesToSell.toFixed(0)} Leg1 ${this.leg1Dir.toUpperCase()}, recovered≈$${recovered.toFixed(2)}, P/L=$${profit.toFixed(2)}`);
       this.writeRoundAudit("leg1-exit", {
         reason,
         soldShares,
@@ -2982,19 +2870,18 @@ export class Directional15mEngine {
         recovered,
         profit,
         result,
-        trendExitRule: trendExitRule || undefined,
       });
       // 退出后同步链上余额, 防止长期运行累积偏差
       if (unsold <= 0) this.refreshBalance().catch(() => {});
     } else {
       // FAK 完全失败 — 改挂 GTC 而不是放弃
-      this.positionState = "leg1_filled"; // 恢复状态让 GTC 管理
-      logger.warn(`DIR15M ${reason}: FAK sell failed, falling back to GTC`);
-      await this.placeGtcSellFallback(trader, reason, currentBid, trendExitRule);
+      this.hedgeState = "leg1_filled"; // 恢复状态让 GTC 管理
+      logger.warn(`HEDGE15M ${reason}: FAK sell failed, falling back to GTC`);
+      await this.placeGtcSellFallback(trader, reason, currentBid);
     }
   }
 
-  private async settlePosition(): Promise<void> {
+  private async settleHedge(): Promise<void> {
     for (let w = 0; w < 8; w++) {
       await sleep(2000);
       if (isChainlinkFresh()) break;
@@ -3010,26 +2897,37 @@ export class Directional15mEngine {
     } else if (this.roundStartBtcPrice > 0 && btcNow > 0) {
       actualDir = btcNow >= this.roundStartBtcPrice ? "up" : "down";
       dirSource = "BTC";
-      logger.warn(`DIR15M SETTLE: Chainlink not fresh, using BTC price fallback (start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir})`);
+      logger.warn(`HEDGE15M SETTLE: Chainlink not fresh, using BTC price fallback (start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir})`);
     } else {
       dirSource = "BOOK";
       let leg1Score = 0;
+      let leg2Score = 0;
       if (this.trader && this.leg1Token) {
-        const leg1Book = await getHotBestPrices(this.trader, this.leg1Token).catch(() => null);
+        const [leg1Book, leg2Book] = await Promise.all([
+          getHotBestPrices(this.trader, this.leg1Token).catch(() => null),
+          this.leg2Token ? getHotBestPrices(this.trader, this.leg2Token).catch(() => null) : Promise.resolve(null),
+        ]);
         if (leg1Book) {
           const leg1Bid = leg1Book.bid ?? 0;
           const leg1Ask = leg1Book.ask ?? 0;
           leg1Score = leg1Bid > 0 ? leg1Bid : leg1Ask;
         }
+        if (leg2Book) {
+          const leg2Bid = leg2Book.bid ?? 0;
+          const leg2Ask = leg2Book.ask ?? 0;
+          leg2Score = leg2Bid > 0 ? leg2Bid : leg2Ask;
+        }
       }
 
-      if (leg1Score > 0) {
-        actualDir = this.leg1Dir === "down" ? "down" : "up";
-        logger.error(`DIR15M SETTLE: Chainlink/BTC unavailable, using leg1 orderbook fallback (L1=${leg1Score.toFixed(2)} → ${actualDir})`);
+      if (leg1Score > 0 || leg2Score > 0) {
+        const leg1Dir = this.leg1Dir === "down" ? "down" : "up";
+        const oppDir = leg1Dir === "up" ? "down" : "up";
+        actualDir = leg1Score >= leg2Score ? leg1Dir : oppDir;
+        logger.error(`HEDGE15M SETTLE: Chainlink/BTC unavailable, using orderbook fallback (L1=${leg1Score.toFixed(2)} L2=${leg2Score.toFixed(2)} → ${actualDir})`);
       } else {
         actualDir = this.leg1Dir === "down" ? "down" : "up";
         dirSource = "LEG1_FALLBACK";
-        logger.error(`DIR15M SETTLE: unable to determine direction from Chainlink/BTC/orderbook, falling back to leg1Dir=${actualDir}`);
+        logger.error(`HEDGE15M SETTLE: unable to determine direction from Chainlink/BTC/orderbook, falling back to leg1Dir=${actualDir}`);
       }
     }
 
@@ -3037,6 +2935,13 @@ export class Directional15mEngine {
     if (this.leg1Dir === actualDir && this.leg1Shares > 0) {
       returnVal += this.leg1Shares;
     }
+    if (this.leg2Shares > 0) {
+      const leg2Dir = this.leg1Dir === "up" ? "down" : "up";
+      if (leg2Dir === actualDir) {
+        returnVal += this.leg2Shares;
+      }
+    }
+
     const profit = returnVal - this.totalCost;
     const result = profit >= 0 ? "WIN" : "LOSS";
 
@@ -3048,23 +2953,29 @@ export class Directional15mEngine {
     this.balance += returnVal;
     this.trader?.creditSettlement(returnVal);
 
-    const settlementReason = `方向单结算: BTC ${actualDir.toUpperCase()}(${dirSource}), ${this.leg1Dir===actualDir?'方向正确→$1/份':'方向错误→$0'}`;
+    const winLeg = this.leg1Dir === actualDir ? 'Leg1' : (this.leg2Shares > 0 ? 'Leg2' : '无');
+    const settlementReason = this.leg2Shares > 0
+      ? `双腱结算: BTC ${actualDir.toUpperCase()}(${dirSource}), ${winLeg}赢得$${returnVal.toFixed(2)}`
+      : `单腱结算: BTC ${actualDir.toUpperCase()}(${dirSource}), ${this.leg1Dir===actualDir?'方向正确→$1/份':'方向错误→$0'}`;
 
     this.history.push({
       time: timeStr(),
       result,
       leg1Dir: this.leg1Dir.toUpperCase(),
       leg1Price: this.leg1Price,
+      leg2Price: this.leg2Price,
       totalCost: this.totalCost,
       profit,
       cumProfit: this.totalProfit,
       exitType: "settlement",
       exitReason: settlementReason,
-      profitBreakdown: `结算回收$${returnVal.toFixed(2)}(${this.leg1Shares.toFixed(0)}份) - 成本$${this.totalCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
+      profitBreakdown: `结算回收$${returnVal.toFixed(2)}${this.leg2Shares > 0 ? `(L1:${this.leg1Shares.toFixed(0)}份+L2:${this.leg2Shares.toFixed(0)}份)` : `(${this.leg1Shares.toFixed(0)}份)`} - 成本$${this.totalCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
       leg1Shares: this.leg1Shares,
+      leg2Shares: this.leg2Shares,
       leg1FillPrice: this.leg1FillPrice,
+      leg2FillPrice: this.leg2FillPrice,
       orderId: this.leg1OrderId,
-      estimated: this.leg1Estimated,
+      estimated: this.leg1Estimated || this.leg2Estimated,
       strategyMode: this.activeStrategyMode,
       entrySource: this.leg1EntrySource,
       entryTrendBias: this.leg1EntryTrendBias,
@@ -3073,7 +2984,7 @@ export class Directional15mEngine {
     this.saveHistory();
 
     this.status = `结算: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} (返$${returnVal.toFixed(2)} dir=${actualDir}/${dirSource})`;
-    logger.info(`DIR15M SETTLED: ${result} dir=${actualDir}(${dirSource}) return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)} L1fill=${this.leg1FillPrice.toFixed(2)}`);
+    logger.info(`HEDGE15M SETTLED: ${result} dir=${actualDir}(${dirSource}) return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)} L1fill=${this.leg1FillPrice.toFixed(2)} L2fill=${this.leg2FillPrice.toFixed(2)}`);
     this.writeRoundAudit("settlement", {
       result,
       actualDir,
@@ -3088,6 +2999,7 @@ export class Directional15mEngine {
     await this.refreshBalance();
     this.totalCost = 0;
     this.leg1Shares = 0;
-    this.positionState = "done";
+    this.leg2Shares = 0;
+    this.hedgeState = "done";
   }
 }

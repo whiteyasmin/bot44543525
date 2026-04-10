@@ -1,6 +1,6 @@
 import { DirectionalBias, TradeDirection } from "./strategyEngine";
 
-export interface DirectionalEntryPlanInput {
+export interface HedgeEntryPlanInput {
   dir: TradeDirection;
   askPrice: number;
   oppCurrentAsk: number;
@@ -25,7 +25,7 @@ export interface EntryPlanResult {
   reason?: string;
 }
 
-export function planDirectionalEntry(input: DirectionalEntryPlanInput): EntryPlanResult {
+export function planHedgeEntry(input: HedgeEntryPlanInput): EntryPlanResult {
   const {
     dir,
     askPrice,
@@ -47,7 +47,7 @@ export function planDirectionalEntry(input: DirectionalEntryPlanInput): EntryPla
     return { allowed: false, reason: `ask=${askPrice.toFixed(2)} < MIN_ENTRY_ASK=${minEntryAsk}` };
   }
   if (oppCurrentAsk > 0 && askPrice + oppCurrentAsk > maxSumTarget + 0.03) {
-    return { allowed: false, reason: `opposite ask too expensive, sum=${(askPrice + oppCurrentAsk).toFixed(2)} >> maxTarget=${maxSumTarget.toFixed(2)}` };
+    return { allowed: false, reason: `Leg2 infeasible, sum=${(askPrice + oppCurrentAsk).toFixed(2)} >> maxTarget=${maxSumTarget.toFixed(2)}` };
   }
   if (directionalBias !== "flat" && dir !== directionalBias) {
     return { allowed: false, reason: `${dir.toUpperCase()} entry against ${directionalBias.toUpperCase()} round bias` };

@@ -48,47 +48,6 @@ function safeStringify(value: unknown): string {
   }
 }
 
-function normalizeDecisionAuditRecord(record: Record<string, unknown>): Record<string, unknown> {
-  const normalized: Record<string, unknown> = { ...record };
-  if (normalized.event === "hedge-locked") {
-    normalized.event = "position-paired";
-  }
-  if (normalized.positionState == null && typeof normalized.hedgeState === "string") {
-    normalized.positionState = normalized.hedgeState;
-  }
-  if (normalized.pairedShares == null && typeof normalized.hedgedShares === "number") {
-    normalized.pairedShares = normalized.hedgedShares;
-  }
-  delete normalized.hedgeState;
-  delete normalized.hedgedShares;
-  return normalized;
-}
-
-export function normalizeDecisionAuditContent(raw: string): string {
-  return raw
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      try {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        return safeStringify(normalizeDecisionAuditRecord(parsed));
-      } catch {
-        return line;
-      }
-    })
-    .join("\n");
-}
-
-export function normalizeDecisionAuditFileInPlace(filePath: string): boolean {
-  if (!fs.existsSync(filePath)) return false;
-  const raw = fs.readFileSync(filePath, "utf8");
-  const normalized = normalizeDecisionAuditContent(raw);
-  if (normalized === raw) return false;
-  const finalText = normalized.length > 0 ? `${normalized}\n` : normalized;
-  fs.writeFileSync(filePath, finalText, "utf8");
-  return true;
-}
-
 export function writeDecisionAudit(event: string, payload: Record<string, unknown>): void {
   const line = safeStringify({ ts: nowIso(), event, ...payload });
   auditStream.write(line + "\n");
