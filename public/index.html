@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>15m 方向性机器人</title>
+<title>DumpCatcher-15m</title>
 <style>
 :root{
   --bg:#09111b;
@@ -156,7 +156,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="login-overlay">
   <div class="login-box">
-    <h2>15m 方向性机器人</h2>
+    <h2>DumpCatcher-15m</h2>
     <p class="login-sub">BTC 二元期权方向性持有策略</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
@@ -167,7 +167,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="app" style="display:none">
   <header>
-    <h1>15m 方向性机器人</h1>
+    <h1>DumpCatcher-15m</h1>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
       <button class="btn-b" onclick="downloadAll()">导出</button>
@@ -596,7 +596,7 @@ function render(s) {
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
   const strEl = document.getElementById('h-strategy-mode');
-  strEl.textContent = {none:'待机',mispricing:'错价'}[s.activeStrategyMode]||s.activeStrategyMode||'--';
+  strEl.textContent = {none:'待机',mispricing:'砸盘'}[s.activeStrategyMode]||s.activeStrategyMode||'--';
   strEl.style.color = s.activeStrategyMode==='mispricing'?'#76b7ff':'';
   const trEl = document.getElementById('h-trend-bias');
   trEl.textContent = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';

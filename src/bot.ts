@@ -357,9 +357,8 @@ export class Hedge15mEngine {
   private drawdownProtected = false;        // 当前是否在亏损保护模式
   private dumpConfirmCount = 0;             // 连续砸盘确认计数
   private lastDumpCandidateDir = "";        // 上个cycle的dump方向
-  private clAligned = false;                // 本次入场CL方向一致
-  private clDualConfirm = false;            // CL + Binance 双源确认
-  private clContra = false;                 // CL方向相反 (软降权)
+  private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
+  private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   // ── 中途退出: 信号恶化止损 ──
   private midExitContraStreak = 0;          // 连续信号反向cycle数
   private midExitSignalAligned = 0;         // 当前cycle方向一致信号数
@@ -493,33 +492,9 @@ export class Hedge15mEngine {
   }
 
   /** 方向信号强时动态提高入场上限: 基础上限 + 信号加成(最多+$0.15) */
-  private getDynamicMaxEntryAsk(entryDir?: string): number {
-    const base = this.getMaxEntryAsk();
-    const flow = getTakerFlowRatio();
-    const volSpike = getVolumeSpikeInfo();
-    const largeOrd = getLargeOrderInfo();
-    const depth = getDepthImbalance();
-    const liq = getLiquidationInfo();
-    // 以入场方向(而非CL方向)为基准统计信号一致数
-    const dir = entryDir || "up";
-    const isBuy = dir === "up";
-    let aligned = 0;
-    if ((isBuy && flow.direction === "buy") || (!isBuy && flow.direction === "sell")) aligned++;
-    if (volSpike.isSpike && ((isBuy && volSpike.direction === "buy") || (!isBuy && volSpike.direction === "sell"))) aligned++;
-    if ((isBuy && largeOrd.direction === "buy") || (!isBuy && largeOrd.direction === "sell")) aligned++;
-    if (depth.fresh && ((isBuy && depth.direction === "buy") || (!isBuy && depth.direction === "sell"))) aligned++;
-    if (liq.intensity !== "low" && ((isBuy && liq.direction === "buy") || (!isBuy && liq.direction === "sell"))) aligned++;
-    // CL一致也算+1
-    const clFresh = isChainlinkFresh();
-    const clDir = clFresh ? getChainlinkDirection() : null;
-    if (clDir === dir) aligned++;
-    // ≥3个信号一致(含CL): +$0.05/信号, 最多+$0.15
-    if (aligned >= 3) {
-      const boost = Math.min(0.15, (aligned - 2) * 0.05);
-      const raised = Math.min(0.50, base + boost); // 绝对硬顶$0.50
-      return raised;
-    }
-    return base;
+  private getDynamicMaxEntryAsk(_entryDir?: string): number {
+    // 信号不提升入场上限 — 低价才是真正的edge，信号只影响Kelly仓位
+    return this.getMaxEntryAsk();
   }
 
   private getRoundPhase(): string {
@@ -903,9 +878,8 @@ export class Hedge15mEngine {
     this.leg1EntrySecondsLeft = 0;
     this.dumpConfirmCount = 0;
     this.lastDumpCandidateDir = "";
-    this.clAligned = false;
-    this.clDualConfirm = false;
-    this.clContra = false;
+    this.dirAlignedCount = 0;
+    this.dirContraCount = 0;
     this.midExitContraStreak = 0;
     this.midExitSignalAligned = 0;
     this.midExitSignalContra = 0;
@@ -1110,25 +1084,11 @@ export class Hedge15mEngine {
                   // K: 更新间隔 — 间隔<120s为活跃期(高置信), 否则普通心跳
                   const clActive = clInterval > 0 && clInterval < 120_000;
 
-                  // ── CL 软权重判定 (不再硬拦截, 改为Kelly降权) ──
-                  let clContraDetected = false;  // CL方向反向
-                  let clContraStrong = false;     // CL强反向 (稳定+新鲜+显著)
-                  if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir && clSignificant) {
-                    clContraDetected = true;
-                    if (clStable && clHasUpdated && !clNoisy && clEnforce) {
-                      clContraStrong = true;
-                    }
-                    // 日志：标记为软降权而非拦截
-                    if (clNoisy) {
-                      logger.info(`HEDGE15M CL-NOISY: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} flips=${clFlips} — soft penalty (too noisy)`);
-                    } else if (clSpreadTrend === "diverging") {
-                      logger.info(`HEDGE15M CL-DIVERGE: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} spread=diverging — soft penalty (CL may lag)`);
-                    } else if (clContraStrong) {
-                      logger.warn(`HEDGE15M CL-CONTRA: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} — Kelly shrink ×0.7`);
-                    } else {
-                      logger.info(`HEDGE15M CL-SOFT: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% stab=${clStability} upd=${clUpdates} — mild penalty`);
-                    }
-                  }
+                  // ── CL 作为第7个等权信号 (与Binance 6信号同权) ──
+                  // CL有效 = 新鲜 + 有方向 + 变动显著 + 稳定 + 有更新 + 非噪音
+                  const clValid = !!(this.rtChainlinkEnabled && clFresh && clDir && clSignificant && clStable && clHasUpdated && !clNoisy);
+                  const clSignalAligned = clValid && clDir === candidate.dir;
+                  const clSignalContra = clValid && clDir !== candidate.dir;
                   {
                   this.dumpDetected = candidate.dumpDetected;
                   this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
@@ -1153,31 +1113,15 @@ export class Hedge15mEngine {
                   // Q: Funding Rate 信号 (极端反转: 正费率+做空或负费率+做多)
                   const funding = getFundingRateInfo();
                   const fundingFavor = funding.extreme && ((candidate.dir === "down" && funding.direction === "long_pay") || (candidate.dir === "up" && funding.direction === "short_pay"));
-                  // C: CL方向加权 — CL一致 + 稳定 + 双源确认 + J/K加成 → Kelly 上浮
-                  this.clAligned = !!(clFresh && clDir && clDir === candidate.dir && clSignificant && clStable && clHasUpdated && !clNoisy);
-                  this.clDualConfirm = !!(this.clAligned && dualConfirm);
-                  this.clContra = clContraDetected;
-                  // L: Flow一致 + 高置信 → 额外Kelly加成 (通过clDualConfirm叠加)
-                  if (flowAligned && flow.confidence !== "low" && flowTrend === "strengthening" && !this.clDualConfirm) {
-                    this.clDualConfirm = true; // 视同双源确认级别
-                  }
-                  // M+N+O+P+Q: 多信号一致 → 方向确认度更高, 计数≥3个aligned → 额外boost
-                  const dirSignalCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor].filter(Boolean).length;
-                  const dirContraCount = [flowContra, !volAligned && volSpike.isSpike, !largeAligned && largeOrd.direction !== "neutral", depth.fresh && !depthAligned && depth.direction !== "neutral", liq.intensity !== "low" && !liqAligned].filter(Boolean).length;
-                  if (dirSignalCount >= 3 && !this.clDualConfirm) {
-                    this.clDualConfirm = true; // 多源方向一致视同双源确认
-                  }
-                  // 硬拦截: CL强反向 + ≥2个其他信号也反向 → 太危险, 不入场
-                  if (clContraStrong && dirContraCount >= 2) {
-                    this.trackRoundRejectReason(`cl_multi_contra: CL=${clDir} entry=${candidate.dir} contraSignals=${dirContraCount}`);
-                    logger.warn(`HEDGE15M HARD-BLOCK: CL=${clDir!.toUpperCase()} entry=${candidate.dir.toUpperCase()} + ${dirContraCount} contra signals — too risky`);
-                    // 跳过入场, 走到下面的 } 闭合
-                  } else {
-                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (confirm=${this.dumpConfirmCount} sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} spread=${clSpreadTrend} mom=${clMomentum} intv=${clInterval}ms dual=${dualConfirm} aligned=${this.clAligned} flow=${flow.ratio.toFixed(2)}/${flow.direction}/${flow.confidence} fTrend=${flowTrend} vol=${volSpike.spikeRatio.toFixed(1)}x${volSpike.isSpike?"!":""} large=${largeOrd.buyCount}B/${largeOrd.sellCount}S depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity} fund=${(funding.rate*10000).toFixed(1)}bp dirSig=${dirSignalCount})`);
-                  // L: Flow强反向 + 高置信 → 仅日志警告 (不阻断, 但记录)
-                  if (flowContra && flow.confidence === "high") {
-                    logger.warn(`HEDGE15M FLOW-CONTRA: entry=${candidate.dir.toUpperCase()} flow=${flow.direction} ratio=${flow.ratio.toFixed(2)} trades=${flow.trades} — warning (not blocking)`);
-                  }
+                  // ── 统一7源信号计数 (CL = 第7个, 与Binance同权) ──
+                  const volContra = volSpike.isSpike && ((candidate.dir === "up" && volSpike.direction === "sell") || (candidate.dir === "down" && volSpike.direction === "buy"));
+                  const largeContra = (candidate.dir === "up" && largeOrd.direction === "sell") || (candidate.dir === "down" && largeOrd.direction === "buy");
+                  const depthContra = depth.fresh && ((candidate.dir === "up" && depth.direction === "sell") || (candidate.dir === "down" && depth.direction === "buy"));
+                  const liqContra = liq.intensity !== "low" && ((candidate.dir === "up" && liq.direction === "sell") || (candidate.dir === "down" && liq.direction === "buy"));
+                  const fundingContra = funding.extreme && ((candidate.dir === "up" && funding.direction === "long_pay") || (candidate.dir === "down" && funding.direction === "short_pay"));
+                  this.dirAlignedCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor, clSignalAligned].filter(Boolean).length;
+                  this.dirContraCount = [flowContra, volContra, largeContra, depthContra, liqContra, fundingContra, clSignalContra].filter(Boolean).length;
+                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (confirm=${this.dumpConfirmCount} sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} spread=${clSpreadTrend} mom=${clMomentum} intv=${clInterval}ms flow=${flow.ratio.toFixed(2)}/${flow.direction}/${flow.confidence} fTrend=${flowTrend} vol=${volSpike.spikeRatio.toFixed(1)}x${volSpike.isSpike?"!":""} large=${largeOrd.buyCount}B/${largeOrd.sellCount}S depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity} fund=${(funding.rate*10000).toFixed(1)}bp sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓)`);
                   await this.buyLeg1(
                     trader,
                     rnd,
@@ -1185,7 +1129,6 @@ export class Hedge15mEngine {
                     candidate.askPrice,
                     rnd[candidate.buyTokenKey],
                   );
-                  } // end hard-block else
                   }
                   }
                   }
@@ -1244,8 +1187,19 @@ export class Hedge15mEngine {
             const fundAligned = funding.extreme && ((heldDir === "down" && funding.direction === "long_pay") || (heldDir === "up" && funding.direction === "short_pay"));
             const fundContra = funding.extreme && ((heldDir === "up" && funding.direction === "long_pay") || (heldDir === "down" && funding.direction === "short_pay"));
 
-            this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned].filter(Boolean).length;
-            this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra].filter(Boolean).length;
+            // CL作为第7个等权信号参与mid-exit
+            const clFreshME = isChainlinkFresh();
+            const clDirME = clFreshME ? getChainlinkDirection() : null;
+            const clMoveME = getChainlinkMovePct();
+            const clStabME = getChainlinkDirStability();
+            const clUpdME = getChainlinkRoundUpdates();
+            const clFlipsME = getChainlinkFlipCount();
+            const clValidME = !!(clFreshME && clDirME && clMoveME >= 0.0001 && clStabME >= 2 && clUpdME >= 1 && clFlipsME < 3);
+            const clMEAligned = clValidME && clDirME === heldDir;
+            const clMEContra = clValidME && clDirME !== heldDir;
+
+            this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned, clMEAligned].filter(Boolean).length;
+            this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra, clMEContra].filter(Boolean).length;
 
             // 信号反转判定: contra >= 3 且 contra > aligned
             if (this.midExitSignalContra >= 3 && this.midExitSignalContra > this.midExitSignalAligned) {
@@ -1413,16 +1367,13 @@ export class Hedge15mEngine {
     } else if (directionalBias === "flat") {
       budgetPct -= TREND_BUDGET_CUT;   // 中性减仓
     }
-    // C: CL方向加权 — CL一致时上浮, CL反向时缩减
-    if (this.clAligned) {
-      budgetPct *= 1.15;               // CL一致 +15%
-      if (this.clDualConfirm) {
-        budgetPct *= 1.05;             // 双源确认再 +5% (合计 ~+20%)
-      }
-      logger.info(`KELLY CL BOOST: aligned=${this.clAligned} dual=${this.clDualConfirm} pct=${(budgetPct*100).toFixed(1)}%`);
-    } else if (this.clContra) {
-      budgetPct *= 0.70;               // CL反向 -30% 仓位
-      logger.info(`KELLY CL SHRINK: contra=true pct=${(budgetPct*100).toFixed(1)}%`);
+    // ── 统一7源信号Kelly调权: aligned多→加仓, contra多→减仓 ──
+    if (this.dirAlignedCount >= 3) {
+      budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.05; // 3→+5%, 4→+10%, 5→+15%...
+      logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
+    } else if (this.dirContraCount >= 3) {
+      budgetPct *= 1.0 - (this.dirContraCount - 2) * 0.10; // 3→×0.90, 4→×0.80, 5→×0.70...
+      logger.info(`KELLY SIG SHRINK: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
     }
     budgetPct = Math.max(0.08, Math.min(0.25, budgetPct)); // 硬限 8%-25%
 
