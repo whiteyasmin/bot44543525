@@ -166,81 +166,41 @@ async function scenarioSettlementWin(): Promise<ScenarioResult> {
   const { engine, trader, rnd } = createEngine();
   const e = engine as any;
   trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueBuy({ orderId: "buy-l2", filled: 69, avgPrice: 0.55 });
-  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.buyLeg2(trader as any, 0.55, 0.93);
+  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken);
   await e.settleHedge();
   const last = e.history[e.history.length - 1];
   const ok = last?.exitType === "settlement" && last?.profit > 0 && last?.result === "WIN";
   return {
-    name: "双腿结算盈利",
+    name: "单腿结算盈利",
     ok,
     summary: `exit=${last?.exitType} profit=$${Number(last?.profit || 0).toFixed(2)} result=${last?.result || "n/a"}`,
   };
 }
 
-async function scenarioStopLossSell(): Promise<ScenarioResult> {
+async function scenarioSettlementLoss(): Promise<ScenarioResult> {
   const { engine, trader, rnd } = createEngine();
   const e = engine as any;
   trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueSell({ orderId: "sell-stop", filled: 69, avgPrice: 0.18 });
-  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.emergencySellLeg1(trader as any, "中途止损", 0.18);
-  const last = e.history[e.history.length - 1];
-  const ok = last?.exitType === "stop-loss" && last?.sellShares === 69 && last?.result === "LOSS";
-  return {
-    name: "止损卖出路径",
-    ok,
-    summary: `exit=${last?.exitType} sold=${last?.sellShares || 0} profit=$${Number(last?.profit || 0).toFixed(2)}`,
-  };
-}
-
-async function scenarioGtcFallback(): Promise<ScenarioResult> {
-  const { engine, trader, rnd } = createEngine();
-  const e = engine as any;
-  trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueSell({ orderId: "sell-zero", filled: 0, avgPrice: 0 });
-  trader.queueGtc({ orderId: "gtc-sell", filled: 69, avgPrice: 0.31 });
-  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.emergencySellLeg1(trader as any, "超时割肉", 0.32);
-  await e.managePendingSell(trader as any, 0.32, 40);
-  const last = e.history[e.history.length - 1];
-  const ok = last?.exitType === "gtc-fill" && last?.sellShares === 69;
-  return {
-    name: "FAK失败后GTC成交",
-    ok,
-    summary: `exit=${last?.exitType} sellPrice=$${Number(last?.sellPrice || 0).toFixed(2)} profit=$${Number(last?.profit || 0).toFixed(2)}`,
-  };
-}
-
-async function scenarioPartialLeg2Accounting(): Promise<ScenarioResult> {
-  const { engine, trader, rnd } = createEngine();
-  const e = engine as any;
-  trader.queueBuy({ orderId: "buy-l1", filled: 69, avgPrice: 0.36 });
-  trader.queueBuy({ orderId: "buy-l2", filled: 40, avgPrice: 0.54 });
-  trader.queueSell({ orderId: "trim-l1", filled: 29, avgPrice: 0.33 });
-  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken, rnd.downToken);
-  await e.buyLeg2(trader as any, 0.55, 0.93);
+  await e.buyLeg1(trader as any, rnd, "up", 0.36, rnd.upToken);
+  // BTC goes down → UP token loses
   btcState.latestPrice = 99800;
   btcState.chainlinkPrice = 99800;
   btcState.chainlinkFresh = true;
   btcState.direction = "down";
   await e.settleHedge();
   const last = e.history[e.history.length - 1];
-  const ok = last?.exitType === "settlement" && last?.profit > 0 && e.leg1Shares === 0 && e.leg2Shares === 0;
+  const ok = last?.exitType === "settlement" && last?.profit < 0 && last?.result === "LOSS";
   return {
-    name: "Leg2部分成交后成本一致",
+    name: "单腿结算亏损",
     ok,
-    summary: `profit=$${Number(last?.profit || 0).toFixed(2)} expectedLocked=$${Number(e.expectedProfit || 0).toFixed(2)} totalCostReset=${e.totalCost === 0}`,
+    summary: `exit=${last?.exitType} profit=$${Number(last?.profit || 0).toFixed(2)} result=${last?.result || "n/a"}`,
   };
 }
 
 async function main(): Promise<void> {
   const scenarios = [
     scenarioSettlementWin,
-    scenarioStopLossSell,
-    scenarioGtcFallback,
-    scenarioPartialLeg2Accounting,
+    scenarioSettlementLoss,
   ];
   const results: ScenarioResult[] = [];
   for (const scenario of scenarios) {

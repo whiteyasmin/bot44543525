@@ -43,26 +43,6 @@ export interface MispricingEvaluation {
   momentumRejects: string[];
 }
 
-export interface TrendOpportunityParams {
-  secondsLeft: number;
-  upAsk: number;
-  downAsk: number;
-  shortMomentum: number;
-  trendMomentum: number;
-  directionalBias: DirectionalBias;
-  minEntrySecs: number;
-  maxEntrySecsLeft: number;
-  shortTriggerPct: number;
-  trendTriggerPct: number;
-  maxEntryAsk: number;
-}
-
-export interface TrendOpportunity {
-  dir: TradeDirection;
-  askPrice: number;
-  reason: string;
-}
-
 export function getDirectionalBias(params: DirectionalBiasParams): DirectionalBias {
   const {
     roundStartPrice,
@@ -176,52 +156,4 @@ export function evaluateMispricingOpportunity(params: MispricingEvaluationParams
   });
 
   return result;
-}
-
-export function evaluateTrendOpportunity(params: TrendOpportunityParams): TrendOpportunity | null {
-  const {
-    secondsLeft,
-    upAsk,
-    downAsk,
-    shortMomentum,
-    trendMomentum,
-    directionalBias,
-    minEntrySecs,
-    maxEntrySecsLeft,
-    shortTriggerPct,
-    trendTriggerPct,
-    maxEntryAsk,
-  } = params;
-
-  if (secondsLeft < minEntrySecs || secondsLeft > maxEntrySecsLeft) return null;
-
-  if (
-    directionalBias === "up" &&
-    shortMomentum >= shortTriggerPct &&
-    trendMomentum >= trendTriggerPct &&
-    upAsk > 0 &&
-    upAsk <= maxEntryAsk
-  ) {
-    return {
-      dir: "up",
-      askPrice: upAsk,
-      reason: `UP trend short=${(shortMomentum * 100).toFixed(3)}% trend=${(trendMomentum * 100).toFixed(3)}% ask=${upAsk.toFixed(2)}`,
-    };
-  }
-
-  if (
-    directionalBias === "down" &&
-    shortMomentum <= -shortTriggerPct &&
-    trendMomentum <= -trendTriggerPct &&
-    downAsk > 0 &&
-    downAsk <= maxEntryAsk
-  ) {
-    return {
-      dir: "down",
-      askPrice: downAsk,
-      reason: `DOWN trend short=${(shortMomentum * 100).toFixed(3)}% trend=${(trendMomentum * 100).toFixed(3)}% ask=${downAsk.toFixed(2)}`,
-    };
-  }
-
-  return null;
 }
