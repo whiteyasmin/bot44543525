@@ -67,7 +67,7 @@ const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$
 
 const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
-const SUM_DIVERGENCE_MAX = 1.10;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (放宽: 原0.98过严导致零交易)
+const SUM_DIVERGENCE_MAX = 1.10;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (砸盘时SUM可正常~1.0, 只过滤spread极大的异常盘口)
 const SUM_DIVERGENCE_MIN = 0.85;            // 入场时 upAsk+downAsk < 此值 → 方向性强、砸盘更可信
 const DUMP_CONFIRM_CYCLES = 2;              // 连续 N 个循环看到 dump 才触发入场 (从3降到2: 保留确认但不过分延迟)
 const MIN_ENTRY_ELAPSED = 90;               // 回合开始至少90s后才允许反应式入场 (CL需要时间积累方向数据)
@@ -357,6 +357,8 @@ export class Hedge15mEngine {
   private drawdownProtected = false;        // 当前是否在亏损保护模式
   private dumpConfirmCount = 0;             // 连续砸盘确认计数
   private lastDumpCandidateDir = "";        // 上个cycle的dump方向
+  private lastEntrySkipKey = "";            // 去重: 上次入场跳过的key (dir:price)
+  private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   // ── 中途退出: 信号恶化止损 ──
@@ -878,6 +880,8 @@ export class Hedge15mEngine {
     this.leg1EntrySecondsLeft = 0;
     this.dumpConfirmCount = 0;
     this.lastDumpCandidateDir = "";
+    this.lastEntrySkipKey = "";
+    this.lastDumpLogKey = "";
     this.dirAlignedCount = 0;
     this.dirContraCount = 0;
     this.midExitContraStreak = 0;
@@ -1054,7 +1058,11 @@ export class Hedge15mEngine {
                   const currentSum = this.upAsk + this.downAsk;
                   if (currentSum > SUM_DIVERGENCE_MAX) {
                     this.trackRoundRejectReason(`sum_high: ${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX}`);
-                    logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — market uncertain, no clear edge`);
+                    const sumKey = currentSum.toFixed(2);
+                    if (sumKey !== this.lastDumpLogKey) {
+                      this.lastDumpLogKey = sumKey;
+                      logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — no mispricing edge`);
+                    }
                   } else {
                   // ── #1 Chainlink 强化过滤 (A+B+C+D+F+G+H+I+J+K全叠加) ──
                   const clFresh = isChainlinkFresh();
@@ -1121,7 +1129,12 @@ export class Hedge15mEngine {
                   const fundingContra = funding.extreme && ((candidate.dir === "up" && funding.direction === "long_pay") || (candidate.dir === "down" && funding.direction === "short_pay"));
                   this.dirAlignedCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor, clSignalAligned].filter(Boolean).length;
                   this.dirContraCount = [flowContra, volContra, largeContra, depthContra, liqContra, fundingContra, clSignalContra].filter(Boolean).length;
-                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (confirm=${this.dumpConfirmCount} sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} spread=${clSpreadTrend} mom=${clMomentum} intv=${clInterval}ms flow=${flow.ratio.toFixed(2)}/${flow.direction}/${flow.confidence} fTrend=${flowTrend} vol=${volSpike.spikeRatio.toFixed(1)}x${volSpike.isSpike?"!":""} large=${largeOrd.buyCount}B/${largeOrd.sellCount}S depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity} fund=${(funding.rate*10000).toFixed(1)}bp sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓)`);
+                  // ── 信号门控: (contra>=3 且 contra>aligned) 或 aligned==0 → 拒绝入场 ──
+                  if ((this.dirContraCount >= 3 && this.dirContraCount > this.dirAlignedCount) || this.dirAlignedCount === 0) {
+                    logger.warn(`HEDGE15M SKIP: sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ — too many contra signals`);
+                    this.trackRoundRejectReason(`signal_contra: ${this.dirAlignedCount}↑/${this.dirContraCount}↓`);
+                  } else {
+                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"}/${clTier} sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);
                   await this.buyLeg1(
                     trader,
                     rnd,
@@ -1129,6 +1142,7 @@ export class Hedge15mEngine {
                     candidate.askPrice,
                     rnd[candidate.buyTokenKey],
                   );
+                  } // end signal gate
                   }
                   }
                   }
@@ -1352,7 +1366,12 @@ export class Hedge15mEngine {
     if (!plan.allowed) {
       if (plan.reason?.includes("MAX_ENTRY_ASK")) this.roundEntryAskRejects += 1;
       this.trackRoundRejectReason(`plan: ${plan.reason}`);
-      logger.warn(`Hedge15m Leg1 skipped: ${plan.reason}`);
+      // 只在首次或价格变化时打日志, 避免同价格反复刷屏
+      const skipKey = `${dir}:${askPrice.toFixed(2)}`;
+      if (skipKey !== this.lastEntrySkipKey) {
+        this.lastEntrySkipKey = skipKey;
+        logger.warn(`Hedge15m Leg1 skipped: ${plan.reason}`);
+      }
       return;
     }
 
@@ -1424,6 +1443,8 @@ export class Hedge15mEngine {
     if (!DUAL_SIDE_ENABLED) return;
     if (this.hedgeState !== "watching") return;
     if (this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
+    // dump已确认时不挂新预挂单, 避免 挂单→dump取消→挂单 刷屏循环
+    if (this.dumpConfirmCount >= this.rtDumpConfirmCycles) return;
     if (secs < this.rtMinEntrySecs) {
       // 时间不足, 取消预挂单
       if (this.preOrderUpId || this.preOrderDownId) {

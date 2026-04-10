@@ -139,7 +139,10 @@ function startPolygonChainlinkWs(): void {
                 if (clUpdateTimestamps.length > CL_UPDATE_TS_MAX) clUpdateTimestamps.shift();
               }
               chainlinkPrice = price;
-              chainlinkUpdatedAt = Math.floor(wsNow / 1000);
+              // 只在价格真正变化时更新时间戳, 避免重连重播旧事件伪装fresh
+              if (price !== clLastSeenPrice || chainlinkUpdatedAt <= 0) {
+                chainlinkUpdatedAt = Math.floor(wsNow / 1000);
+              }
               // F+H: 记录方向读数 + 翻转检测
               if (roundStartChainlinkPrice > 0) {
                 const dir = price >= roundStartChainlinkPrice ? "up" : "down";
