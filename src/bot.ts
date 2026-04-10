@@ -114,6 +114,13 @@ export interface Hedge15mState {
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
+  rtDumpConfirmCycles: number;
+  rtEntryWindowS: number;
+  rtMinEntrySecs: number;
+  rtChainlinkEnabled: boolean;
+  rtMaxEntryAsk: number;
+  rtDualSideMaxAsk: number;
+  rtKellyFraction: number;
   latencyP50: number;
   latencyP90: number;
   latencyNetworkSource: string;
@@ -163,6 +170,13 @@ export interface Hedge15mStartOptions {
   mode?: "live" | "paper";
   paperBalance?: number;
   paperSessionMode?: PaperSessionMode;
+  // ── 运行时可调参数 ──
+  dumpConfirmCycles?: number;       // 砸盘确认周期: 1/2/3
+  entryWindowPreset?: "short" | "medium" | "long";  // 入场窗口: 短4min/中6min/长8min
+  chainlinkEnabled?: boolean;       // Chainlink方向过滤开关
+  maxEntryAsk?: number;             // 反应入场上限: 0.35/0.40/0.45
+  dualSideMaxAsk?: number;          // 预挂上限: 0.30/0.35/0.40
+  kellyFraction?: number;           // 仓位计算: 0.25/0.50/0.75
 }
 
 export interface HedgeHistoryEntry {
@@ -183,6 +197,7 @@ export interface HedgeHistoryEntry {
   profitBreakdown?: string; // 盈亏计算明细
   entrySource?: string;     // dual-side-preorder | reactive-mispricing
   entryTrendBias?: string;  // up | down | flat
+  entrySecondsLeft?: number; // 入场时回合剩余秒数
 }
 
 function sleep(ms: number): Promise<void> {
@@ -295,12 +310,22 @@ export class Hedge15mEngine {
   private preOrderLastRefresh = 0;
   private leg1EntrySource = "";
   private leg1EntryTrendBias: "up" | "down" | "flat" = "flat";
+  private leg1EntrySecondsLeft = 0;
   private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
   private rollingPnL: Array<{ ts: number; profit: number }> = []; // 滚动P/L记录
   private drawdownProtected = false;        // 当前是否在亏损保护模式
   private dumpConfirmCount = 0;             // 连续砸盘确认计数
   private lastDumpCandidateDir = "";        // 上个cycle的dump方向
+
+  // ── 运行时可调参数 (覆盖 const) ──
+  private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
+  private rtEntryWindowS = ENTRY_WINDOW_S;
+  private rtMinEntrySecs = MIN_ENTRY_SECS;
+  private rtChainlinkEnabled = CHAINLINK_CONFIRM_ENABLED;
+  private rtMaxEntryAsk = MAX_ENTRY_ASK;
+  private rtDualSideMaxAsk = DUAL_SIDE_MAX_ASK;
+  private rtKellyFraction = KELLY_FRACTION;
 
   // Market state layer
   private marketState = new RoundMarketState();
@@ -396,7 +421,7 @@ export class Hedge15mEngine {
   }
 
   private getEffectiveMaxAsk(): number {
-    return this.drawdownProtected ? DUAL_SIDE_MAX_ASK_PROTECTED : DUAL_SIDE_MAX_ASK;
+    return this.drawdownProtected ? DUAL_SIDE_MAX_ASK_PROTECTED : this.rtDualSideMaxAsk;
   }
 
   private getRolling4hPnL(): number {
@@ -412,7 +437,7 @@ export class Hedge15mEngine {
   }
 
   private getMaxEntryAsk(): number {
-    const adaptiveCap = this.tradingMode === "paper" ? this.adaptiveMaxEntryAsk : MAX_ENTRY_ASK;
+    const adaptiveCap = this.tradingMode === "paper" ? this.adaptiveMaxEntryAsk : this.rtMaxEntryAsk;
     return Math.min(adaptiveCap, this.getEffectiveMaxAsk());
   }
 
@@ -422,7 +447,7 @@ export class Hedge15mEngine {
     if (this.hedgeState === "leg1_pending") return "leg1_pending";
     if (this.hedgeState === "leg1_filled") return "leg1_filled";
     if (this.hedgeState === "watching") {
-      if (this.secondsLeft < MIN_ENTRY_SECS) return "waiting_next_round";
+      if (this.secondsLeft < this.rtMinEntrySecs) return "waiting_next_round";
       return "watching";
     }
     if (this.hedgeState === "done") {
@@ -439,7 +464,7 @@ export class Hedge15mEngine {
     if (this.status === "窗口到期,无砸盘") return this.status;
     if (this.hedgeState === "leg1_pending") return "Leg1 下单中";
     if (this.hedgeState === "leg1_filled") return "已成交Leg1, 持有到结算";
-    if (this.hedgeState === "watching") return this.secondsLeft >= MIN_ENTRY_SECS ? "本轮仍在观察窗口" : "本轮入场窗已关闭";
+    if (this.hedgeState === "watching") return this.secondsLeft >= this.rtMinEntrySecs ? "本轮仍在观察窗口" : "本轮入场窗已关闭";
     return this.status || "等待中";
   }
 
@@ -452,7 +477,7 @@ export class Hedge15mEngine {
     const hasRoundClock = secondsLeft > 0;
     const roundElapsed = hasRoundClock ? Math.max(0, Math.min(ROUND_DURATION, ROUND_DURATION - secondsLeft)) : 0;
     const roundProgressPct = hasRoundClock && ROUND_DURATION > 0 ? (roundElapsed / ROUND_DURATION) * 100 : 0;
-    const entryWindowLeft = Math.max(0, secondsLeft - MIN_ENTRY_SECS);
+    const entryWindowLeft = Math.max(0, secondsLeft - this.rtMinEntrySecs);
     return {
       botRunning: this.running,
       tradingMode: this.tradingMode,
@@ -465,7 +490,7 @@ export class Hedge15mEngine {
       roundElapsed,
       roundProgressPct,
       entryWindowLeft,
-      canOpenNewPosition: this.running && this.hedgeState === "watching" && secondsLeft >= MIN_ENTRY_SECS,
+      canOpenNewPosition: this.running && this.hedgeState === "watching" && secondsLeft >= this.rtMinEntrySecs,
       nextRoundIn: secondsLeft,
       currentMarket: this.currentMarket,
       upAsk: this.upAsk,
@@ -494,6 +519,14 @@ export class Hedge15mEngine {
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
+      // 运行时参数 (UI显示)
+      rtDumpConfirmCycles: this.rtDumpConfirmCycles,
+      rtEntryWindowS: this.rtEntryWindowS,
+      rtMinEntrySecs: this.rtMinEntrySecs,
+      rtChainlinkEnabled: this.rtChainlinkEnabled,
+      rtMaxEntryAsk: this.rtMaxEntryAsk,
+      rtDualSideMaxAsk: this.rtDualSideMaxAsk,
+      rtKellyFraction: this.rtKellyFraction,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
       latencyNetworkSource: latency.networkSource,
@@ -589,6 +622,19 @@ export class Hedge15mEngine {
     this.paperSessionMode = options.paperSessionMode === "persistent" ? "persistent" : "session";
     this.historyFile = this.tradingMode === "paper" ? PAPER_HISTORY_FILE : HISTORY_FILE;
     this.adaptiveMaxEntryAsk = PAPER_MAX_ENTRY_ASK;
+
+    // ── 应用运行时参数 ──
+    this.rtDumpConfirmCycles = options.dumpConfirmCycles ?? DUMP_CONFIRM_CYCLES;
+    const ewPreset = options.entryWindowPreset ?? "medium";
+    if (ewPreset === "short") { this.rtEntryWindowS = 240; this.rtMinEntrySecs = 660; }
+    else if (ewPreset === "long") { this.rtEntryWindowS = 480; this.rtMinEntrySecs = 420; }
+    else { this.rtEntryWindowS = ENTRY_WINDOW_S; this.rtMinEntrySecs = MIN_ENTRY_SECS; }
+    this.rtChainlinkEnabled = options.chainlinkEnabled ?? CHAINLINK_CONFIRM_ENABLED;
+    this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
+    this.rtDualSideMaxAsk = options.dualSideMaxAsk ?? DUAL_SIDE_MAX_ASK;
+    this.rtKellyFraction = options.kellyFraction ?? KELLY_FRACTION;
+    logger.info(`RT params: dumpConfirm=${this.rtDumpConfirmCycles} window=${ewPreset}(${this.rtEntryWindowS}s) CL=${this.rtChainlinkEnabled} maxAsk=$${this.rtMaxEntryAsk} dualAsk=$${this.rtDualSideMaxAsk} kelly=${this.rtKellyFraction}`);
+
     resetExecutionTelemetry();
     this.loopRunId += 1;
     const runId = this.loopRunId;
@@ -726,6 +772,7 @@ export class Hedge15mEngine {
     this.leg1MakerFill = false;
     this.leg1EntrySource = "";
     this.leg1EntryTrendBias = "flat";
+    this.leg1EntrySecondsLeft = 0;
     this.dumpConfirmCount = 0;
     this.lastDumpCandidateDir = "";
     this.preOrderUpId = "";
@@ -757,7 +804,7 @@ export class Hedge15mEngine {
           logger.warn(`DRAWDOWN PROTECT ON: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} >= ${(DRAWDOWN_PROTECT_THRESHOLD*100).toFixed(0)}% of balance $${this.balance.toFixed(2)}, tightening MAX_ASK to $${DUAL_SIDE_MAX_ASK_PROTECTED}`);
         } else if (this.drawdownProtected && this.balance > 0 && -rolling4hLoss < this.balance * DRAWDOWN_RECOVER_THRESHOLD) {
           this.drawdownProtected = false;
-          logger.info(`DRAWDOWN PROTECT OFF: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} < ${(DRAWDOWN_RECOVER_THRESHOLD*100).toFixed(0)}% of balance, restoring MAX_ASK to $${DUAL_SIDE_MAX_ASK}`);
+          logger.info(`DRAWDOWN PROTECT OFF: 4h rolling loss $${(-rolling4hLoss).toFixed(2)} < ${(DRAWDOWN_RECOVER_THRESHOLD*100).toFixed(0)}% of balance, restoring MAX_ASK to $${this.rtDualSideMaxAsk}`);
         }
 
         const rnd = await getCurrentRound15m();
@@ -798,12 +845,12 @@ export class Hedge15mEngine {
           setRoundStartPrice(); // 同步设置 btcPrice 模块的回合基准, 修正 Chainlink 方向判断
           this.negRisk = !!rnd.negRisk;
           // 跳过剩余时间不足的回合 — 无法完成 dump检测 + 对冲
-          if (secs < MIN_ENTRY_SECS) {
+          if (secs < this.rtMinEntrySecs) {
             this.hedgeState = "done";
-            this.status = `跳过: 剩余${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s`;
+            this.status = `跳过: 剩余${Math.floor(secs)}s < ${this.rtMinEntrySecs}s`;
             this.skips++;
-            logger.info(`HEDGE15M SKIP LATE ROUND: ${Math.floor(secs)}s < ${MIN_ENTRY_SECS}s minimum`);
-            this.writeRoundAudit("round-skip-late", { secondsLeft: secs, minimumEntrySeconds: MIN_ENTRY_SECS, negRisk: this.negRisk });
+            logger.info(`HEDGE15M SKIP LATE ROUND: ${Math.floor(secs)}s < ${this.rtMinEntrySecs}s minimum`);
+            this.writeRoundAudit("round-skip-late", { secondsLeft: secs, minimumEntrySeconds: this.rtMinEntrySecs, negRisk: this.negRisk });
           } else {
             logger.info(`HEDGE15M ROUND: ${rnd.question}, ${Math.floor(secs)}s left, BTC=$${this.roundStartBtcPrice.toFixed(0)}`);
             this.writeRoundAudit("round-start", { question: rnd.question, secondsLeft: secs, roundStartBtcPrice: this.roundStartBtcPrice, negRisk: this.negRisk });
@@ -833,7 +880,7 @@ export class Hedge15mEngine {
         // ═══ State Machine ═══
 
         if (this.hedgeState === "watching") {
-          this.status = `监控砸盘 (${Math.floor(elapsed)}/${ENTRY_WINDOW_S}s)`;
+          this.status = `监控砸盘 (${Math.floor(elapsed)}/${this.rtEntryWindowS}s)`;
 
           if (this.upAsk > 0 && this.downAsk > 0) {
             const { dumpWindowMs, dumpBaselineMs } = getDynamicParams();
@@ -893,7 +940,7 @@ export class Hedge15mEngine {
                     this.dumpConfirmCount = 1;
                     this.lastDumpCandidateDir = candidate.dir;
                   }
-                  if (this.dumpConfirmCount < DUMP_CONFIRM_CYCLES) {
+                  if (this.dumpConfirmCount < this.rtDumpConfirmCycles) {
                     // 还未达到确认次数, 继续等
                   } else {
                   // ── #2 Sum分歧度过滤: 市场不确定时拒绝入场 ──
@@ -905,7 +952,7 @@ export class Hedge15mEngine {
                   // ── #1 Chainlink方向过滤: CL方向明确时阻止逆CL入场 ──
                   const clFresh = isChainlinkFresh();
                   const clDir = clFresh ? getChainlinkDirection() : null;
-                  if (clFresh && clDir && clDir !== candidate.dir) {
+                  if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir) {
                     this.trackRoundRejectReason(`chainlink_contra: CL=${clDir} entry=${candidate.dir}`);
                     logger.warn(`HEDGE15M SKIP: Chainlink says ${clDir.toUpperCase()} but entry is ${candidate.dir.toUpperCase()} — blocked`);
                   } else {
@@ -934,7 +981,7 @@ export class Hedge15mEngine {
           }
 
           // Window expired
-          if (elapsed >= ENTRY_WINDOW_S && this.hedgeState === "watching") {
+          if (elapsed >= this.rtEntryWindowS && this.hedgeState === "watching") {
             // 窗口到期, 取消预挂单
             if (this.preOrderUpId || this.preOrderDownId) {
               await this.cancelDualSideOrders(trader);
@@ -1036,7 +1083,7 @@ export class Hedge15mEngine {
     // Kelly: f* = (p*b - q) / b, b = (1-ask)/ask, Half-Kelly = f*/2
     const odds = (1 - askPrice) / askPrice;  // 赔率
     const kellyFull = (KELLY_WIN_RATE * odds - (1 - KELLY_WIN_RATE)) / odds;
-    const kellyBase = Math.max(0.08, Math.min(0.25, kellyFull * KELLY_FRACTION));
+    const kellyBase = Math.max(0.08, Math.min(0.25, kellyFull * this.rtKellyFraction));
     let budgetPct = kellyBase;
     if (directionalBias === dir) {
       budgetPct += TREND_BUDGET_BOOST; // 趋势一致追加
@@ -1092,7 +1139,7 @@ export class Hedge15mEngine {
     if (!DUAL_SIDE_ENABLED) return;
     if (this.hedgeState !== "watching") return;
     if (this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
-    if (secs < DUAL_SIDE_MIN_SECS) {
+    if (secs < this.rtMinEntrySecs) {
       // 时间不足, 取消预挂单
       if (this.preOrderUpId || this.preOrderDownId) {
         await this.cancelDualSideOrders(trader);
@@ -1224,6 +1271,7 @@ export class Hedge15mEngine {
     // ── #1 Chainlink方向过滤: CL方向明确时撤销逆CL侧预挂单 ──
     const clFreshPreOrder = isChainlinkFresh();
     const clDirPreOrder = clFreshPreOrder ? getChainlinkDirection() : null;
+    if (this.rtChainlinkEnabled) {
     if (clDirPreOrder === "down" && this.preOrderUpId) {
       await trader.cancelOrder(this.preOrderUpId).catch(() => {});
       this.preOrderUpId = ""; this.preOrderUpPrice = 0; this.preOrderUpShares = 0;
@@ -1233,6 +1281,7 @@ export class Hedge15mEngine {
       await trader.cancelOrder(this.preOrderDownId).catch(() => {});
       this.preOrderDownId = ""; this.preOrderDownPrice = 0; this.preOrderDownShares = 0;
       logger.info(`DUAL SIDE: DOWN cancelled (Chainlink=up, avoid contra-CL fill)`);
+    }
     }
 
     // ── 低流动性过滤: spread过大时撤销所有预挂单 ──
@@ -1254,7 +1303,7 @@ export class Hedge15mEngine {
     const avgLimitPrice = (upLimit + downLimit) / 2;
     const preOdds = avgLimitPrice > 0 ? (1 - avgLimitPrice) / avgLimitPrice : 2.0;
     const preKelly = (KELLY_WIN_RATE * preOdds - (1 - KELLY_WIN_RATE)) / preOdds;
-    const preBudgetPct = Math.max(0.08, Math.min(0.20, preKelly * KELLY_FRACTION));
+    const preBudgetPct = Math.max(0.08, Math.min(0.20, preKelly * this.rtKellyFraction));
     const singleSideBudget = this.balance * preBudgetPct * 0.5;
 
     const now = Date.now();
@@ -1373,6 +1422,7 @@ export class Hedge15mEngine {
     this.leg1MakerFill = true; // 预挂单永远是 maker
     this.leg1EntrySource = "dual-side-preorder";
     this.leg1EntryTrendBias = this.currentTrendBias;
+    this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
     this.leg1AttemptedThisRound = true;
     this.totalCost = filledShares * fillPrice; // maker fee = 0
     // paper 模式下 placeGtcBuy 已预扣 paperBalance, 不要重复扣; 直接同步
@@ -1594,6 +1644,7 @@ export class Hedge15mEngine {
       this.leg1MakerFill = isMaker;
       this.leg1EntrySource = "reactive-mispricing";
       this.leg1EntryTrendBias = this.currentTrendBias;
+      this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
       this.totalCost = filledShares * realFillPrice * (1 + actualFee);
       this.balance -= this.totalCost;
       this.onLeg1Opened();
@@ -1692,6 +1743,7 @@ export class Hedge15mEngine {
       estimated: this.leg1Estimated,
       entrySource: this.leg1EntrySource,
       entryTrendBias: this.leg1EntryTrendBias,
+      entrySecondsLeft: this.leg1EntrySecondsLeft,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();

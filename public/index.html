@@ -170,9 +170,7 @@ tr:hover{background:rgba(118,183,255,.03)}
     <h1>15m 方向性机器人</h1>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
-      <button class="btn-b" onclick="downloadLogs()" title="下载日志">日志</button>
-      <button class="btn-b" onclick="downloadHistory()" title="下载历史">历史</button>
-      <button class="btn-y" onclick="downloadDecisionAudit()" title="决策审计">审计</button>
+      <button class="btn-b" onclick="downloadAll()">导出</button>
       <button id="btn-start" class="btn-g" onclick="startBot()">启动</button>
       <button id="btn-stop" class="btn-r" onclick="stopBot()" style="display:none">停止</button>
       <button class="btn-r" onclick="doLogout()">退出</button>
@@ -252,9 +250,9 @@ tr:hover{background:rgba(118,183,255,.03)}
       </div>
 
       <!-- Config -->
-      <div class="card c4">
+      <div class="card c6">
         <h3>启动配置</h3>
-        <div class="cfg-grid">
+        <div class="cfg-grid" style="grid-template-columns:1fr 1fr 1fr">
           <div>
             <label>模式</label>
             <select id="cfg-mode"><option value="paper">仿真盘</option><option value="live">实盘</option></select>
@@ -268,6 +266,53 @@ tr:hover{background:rgba(118,183,255,.03)}
             <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
           </div>
           <div>
+            <label>砸盘确认</label>
+            <select id="cfg-dump-confirm">
+              <option value="1">1周期 (激进)</option>
+              <option value="2" selected>2周期 (默认)</option>
+              <option value="3">3周期 (保守)</option>
+            </select>
+          </div>
+          <div>
+            <label>入场窗口</label>
+            <select id="cfg-entry-window">
+              <option value="short">短 4min</option>
+              <option value="medium" selected>中 6min</option>
+              <option value="long">长 8min</option>
+            </select>
+          </div>
+          <div>
+            <label>Chainlink方向</label>
+            <select id="cfg-chainlink">
+              <option value="true" selected>开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </div>
+          <div>
+            <label>反应入场上限</label>
+            <select id="cfg-max-entry-ask">
+              <option value="0.35">$0.35 (保守)</option>
+              <option value="0.40" selected>$0.40 (默认)</option>
+              <option value="0.45">$0.45 (激进)</option>
+            </select>
+          </div>
+          <div>
+            <label>预挂上限</label>
+            <select id="cfg-dual-max-ask">
+              <option value="0.30">$0.30 (保守)</option>
+              <option value="0.35" selected>$0.35 (默认)</option>
+              <option value="0.40">$0.40 (激进)</option>
+            </select>
+          </div>
+          <div>
+            <label>仓位计算</label>
+            <select id="cfg-kelly">
+              <option value="0.25">1/4 Kelly (轻仓)</option>
+              <option value="0.50" selected>1/2 Kelly (默认)</option>
+              <option value="0.75">3/4 Kelly (重仓)</option>
+            </select>
+          </div>
+          <div>
             <label>资金地址</label>
             <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
           </div>
@@ -276,18 +321,18 @@ tr:hover{background:rgba(118,183,255,.03)}
             <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off">
           </div>
         </div>
-        <p class="cfg-note">仿真盘不发真实订单。Half-Kelly仓位: @$0.25→17% / @$0.30→14% ±趋势。Maker 0%费率，入场≤$0.35(预挂) / ≤$0.40(反应)。</p>
       </div>
 
-      <!-- Params (compact) -->
-      <div class="card c8">
-        <h3>策略参数</h3>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px">
-          <span style="color:var(--muted)">预算 <b id="p-budget" style="color:var(--text)">Half-Kelly 8-25%</b></span>
-          <span style="color:var(--muted)">预挂上限 <b style="color:var(--text)">$0.35</b></span>
-          <span style="color:var(--muted)">反应上限 <b style="color:var(--text)">$0.40</b></span>
-          <span style="color:var(--muted)">SUM目标 <b id="p-sum" style="color:var(--text)">已禁用</b></span>
-          <span style="color:var(--muted)">确认 <b style="color:var(--text)">2cycle</b></span>
+      <!-- Params (live) -->
+      <div class="card c6">
+        <h3>运行参数</h3>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px" id="params-bar">
+          <span style="color:var(--muted)">仓位 <b id="p-kelly" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">预挂上限 <b id="p-dual-ask" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">反应上限 <b id="p-max-ask" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">砸盘确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">Chainlink <b id="p-chainlink" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
           <span style="color:var(--muted)">回撤保护 <b style="color:var(--text)">4h≥10%→收紧</b></span>
         </div>
@@ -380,10 +425,17 @@ async function startBot() {
   const fa = document.getElementById('cfg-fa').value.trim();
   const paperBalance = Number(document.getElementById('cfg-paper-balance').value || '100');
   const paperSessionMode = document.getElementById('cfg-paper-session-mode').value;
+  const dumpConfirmCycles = Number(document.getElementById('cfg-dump-confirm').value);
+  const entryWindowPreset = document.getElementById('cfg-entry-window').value;
+  const chainlinkEnabled = document.getElementById('cfg-chainlink').value === 'true';
+  const maxEntryAsk = Number(document.getElementById('cfg-max-entry-ask').value);
+  const dualSideMaxAsk = Number(document.getElementById('cfg-dual-max-ask').value);
+  const kellyFraction = Number(document.getElementById('cfg-kelly').value);
   if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
   if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
   try {
-    const payload = mode === 'paper' ? { mode, paperBalance, paperSessionMode } : { mode, privateKey: pk, funderAddress: fa };
+    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, chainlinkEnabled, maxEntryAsk, dualSideMaxAsk, kellyFraction };
+    const payload = mode === 'paper' ? base : { ...base, privateKey: pk, funderAddress: fa };
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
     if (!r.ok) alert(d.error||'启动失败');
@@ -405,9 +457,7 @@ async function downloadWithAuth(url, fallbackName) {
     URL.revokeObjectURL(a.href);
   } catch(e) { alert('网络错误'); }
 }
-function downloadLogs() { downloadWithAuth('/api/download-logs','hedge15m-log.txt'); }
-function downloadHistory() { downloadWithAuth('/api/download-history','hedge15m-history.json'); }
-function downloadDecisionAudit() { downloadWithAuth('/api/download-decision-audit','hedge15m-decisions.jsonl'); }
+function downloadAll() { downloadWithAuth('/api/download-all','hedge15m-report.md'); }
 
 async function stopBot() {
   try { await fetch(API+'/api/stop',{method:'POST',credentials:'include'}); refreshAudit(); }
@@ -571,8 +621,8 @@ function render(s) {
   xEl.style.color = s.drawdownProtected?'#f4c96b':'#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
-    const sm = s.askSum||0, cf = s.dumpConfirmCount||0;
-    scEl.textContent = sm>0 ? 'Σ'+sm.toFixed(2)+(sm>0.95?' ⚠':sm<0.85?' ✓':'')+' 确认'+cf+'/3' : '--';
+    const sm = s.askSum||0, cf = s.dumpConfirmCount||0, maxCf = s.rtDumpConfirmCycles||2;
+    scEl.textContent = sm>0 ? 'Σ'+sm.toFixed(2)+(sm>0.95?' ⚠':sm<0.85?' ✓':'')+' 确认'+cf+'/'+maxCf : '--';
     scEl.style.color = sm>0.95?'#ff6b6b':sm<0.85?'#42d392':'#8ea0b8';
   }
   const prEl = document.getElementById('h-preorder');
@@ -582,6 +632,19 @@ function render(s) {
       const p=[]; if(up>0)p.push('U@'+up.toFixed(2)); if(dn>0)p.push('D@'+dn.toFixed(2));
       prEl.textContent = p.join(' '); prEl.style.color = '#76b7ff';
     } else { prEl.textContent = s.hedgeState==='watching'?'待挂':'--'; prEl.style.color='#8ea0b8'; }
+  }
+
+  // Runtime params bar
+  if (s.rtKellyFraction != null) {
+    const kMap = {0.25:'1/4 Kelly',0.5:'1/2 Kelly',0.75:'3/4 Kelly'};
+    document.getElementById('p-kelly').textContent = kMap[s.rtKellyFraction] || (s.rtKellyFraction*100).toFixed(0)+'% Kelly';
+    document.getElementById('p-dual-ask').textContent = '$'+s.rtDualSideMaxAsk.toFixed(2);
+    document.getElementById('p-max-ask').textContent = '$'+s.rtMaxEntryAsk.toFixed(2);
+    document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
+    document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
+    const clEl = document.getElementById('p-chainlink');
+    clEl.textContent = s.rtChainlinkEnabled?'开':'关';
+    clEl.style.color = s.rtChainlinkEnabled?'#42d392':'#ff6b6b';
   }
 
   // Hidden compat elements
