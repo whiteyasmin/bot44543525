@@ -30,7 +30,7 @@ const ENTRY_WINDOW_S  = 360;      // 开局6分钟内监控砸盘, 配合MIN_ENT
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
 const MIN_ENTRY_SECS  = 540;      // 剩余 <9分钟不开新仓 (从480收紧, 接近结算时方向更确定)
-const MAX_ENTRY_ASK   = 0.40;     // Leg1 入场价上限 (实盘, 从0.50收紧: >$0.40时EV仅$0.10/份, 风险收益比差)
+const MAX_ENTRY_ASK   = 0.40;     // Leg1 入场价上限 (实盘: ≤$0.40时EV≥$0.10/份@50%胜率)
 const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功概率极低
 const PAPER_MAX_ENTRY_ASK = 0.59;
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
@@ -56,7 +56,7 @@ const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
 const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
-const DUAL_SIDE_MAX_ASK = 0.30;            // 挂单价上限 (≤0.30保证EV+$0.20/share@50%胜率, 从0.35收紧)
+const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
 const DUAL_SIDE_MAX_ASK_PROTECTED = 0.25;  // 亏损保护模式: 只接受极低价入场
 const DRAWDOWN_PROTECT_THRESHOLD = 0.10;   // 滚动4h亏损≥10%余额 → 收紧入场
 const DRAWDOWN_RECOVER_THRESHOLD = 0.05;   // 滚动4h亏损<5%余额 → 恢复正常
@@ -357,17 +357,20 @@ export class Hedge15mEngine {
     const parts: string[] = [];
     if (this.roundMomentumRejects > 0) parts.push(`momentum=${this.roundMomentumRejects}`);
     if (this.roundEntryAskRejects > 0) parts.push(`entryAsk=${this.roundEntryAskRejects}`);
-    if (parts.length === 0) return;
-    logger.info(`HEDGE15M ROUND SUMMARY: ${reason}, rejects(${parts.join(", ")})`);
     const topReasons = Array.from(this.roundRejectReasonCounts.entries())
       .sort((left, right) => right[1] - left[1])
       .slice(0, 5);
-    for (const [detail, count] of topReasons) {
-      logger.info(`HEDGE15M REJECT DETAIL: ${count}x ${detail}`);
+    if (parts.length > 0) {
+      logger.info(`HEDGE15M ROUND SUMMARY: ${reason}, rejects(${parts.join(", ")})`);
+      for (const [detail, count] of topReasons) {
+        logger.info(`HEDGE15M REJECT DETAIL: ${count}x ${detail}`);
+      }
+    } else {
+      logger.info(`HEDGE15M ROUND SUMMARY: ${reason}, no dump detected`);
     }
     this.writeRoundAudit("round-no-entry", {
       reason,
-      summary: parts.join(", "),
+      summary: parts.length > 0 ? parts.join(", ") : "no_dump_detected",
       topRejectReasons: topReasons.map(([detail, count]) => ({ detail, count })),
     });
   }
@@ -785,6 +788,7 @@ export class Hedge15mEngine {
           }
           curCid = cid;
           this.resetRoundState();
+          this.status = "新回合开始";
           this.upAsk = 0;
           this.downAsk = 0;
           await trader.cancelAll();
