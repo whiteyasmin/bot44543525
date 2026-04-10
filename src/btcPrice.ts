@@ -10,6 +10,25 @@ let roundStartChainlinkPrice = 0;
 let chainlinkPrice = 0;
 let chainlinkUpdatedAt = 0;
 
+// F: CL方向稳定性追踪
+let clDirHistory: string[] = [];           // 最近N次CL方向读数
+const CL_DIR_HISTORY_MAX = 10;
+// G: CL本回合更新次数追踪
+let clRoundUpdateCount = 0;                // 本回合CL收到几次实际价格变化
+let clLastSeenPrice = 0;                   // 上次CL价格 (用于检测是否真的变了)
+// H: CL翻转频率追踪
+let clFlipCount = 0;                       // 本回合CL方向翻转次数
+let clLastRecordedDir = "";                // 上一次记录的方向
+// I: CL-Binance 价差收敛追踪
+let clBinSpreadHistory: number[] = [];     // 最近N次 |CL - Binance| 价差
+const CL_BIN_SPREAD_MAX = 8;
+// J: CL 动量置信度追踪
+let clMovePctHistory: number[] = [];       // 最近N次CL偏移幅度(有符号)
+const CL_MOMENTUM_MAX = 5;
+// K: CL 更新间隔追踪
+let clUpdateTimestamps: number[] = [];     // 本回合CL更新时间戳
+const CL_UPDATE_TS_MAX = 10;
+
 const recentPrices: { t: number; p: number }[] = [];
 const MAX_SAMPLES = 1500;
 
@@ -54,8 +73,34 @@ function startPolygonChainlinkWs(): void {
             if (answer >= 2n ** 255n) answer -= 2n ** 256n;
             const price = Number(answer) / 1e8;
             if (price > 1000) {
+              const wsNow = Date.now();
+              // G+K: 检测CL价格是否真的变了
+              if (price !== clLastSeenPrice) {
+                clRoundUpdateCount++;
+                clLastSeenPrice = price;
+                clUpdateTimestamps.push(wsNow);
+                if (clUpdateTimestamps.length > CL_UPDATE_TS_MAX) clUpdateTimestamps.shift();
+              }
               chainlinkPrice = price;
-              chainlinkUpdatedAt = Math.floor(Date.now() / 1000);
+              chainlinkUpdatedAt = Math.floor(wsNow / 1000);
+              // F+H: 记录方向读数 + 翻转检测
+              if (roundStartChainlinkPrice > 0) {
+                const dir = price >= roundStartChainlinkPrice ? "up" : "down";
+                clDirHistory.push(dir);
+                if (clDirHistory.length > CL_DIR_HISTORY_MAX) clDirHistory.shift();
+                if (clLastRecordedDir && dir !== clLastRecordedDir) clFlipCount++;
+                clLastRecordedDir = dir;
+                // J: 动量
+                const signedPct = (price - roundStartChainlinkPrice) / roundStartChainlinkPrice;
+                clMovePctHistory.push(signedPct);
+                if (clMovePctHistory.length > CL_MOMENTUM_MAX) clMovePctHistory.shift();
+              }
+              // I: CL-Binance价差
+              if (latestPrice > 0) {
+                const spread = Math.abs(price - latestPrice);
+                clBinSpreadHistory.push(spread);
+                if (clBinSpreadHistory.length > CL_BIN_SPREAD_MAX) clBinSpreadHistory.shift();
+              }
               logger.info(`CL WS update: $${price.toFixed(2)}`);
             }
           }
@@ -264,10 +309,10 @@ async function sampleLoop(): Promise<void> {
     const clFast = roundSecsLeft < 60;
     if (!clWsConnected && (clFast || cycle % 3 === 0)) {
       const cp = await fetchChainlink();
-      if (cp) chainlinkPrice = cp;
+      if (cp) { updateClTracking(cp); chainlinkPrice = cp; }
     } else if (clWsConnected && cycle % 5 === 0) {
       const cp = await fetchChainlink();
-      if (cp) chainlinkPrice = cp;
+      if (cp) { updateClTracking(cp); chainlinkPrice = cp; }
     }
     cycle++;
     await sleep(wsConnected ? 300 : 1500);
@@ -322,6 +367,16 @@ export function setRoundStartPrice(price = 0): void {
   roundStartTime = Date.now();
   consecutiveRejections = 0;
   roundStartChainlinkPrice = chainlinkPrice > 0 ? chainlinkPrice : 0;
+  // F+G: 新回合重置
+  clDirHistory = [];
+  clRoundUpdateCount = 0;
+  clLastSeenPrice = chainlinkPrice;
+  // H+I+J+K: 新回合重置
+  clFlipCount = 0;
+  clLastRecordedDir = "";
+  clBinSpreadHistory = [];
+  clMovePctHistory = [];
+  clUpdateTimestamps = [];
 }
 
 export function getRoundStartPrice(): number {
@@ -383,6 +438,96 @@ export function getChainlinkFreshnessTier(): "high" | "mid" | "low" | "stale" {
 /** Binance 方向 (纯交易所价格 vs 回合开始价) */
 export function getBinanceDirection(): string {
   return getDirection();          // getDirection() 已经是 Binance 价格
+}
+
+/** 内部: RPC 拉取时也追踪 F+G+H+I+J+K */
+function updateClTracking(price: number): void {
+  const now = Date.now();
+  if (price !== clLastSeenPrice) {
+    clRoundUpdateCount++;
+    clLastSeenPrice = price;
+    // K: 记录更新时间戳
+    clUpdateTimestamps.push(now);
+    if (clUpdateTimestamps.length > CL_UPDATE_TS_MAX) clUpdateTimestamps.shift();
+  }
+  if (roundStartChainlinkPrice > 0) {
+    const dir = price >= roundStartChainlinkPrice ? "up" : "down";
+    clDirHistory.push(dir);
+    if (clDirHistory.length > CL_DIR_HISTORY_MAX) clDirHistory.shift();
+    // H: 翻转检测
+    if (clLastRecordedDir && dir !== clLastRecordedDir) clFlipCount++;
+    clLastRecordedDir = dir;
+    // J: 动量 (有符号偏移百分比)
+    const signedPct = (price - roundStartChainlinkPrice) / roundStartChainlinkPrice;
+    clMovePctHistory.push(signedPct);
+    if (clMovePctHistory.length > CL_MOMENTUM_MAX) clMovePctHistory.shift();
+  }
+  // I: CL-Binance价差
+  if (price > 0 && latestPrice > 0) {
+    const spread = Math.abs(price - latestPrice);
+    clBinSpreadHistory.push(spread);
+    if (clBinSpreadHistory.length > CL_BIN_SPREAD_MAX) clBinSpreadHistory.shift();
+  }
+}
+
+/** F: CL方向连续一致次数 (最近读数中末尾连续同方向的数量) */
+export function getChainlinkDirStability(): number {
+  if (clDirHistory.length === 0) return 0;
+  const last = clDirHistory[clDirHistory.length - 1];
+  let count = 0;
+  for (let i = clDirHistory.length - 1; i >= 0; i--) {
+    if (clDirHistory[i] === last) count++;
+    else break;
+  }
+  return count;
+}
+
+/** G: 本回合CL价格实际变化次数 (心跳到达次数) */
+export function getChainlinkRoundUpdates(): number {
+  return clRoundUpdateCount;
+}
+
+/** H: 本回合CL方向翻转次数 (up→down 或 down→up). 翻转多=噪音大 */
+export function getChainlinkFlipCount(): number {
+  return clFlipCount;
+}
+
+/** I: CL-Binance价差是否在收敛. 返回 "converging"|"diverging"|"unknown" */
+export function getClBinanceSpreadTrend(): "converging" | "diverging" | "unknown" {
+  if (clBinSpreadHistory.length < 3) return "unknown";
+  const half = Math.floor(clBinSpreadHistory.length / 2);
+  const firstHalf = clBinSpreadHistory.slice(0, half);
+  const secondHalf = clBinSpreadHistory.slice(half);
+  const avg1 = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+  const avg2 = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+  if (avg2 < avg1 * 0.85) return "converging";
+  if (avg2 > avg1 * 1.15) return "diverging";
+  return "unknown";
+}
+
+/** J: CL动量置信度. 正=加速远离基准(强), 负=减速/回撤(弱). 返回 "accelerating"|"decelerating"|"unknown" */
+export function getChainlinkMomentumTrend(): "accelerating" | "decelerating" | "unknown" {
+  if (clMovePctHistory.length < 3) return "unknown";
+  // 看绝对偏移是在增大还是缩小
+  const absList = clMovePctHistory.map(Math.abs);
+  const half = Math.floor(absList.length / 2);
+  const first = absList.slice(0, half);
+  const second = absList.slice(half);
+  const avg1 = first.reduce((a, b) => a + b, 0) / first.length;
+  const avg2 = second.reduce((a, b) => a + b, 0) / second.length;
+  if (avg2 > avg1 * 1.1) return "accelerating";
+  if (avg2 < avg1 * 0.9) return "decelerating";
+  return "unknown";
+}
+
+/** K: CL最近两次更新的平均间隔(ms). 短间隔=活跃. 返回0表示数据不足 */
+export function getChainlinkUpdateIntervalMs(): number {
+  if (clUpdateTimestamps.length < 2) return 0;
+  let sum = 0;
+  for (let i = 1; i < clUpdateTimestamps.length; i++) {
+    sum += clUpdateTimestamps[i] - clUpdateTimestamps[i - 1];
+  }
+  return Math.round(sum / (clUpdateTimestamps.length - 1));
 }
 
 /** 返回最近 N 秒内 BTC 价格变化百分比 (正=涨, 负=跌) */

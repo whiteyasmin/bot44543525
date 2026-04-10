@@ -9,6 +9,9 @@ import {
   startPriceFeed, getBtcPrice,
   getChainlinkPrice, getChainlinkDirection, isChainlinkFresh,
   getChainlinkMovePct, getChainlinkFreshnessTier, getBinanceDirection,
+  getChainlinkDirStability, getChainlinkRoundUpdates,
+  getChainlinkFlipCount, getClBinanceSpreadTrend,
+  getChainlinkMomentumTrend, getChainlinkUpdateIntervalMs,
   setRoundSecsLeft, setRoundStartPrice, stopPriceFeed,
   getRecentMomentum,
 } from "./btcPrice";
@@ -942,12 +945,18 @@ export class Hedge15mEngine {
                     this.trackRoundRejectReason(`sum_high: ${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX}`);
                     logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — market uncertain, no clear edge`);
                   } else {
-                  // ── #1 Chainlink 强化过滤 (A+B+C+D全叠加) ──
+                  // ── #1 Chainlink 强化过滤 (A+B+C+D+F+G+H+I+J+K全叠加) ──
                   const clFresh = isChainlinkFresh();
                   const clDir = clFresh ? getChainlinkDirection() : null;
                   const clMovePct = getChainlinkMovePct();
                   const clTier = getChainlinkFreshnessTier();   // high/mid/low/stale
                   const binDir = getBinanceDirection();
+                  const clStability = getChainlinkDirStability(); // F
+                  const clUpdates = getChainlinkRoundUpdates();   // G
+                  const clFlips = getChainlinkFlipCount();        // H
+                  const clSpreadTrend = getClBinanceSpreadTrend(); // I
+                  const clMomentum = getChainlinkMomentumTrend(); // J
+                  const clInterval = getChainlinkUpdateIntervalMs(); // K
 
                   // A: 幅度阈值 — CL变动 < 0.01% 视为噪音, 不作为方向信号
                   const clSignificant = clMovePct >= 0.0001;
@@ -955,17 +964,32 @@ export class Hedge15mEngine {
                   const dualConfirm = clDir === binDir;
                   // D: 新鲜度分档 — high 强制执行, mid 正常执行, low 仅日志
                   const clEnforce = clTier === "high" || clTier === "mid";
+                  // F: 方向稳定性 — CL需连续≥2次同方向才算稳定信号
+                  const clStable = clStability >= 2;
+                  // G: 本回合CL需至少有过1次实际更新才信任方向
+                  const clHasUpdated = clUpdates >= 1;
+                  // H: 翻转频率 — 翻转≥3次认为CL噪音过大, 降级为不阻断
+                  const clNoisy = clFlips >= 3;
+                  // K: 更新间隔 — 间隔<120s为活跃期(高置信), 否则普通心跳
+                  const clActive = clInterval > 0 && clInterval < 120_000;
 
                   let clBlocked = false;
-                  if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir && clSignificant) {
-                    if (clEnforce) {
+                  // H: 翻转过多 → CL信号不可靠, 仅日志
+                  if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir && clSignificant && clNoisy) {
+                    logger.info(`HEDGE15M CL-NOISY: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} flips=${clFlips} — not blocking (too noisy)`);
+                  } else if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir && clSignificant && clStable && clHasUpdated) {
+                    // I: CL-Binance发散 → 可能CL滞后, 降级
+                    if (clSpreadTrend === "diverging") {
+                      logger.info(`HEDGE15M CL-DIVERGE: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} spread=diverging — not blocking (CL may lag)`);
+                    } else if (clEnforce) {
                       clBlocked = true;
-                      this.trackRoundRejectReason(`chainlink_contra: CL=${clDir} entry=${candidate.dir} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} dual=${dualConfirm}`);
-                      logger.warn(`HEDGE15M SKIP: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} — blocked`);
+                      this.trackRoundRejectReason(`chainlink_contra: CL=${clDir} entry=${candidate.dir} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} mom=${clMomentum} intv=${clInterval}`);
+                      logger.warn(`HEDGE15M SKIP: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} spread=${clSpreadTrend} mom=${clMomentum} intv=${clInterval}ms — blocked`);
                     } else {
-                      // low-tier: 只做日志, 不阻断
-                      logger.info(`HEDGE15M CL-WARN(low): CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% — not blocking (stale)`);
+                      logger.info(`HEDGE15M CL-WARN(low): CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% stab=${clStability} — not blocking (stale)`);
                     }
+                  } else if (this.rtChainlinkEnabled && clFresh && clDir && clDir !== candidate.dir && clSignificant && (!clStable || !clHasUpdated)) {
+                    logger.info(`HEDGE15M CL-SOFT: CL=${clDir.toUpperCase()} entry=${candidate.dir.toUpperCase()} move=${(clMovePct*100).toFixed(3)}% stab=${clStability} upd=${clUpdates} — not blocking (unstable/no-update)`);
                   }
                   if (clBlocked) {
                     // blocked — 不入场
@@ -973,10 +997,11 @@ export class Hedge15mEngine {
                   this.dumpDetected = candidate.dumpDetected;
                   this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                   this.activeStrategyMode = "mispricing";
-                  // C: CL方向加权 — CL一致 + 双源确认 → Kelly 上浮 (记录到 clBoost 供仓位计算用)
-                  this.clAligned = !!(clFresh && clDir && clDir === candidate.dir && clSignificant);
+                  // C: CL方向加权 — CL一致 + 稳定 + 双源确认 + J/K加成 → Kelly 上浮
+                  this.clAligned = !!(clFresh && clDir && clDir === candidate.dir && clSignificant && clStable && clHasUpdated && !clNoisy);
                   this.clDualConfirm = !!(this.clAligned && dualConfirm);
-                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (confirm=${this.dumpConfirmCount} sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} dual=${dualConfirm} aligned=${this.clAligned})`);
+                  // J+K: 动量加速 + 活跃期 → clAligned 更可信 (bonus 在 Kelly 计算时通过 clDualConfirm 已体现; 额外的 J/K 信号在日志中记录)
+                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (confirm=${this.dumpConfirmCount} sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"} move=${(clMovePct*100).toFixed(3)}% tier=${clTier} stab=${clStability} upd=${clUpdates} flips=${clFlips} spread=${clSpreadTrend} mom=${clMomentum} intv=${clInterval}ms dual=${dualConfirm} aligned=${this.clAligned})`);
                   await this.buyLeg1(
                     trader,
                     rnd,
@@ -1293,23 +1318,31 @@ export class Hedge15mEngine {
       logger.info(`DUAL SIDE: DOWN cancelled (trendBias=up, avoid counter-trend fill)`);
     }
 
-    // ── #1 Chainlink 强化过滤: CL方向明确时撤销逆CL侧预挂单 ──
+    // ── #1 Chainlink 强化过滤: CL方向明确时撤销逆CL侧预挂单 (A+D+F+G+H+I) ──
     const clFreshPreOrder = isChainlinkFresh();
     const clDirPreOrder = clFreshPreOrder ? getChainlinkDirection() : null;
     const clMovePctPre = getChainlinkMovePct();
     const clTierPre = getChainlinkFreshnessTier();
+    const clStabPre = getChainlinkDirStability();       // F
+    const clUpdPre = getChainlinkRoundUpdates();         // G
+    const clFlipsPre = getChainlinkFlipCount();          // H
+    const clSpreadPre = getClBinanceSpreadTrend();       // I
     const clSignificantPre = clMovePctPre >= 0.0001;   // A: 幅度阈值
     const clEnforcePre = clTierPre === "high" || clTierPre === "mid"; // D: 新鲜度分档
-    if (this.rtChainlinkEnabled && clSignificantPre && clEnforcePre) {
+    const clStablePre = clStabPre >= 2;                 // F: 方向稳定
+    const clUpdatedPre = clUpdPre >= 1;                 // G: 有实际更新
+    const clNoisyPre = clFlipsPre >= 3;                 // H: 翻转过多
+    // H: noisy → 不撤; I: diverging → 不撤
+    if (this.rtChainlinkEnabled && clSignificantPre && clEnforcePre && clStablePre && clUpdatedPre && !clNoisyPre && clSpreadPre !== "diverging") {
     if (clDirPreOrder === "down" && this.preOrderUpId) {
       await trader.cancelOrder(this.preOrderUpId).catch(() => {});
       this.preOrderUpId = ""; this.preOrderUpPrice = 0; this.preOrderUpShares = 0;
-      logger.info(`DUAL SIDE: UP cancelled (CL=down move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre})`);
+      logger.info(`DUAL SIDE: UP cancelled (CL=down move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre} stab=${clStabPre} upd=${clUpdPre} flips=${clFlipsPre})`);
     }
     if (clDirPreOrder === "up" && this.preOrderDownId) {
       await trader.cancelOrder(this.preOrderDownId).catch(() => {});
       this.preOrderDownId = ""; this.preOrderDownPrice = 0; this.preOrderDownShares = 0;
-      logger.info(`DUAL SIDE: DOWN cancelled (CL=up move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre})`);
+      logger.info(`DUAL SIDE: DOWN cancelled (CL=up move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre} stab=${clStabPre} upd=${clUpdPre} flips=${clFlipsPre})`);
     }
     }
 
