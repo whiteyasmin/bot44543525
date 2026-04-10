@@ -119,6 +119,11 @@ export interface Hedge15mState {
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
+  // Mid-exit signal stability
+  midExitSignalAligned: number;
+  midExitSignalContra: number;
+  midExitContraStreak: number;
+  midExitEnabled: boolean;
   // L: Taker Flow
   takerFlowRatio: number;
   takerFlowDirection: string;
@@ -355,6 +360,14 @@ export class Hedge15mEngine {
   private clAligned = false;                // 本次入场CL方向一致
   private clDualConfirm = false;            // CL + Binance 双源确认
   private clContra = false;                 // CL方向相反 (软降权)
+  // ── 中途退出: 信号恶化止损 ──
+  private midExitContraStreak = 0;          // 连续信号反向cycle数
+  private midExitSignalAligned = 0;         // 当前cycle方向一致信号数
+  private midExitSignalContra = 0;          // 当前cycle方向反向信号数
+  private midExitEnabled = true;            // 中途退出开关
+  private static readonly MID_EXIT_CONTRA_CYCLES = 3; // 连续N个cycle信号反转才退出
+  private static readonly MID_EXIT_MIN_SECS_HELD = 60; // 持仓至少60s后才允许退出
+  private static readonly MID_EXIT_MIN_SECS_LEFT = 60; // 剩余<60s不退出(快结算了)
 
   // ── 运行时可调参数 (覆盖 const) ──
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
@@ -587,6 +600,11 @@ export class Hedge15mEngine {
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
+      // Mid-exit signal stability
+      midExitSignalAligned: this.midExitSignalAligned,
+      midExitSignalContra: this.midExitSignalContra,
+      midExitContraStreak: this.midExitContraStreak,
+      midExitEnabled: this.midExitEnabled,
       // L: Taker Flow
       ...(() => { const tf = getTakerFlowRatio(); return {
         takerFlowRatio: tf.ratio,
@@ -887,7 +905,11 @@ export class Hedge15mEngine {
     this.lastDumpCandidateDir = "";
     this.clAligned = false;
     this.clDualConfirm = false;
-    this.clContra = false;    this.preOrderUpId = "";
+    this.clContra = false;
+    this.midExitContraStreak = 0;
+    this.midExitSignalAligned = 0;
+    this.midExitSignalContra = 0;
+    this.preOrderUpId = "";
     this.preOrderDownId = "";
     this.preOrderUpPrice = 0;
     this.preOrderDownPrice = 0;
@@ -1192,12 +1214,115 @@ export class Hedge15mEngine {
         }
 
         if (this.hedgeState === "leg1_filled") {
-          // 纯持有到结算, 零中途干预
           const leg1Res = await getHotBestPrices(trader, this.leg1Token).catch(() => null);
           if (!this.isActiveRun(runId)) break;
           const leg1Bid = leg1Res?.bid ?? null;
           const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
-          this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid??0).toFixed(2)} ${secs.toFixed(0)}s left → 等结算`;
+
+          // ── 中途退出: 方向信号恶化止损 ──
+          const secsHeld = this.leg1FilledAt > 0 ? (Date.now() - this.leg1FilledAt) / 1000 : 0;
+          if (this.midExitEnabled && secsHeld >= Hedge15mEngine.MID_EXIT_MIN_SECS_HELD && secs >= Hedge15mEngine.MID_EXIT_MIN_SECS_LEFT) {
+            // 读取6个方向信号
+            const flow = getTakerFlowRatio();
+            const volSpike = getVolumeSpikeInfo();
+            const largeOrd = getLargeOrderInfo();
+            const depth = getDepthImbalance();
+            const liq = getLiquidationInfo();
+            const funding = getFundingRateInfo();
+            const heldDir = this.leg1Dir; // "up" or "down"
+
+            const flowAligned = flow.confidence !== "low" && ((heldDir === "up" && flow.direction === "buy") || (heldDir === "down" && flow.direction === "sell"));
+            const flowContra = flow.confidence !== "low" && ((heldDir === "up" && flow.direction === "sell") || (heldDir === "down" && flow.direction === "buy"));
+            const volAligned = volSpike.isSpike && ((heldDir === "up" && volSpike.direction === "buy") || (heldDir === "down" && volSpike.direction === "sell"));
+            const volContra = volSpike.isSpike && ((heldDir === "up" && volSpike.direction === "sell") || (heldDir === "down" && volSpike.direction === "buy"));
+            const largeAligned = largeOrd.direction !== "neutral" && ((heldDir === "up" && largeOrd.direction === "buy") || (heldDir === "down" && largeOrd.direction === "sell"));
+            const largeContra = largeOrd.direction !== "neutral" && ((heldDir === "up" && largeOrd.direction === "sell") || (heldDir === "down" && largeOrd.direction === "buy"));
+            const depthAligned = depth.fresh && ((heldDir === "up" && depth.direction === "buy") || (heldDir === "down" && depth.direction === "sell"));
+            const depthContra = depth.fresh && ((heldDir === "up" && depth.direction === "sell") || (heldDir === "down" && depth.direction === "buy"));
+            const liqAligned = liq.intensity !== "low" && ((heldDir === "up" && liq.direction === "buy") || (heldDir === "down" && liq.direction === "sell"));
+            const liqContra = liq.intensity !== "low" && ((heldDir === "up" && liq.direction === "sell") || (heldDir === "down" && liq.direction === "buy"));
+            const fundAligned = funding.extreme && ((heldDir === "down" && funding.direction === "long_pay") || (heldDir === "up" && funding.direction === "short_pay"));
+            const fundContra = funding.extreme && ((heldDir === "up" && funding.direction === "long_pay") || (heldDir === "down" && funding.direction === "short_pay"));
+
+            this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned].filter(Boolean).length;
+            this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra].filter(Boolean).length;
+
+            // 信号反转判定: contra >= 3 且 contra > aligned
+            if (this.midExitSignalContra >= 3 && this.midExitSignalContra > this.midExitSignalAligned) {
+              this.midExitContraStreak++;
+            } else {
+              this.midExitContraStreak = Math.max(0, this.midExitContraStreak - 1); // 信号恢复则衰减
+            }
+
+            // 连续N个cycle确认信号恶化 → 卖出止损
+            if (this.midExitContraStreak >= Hedge15mEngine.MID_EXIT_CONTRA_CYCLES && leg1Bid && leg1Bid > 0.02) {
+              logger.warn(`HEDGE15M MID-EXIT: ${heldDir.toUpperCase()} held=${secsHeld.toFixed(0)}s contraStreak=${this.midExitContraStreak} aligned=${this.midExitSignalAligned} contra=${this.midExitSignalContra} bid=$${leg1Bid.toFixed(2)} — selling`);
+              this.writeRoundAudit("mid_exit_sell", {
+                heldDir,
+                secsHeld,
+                contraStreak: this.midExitContraStreak,
+                signalAligned: this.midExitSignalAligned,
+                signalContra: this.midExitSignalContra,
+                bid: leg1Bid,
+                entryPrice,
+              });
+
+              const sellResult = await trader.placeFakSell(this.leg1Token, this.leg1Shares, this.negRisk);
+              if (!this.isActiveRun(runId)) break;
+
+              if (sellResult) {
+                // 计算实际回收 (paper模式下 placeFakSell 已经加了 balance)
+                const returnVal = this.leg1Shares * leg1Bid;
+                const profit = returnVal - this.totalCost;
+                const result = profit >= 0 ? "WIN" : "LOSS";
+                if (result === "WIN") this.wins++; else this.losses++;
+                this.totalProfit += profit;
+                this.sessionProfit += profit;
+                this.recordRollingPnL(profit);
+                // paper模式: placeFakSell 已计入 balance, 不再重复加
+                if (this.tradingMode !== "paper") {
+                  this.balance += returnVal;
+                }
+
+                const exitReason = `中途止损: 信号反转${this.midExitContraStreak}轮 (aligned=${this.midExitSignalAligned} contra=${this.midExitSignalContra}) bid=$${leg1Bid.toFixed(2)}`;
+                this.history.push({
+                  time: timeStr(),
+                  result,
+                  leg1Dir: this.leg1Dir.toUpperCase(),
+                  leg1Price: this.leg1Price,
+                  totalCost: this.totalCost,
+                  profit,
+                  cumProfit: this.totalProfit,
+                  exitType: "mid_exit",
+                  exitReason,
+                  profitBreakdown: `中途卖出$${returnVal.toFixed(2)}(${this.leg1Shares.toFixed(0)}份@bid$${leg1Bid.toFixed(2)}) - 成本$${this.totalCost.toFixed(2)} = ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)}`,
+                  leg1Shares: this.leg1Shares,
+                  leg1FillPrice: this.leg1FillPrice,
+                  orderId: this.leg1OrderId,
+                  estimated: this.leg1Estimated,
+                  entrySource: this.leg1EntrySource,
+                  entryTrendBias: this.leg1EntryTrendBias,
+                  entrySecondsLeft: this.leg1EntrySecondsLeft,
+                });
+                if (this.history.length > 200) this.history.shift();
+                this.saveHistory();
+
+                this.status = `中途止损: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} bid=$${leg1Bid.toFixed(2)}`;
+                logger.info(`HEDGE15M MID-EXIT DONE: ${result} return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)}`);
+                this.totalCost = 0;
+                this.leg1Shares = 0;
+                this.hedgeState = "done";
+              } else {
+                logger.error(`HEDGE15M MID-EXIT SELL FAILED — continuing to hold`);
+              }
+            }
+          }
+
+          if (this.hedgeState === "leg1_filled") {
+            // 仍在持仓 → 更新状态显示
+            const stabilityTag = this.midExitSignalContra >= 3 ? "⚠不稳" : this.midExitSignalAligned >= 3 ? "✓稳定" : "~中性";
+            this.status = `方向持仓: ${this.leg1Dir.toUpperCase()}@${entryPrice.toFixed(2)} bid=${(leg1Bid ?? 0).toFixed(2)} ${secs.toFixed(0)}s ${stabilityTag} [${this.midExitSignalAligned}↑${this.midExitSignalContra}↓${this.midExitContraStreak > 0 ? " streak" + this.midExitContraStreak : ""}]`;
+          }
         }
 
         // 回合最后30秒: 预加载下一轮市场

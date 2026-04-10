@@ -222,6 +222,7 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">量能/大单</span><span class="v" id="h-vol-large">--</span></div>
           <div class="r"><span class="k">深度/强平</span><span class="v" id="h-depth-liq">--</span></div>
           <div class="r"><span class="k">资金费率</span><span class="v" id="h-funding">--</span></div>
+          <div class="r"><span class="k">持仓信号</span><span class="v" id="h-mid-exit">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
         </div>
       </div>
@@ -609,6 +610,20 @@ function render(s) {
   const upEl = document.getElementById('h-up-ask'); if(upEl) upEl.textContent = upA;
   const dnEl = document.getElementById('h-dn-ask'); if(dnEl) dnEl.textContent = dnA;
   document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
+  // Mid-exit signal stability
+  const meEl = document.getElementById('h-mid-exit');
+  if (s.hedgeState === 'leg1_filled' && s.midExitEnabled) {
+    const a = s.midExitSignalAligned||0, c = s.midExitSignalContra||0, st = s.midExitContraStreak||0;
+    const tag = c>=3?'tag-r':a>=3?'tag-g':'tag-b';
+    const lbl = c>=3?'不稳 '+st+'/3':a>=3?'稳定':'中性';
+    meEl.innerHTML = '<span class="tag '+tag+'">'+lbl+' '+a+'↑'+c+'↓</span>';
+  } else if (s.hedgeState === 'leg1_filled') {
+    meEl.textContent = '已关闭';
+    meEl.style.color = '#7a8ea6';
+  } else {
+    meEl.textContent = '--';
+    meEl.style.color = '';
+  }
   if (s.hedgeLeg1Price>0) {
     document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+'</span>';
   } else {
