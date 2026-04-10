@@ -218,7 +218,6 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">预挂单</span><span class="v" id="h-preorder">--</span></div>
           <div class="r"><span class="k">入场上限</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
-          <div class="r"><span class="k">回撤保护</span><span class="v" id="h-drawdown">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
         </div>
       </div>
@@ -334,7 +333,6 @@ tr:hover{background:rgba(118,183,255,.03)}
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">Chainlink <b id="p-chainlink" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
-          <span style="color:var(--muted)">回撤保护 <b style="color:var(--text)">4h≥10%→收紧</b></span>
         </div>
       </div>
 
@@ -612,13 +610,9 @@ function render(s) {
   } else {
     document.getElementById('h-leg1').textContent='--';
   }
-  const ddEl = document.getElementById('h-drawdown');
-  ddEl.innerHTML = s.drawdownProtected
-    ? '<span class="tag tag-r">保护中 \$'+s.rolling4hPnL.toFixed(2)+'</span>'
-    : '<span class="tag tag-g">'+(s.rolling4hPnL!==0?'\$'+s.rolling4hPnL.toFixed(2):'正常')+'</span>';
   const xEl = document.getElementById('h-expected');
   xEl.textContent = '\$'+s.effectiveMaxAsk.toFixed(2);
-  xEl.style.color = s.drawdownProtected?'#f4c96b':'#42d392';
+  xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
     const sm = s.askSum||0, cf = s.dumpConfirmCount||0, maxCf = s.rtDumpConfirmCycles||2;

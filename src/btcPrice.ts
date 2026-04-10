@@ -364,6 +364,27 @@ export function getChainlinkDirection(): string {
   return chainlinkPrice >= roundStartChainlinkPrice ? "up" : "down";
 }
 
+/** CL 变动幅度百分比 (绝对值). 基准为 roundStartChainlinkPrice */
+export function getChainlinkMovePct(): number {
+  if (chainlinkPrice <= 0 || roundStartChainlinkPrice <= 0) return 0;
+  return Math.abs(chainlinkPrice - roundStartChainlinkPrice) / roundStartChainlinkPrice;
+}
+
+/** CL 新鲜度分档: "high"(<60s) | "mid"(60-300s) | "low"(300-900s) | "stale"(>900s) */
+export function getChainlinkFreshnessTier(): "high" | "mid" | "low" | "stale" {
+  if (chainlinkUpdatedAt <= 0) return "stale";
+  const age = Math.floor(Date.now() / 1000) - chainlinkUpdatedAt;
+  if (age <= 60) return "high";
+  if (age <= 300) return "mid";
+  if (age <= 900) return "low";
+  return "stale";
+}
+
+/** Binance 方向 (纯交易所价格 vs 回合开始价) */
+export function getBinanceDirection(): string {
+  return getDirection();          // getDirection() 已经是 Binance 价格
+}
+
 /** 返回最近 N 秒内 BTC 价格变化百分比 (正=涨, 负=跌) */
 export function getRecentMomentum(windowSec = 30): number {
   if (recentPrices.length < 2) return 0;
