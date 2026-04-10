@@ -218,6 +218,10 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">预挂单</span><span class="v" id="h-preorder">--</span></div>
           <div class="r"><span class="k">入场上限</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
+          <div class="r"><span class="k">买卖流</span><span class="v" id="h-taker-flow">--</span></div>
+          <div class="r"><span class="k">量能/大单</span><span class="v" id="h-vol-large">--</span></div>
+          <div class="r"><span class="k">深度/强平</span><span class="v" id="h-depth-liq">--</span></div>
+          <div class="r"><span class="k">资金费率</span><span class="v" id="h-funding">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
         </div>
       </div>
@@ -618,6 +622,51 @@ function render(s) {
     const sm = s.askSum||0, cf = s.dumpConfirmCount||0, maxCf = s.rtDumpConfirmCycles||2;
     scEl.textContent = sm>0 ? 'Σ'+sm.toFixed(2)+(sm>0.95?' ⚠':sm<0.85?' ✓':'')+' 确认'+cf+'/'+maxCf : '--';
     scEl.style.color = sm>0.95?'#ff6b6b':sm<0.85?'#42d392':'#8ea0b8';
+  }
+  // L: Taker Flow
+  const tfEl = document.getElementById('h-taker-flow');
+  if (tfEl) {
+    const r = s.takerFlowRatio||1, dir = s.takerFlowDirection||'neutral', conf = s.takerFlowConfidence||'low', tr = s.takerFlowTrend||'unknown', n = s.takerFlowTrades||0;
+    if (n < 10) { tfEl.textContent = '数据不足'; tfEl.style.color = '#7a8ea6'; }
+    else {
+      const arrow = dir==='buy'?'▲买':dir==='sell'?'▼卖':'◆平';
+      const tArrow = tr==='strengthening'?'↑增强':tr==='weakening'?'↓减弱':'';
+      tfEl.textContent = r.toFixed(2)+' '+arrow+' '+conf+(tArrow?' '+tArrow:'');
+      tfEl.style.color = dir==='buy'?'#42d392':dir==='sell'?'#ff6b6b':'#7a8ea6';
+    }
+  }
+  // M+N: Volume Spike + Large Order
+  const vlEl = document.getElementById('h-vol-large');
+  if (vlEl) {
+    const vr = s.volSpikeRatio||1, vs = s.volSpikeIsSpike, vd = s.volSpikeDirection||'neutral';
+    const lb = s.largeBuyCount||0, ls = s.largeSellCount||0, ld = s.largeDirection||'neutral', lr = s.largeRecent60s||0;
+    const vText = vs ? vr.toFixed(1)+'x!'+(vd==='buy'?'▲':vd==='sell'?'▼':'') : vr.toFixed(1)+'x';
+    const lText = (lb+ls)>0 ? ' 大单'+lb+'B/'+ls+'S'+(lr>0?' ('+lr+'/min)':'') : ' 无大单';
+    vlEl.textContent = '量'+vText+lText;
+    vlEl.style.color = vs?'#f4c96b':(lb+ls)>0?(ld==='buy'?'#42d392':ld==='sell'?'#ff6b6b':'#7a8ea6'):'#7a8ea6';
+  }
+  // O+P: Depth + Liquidation
+  const dlEl = document.getElementById('h-depth-liq');
+  if (dlEl) {
+    const dr = s.depthRatio||1, dd = s.depthDirection||'neutral', df = s.depthFresh;
+    const lbv = s.liqBuyVol||0, lsv = s.liqSellVol||0, ld2 = s.liqDirection||'neutral', li = s.liqIntensity||'low';
+    const dText = df ? 'B/A='+dr.toFixed(2)+(dd==='buy'?' ▲买厚':dd==='sell'?' ▼卖厚':'') : '深度--';
+    const lTotal = lbv+lsv;
+    const lText = lTotal>0 ? ' 强平'+lTotal.toFixed(2)+(ld2==='buy'?'▲空爆':ld2==='sell'?'▼多爆':'') : ' 无强平';
+    dlEl.textContent = dText+lText;
+    dlEl.style.color = li==='high'?'#ff6b6b':li==='medium'?'#f4c96b':(dd!=='neutral'?'#76b7ff':'#7a8ea6');
+  }
+  // Q: Funding Rate
+  const frEl = document.getElementById('h-funding');
+  if (frEl) {
+    const fr = s.fundingRate||0, fd = s.fundingDirection||'neutral', fe = s.fundingExtreme;
+    if (fd==='neutral' && fr===0) { frEl.textContent = '--'; frEl.style.color = '#7a8ea6'; }
+    else {
+      const bp = (fr*10000).toFixed(1);
+      const label = fd==='long_pay'?'多付空':fd==='short_pay'?'空付多':'中性';
+      frEl.textContent = bp+'bp '+label+(fe?' ⚠极端':'');
+      frEl.style.color = fe?'#ff6b6b':fd==='long_pay'?'#f4c96b':fd==='short_pay'?'#76b7ff':'#7a8ea6';
+    }
   }
   const prEl = document.getElementById('h-preorder');
   if (prEl) {
