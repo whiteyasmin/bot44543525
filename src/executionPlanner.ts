@@ -28,7 +28,13 @@ export function planHedgeEntry(input: HedgeEntryPlanInput): EntryPlanResult {
   if (askPrice < minEntryAsk) {
     return { allowed: false, reason: `ask=${askPrice.toFixed(2)} < MIN_ENTRY_ASK=${minEntryAsk}` };
   }
-  // 方向偏差不再拒绝入场: ≤$0.35 时 EV 天然为正 (50%胜率即+$0.15/份)
-  // 信号仅用于 Kelly 仓位调权, 不阻止入场
+  // BTC方向逆向拒绝: 市场重定价而非砸盘 (例: BTC跌时买UP=买反)
+  // 仅在偏差直接对立时拒绝, flat不阻止
+  if (directionalBias === "down" && dir === "up") {
+    return { allowed: false, reason: `BTC偏向DOWN但买UP — 重定价而非砸盘` };
+  }
+  if (directionalBias === "up" && dir === "down") {
+    return { allowed: false, reason: `BTC偏向UP但买DOWN — 重定价而非砸盘` };
+  }
   return { allowed: true };
 }

@@ -47,12 +47,12 @@ const KELLY_FRACTION = 0.5;               // Half-Kelly (避免过度下注)
 const LIMIT_RACE_ENABLED = true;           // 启用 Limit+FAK 赛跑
 const LIMIT_RACE_OFFSET = 0.01;            // limit 挂单价 = ask - offset
 const LIMIT_RACE_FAST_OFFSET = 0.03;       // dump 快速时更激进 (多省1c/份)
-const LIMIT_RACE_TIMEOUT_MS = 600;         // limit 等待上限 ms (延长→提高maker成交率→省2%fee)
+const LIMIT_RACE_TIMEOUT_MS = 900;         // limit 等待上限 ms (900ms: maker 0%fee vs taker 2%fee, 多等300ms值得)
 const LIMIT_RACE_POLL_MS = 50;             // 每 50ms 检查一次
 const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
 const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
-const DUAL_SIDE_SUM_CEILING = 0.96;        // 预挂单目标: 双侧sum ≤ 此值 (较0.94放宽, 提高挂单与成交机会)
-const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少)
+const DUAL_SIDE_SUM_CEILING = 0.93;        // 预挂单目标: 双侧sum ≤ 此值 (收紧→只在更便宜的价位挂单→EV+更高)
+const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少, 实际用动态offset)
 const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
 const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
@@ -76,6 +76,11 @@ const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再�
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
+
+// ── 资金安全守护 ──
+const MIN_BALANCE_TO_TRADE = 5;             // 余额<$5停止交易 (不够开最小仓)
+const MAX_SESSION_LOSS_PCT = 0.35;          // 单次会话亏损超过初始资金35%→暂停交易 (更早止损保留本金)
+const CONSECUTIVE_LOSS_PAUSE = 5;           // 连续亏损5次→暂停1轮冷静期 (更快适应市场regime变化)
 
 export type PaperSessionMode = "session" | "persistent";
 
@@ -366,6 +371,7 @@ export class Hedge15mEngine {
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   private trendConfirmCount = 0;            // 趋势连续确认计数
   private lastTrendConfirmDir = "";         // 上个cycle的趋势方向
+  private consecutiveLosses = 0;            // 连续亏损计数 (资金安全守护)
 
   // ── 运行时可调参数 (覆盖 const) ──
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
@@ -690,6 +696,18 @@ export class Hedge15mEngine {
         sessionProfit: this.sessionProfit,
         rollingPnL: this.rollingPnL,
         updatedAt: new Date().toISOString(),
+        openPosition: this.hedgeState === "leg1_filled" && this.leg1Shares > 0 ? {
+          conditionId: this.currentConditionId,
+          leg1Dir: this.leg1Dir,
+          leg1Token: this.leg1Token,
+          leg1Shares: this.leg1Shares,
+          leg1FillPrice: this.leg1FillPrice,
+          leg1OrderId: this.leg1OrderId,
+          totalCost: this.totalCost,
+          roundStartBtcPrice: this.roundStartBtcPrice,
+          entrySource: this.leg1EntrySource,
+          filledAt: this.leg1FilledAt,
+        } : null,
       });
     } catch (e: any) {
       logger.warn(`Paper runtime save failed: ${e.message}`);
@@ -808,6 +826,35 @@ export class Hedge15mEngine {
       : [];
     this.history = [];
     this.loadHistory();
+
+    // ── 崩溃恢复: 检查上次是否有未结算的持仓 ──
+    if (persistedPaperState?.openPosition && persistedPaperState.openPosition.leg1Shares > 0) {
+      const pos = persistedPaperState.openPosition;
+      // 检查持仓是否过期 (超过15分钟已结算)
+      const ageMs = Date.now() - pos.filledAt;
+      if (ageMs < 20 * 60_000) { // 20min内的持仓可能还在结算中
+        logger.warn(`CRASH RECOVERY: found open position ${pos.leg1Dir.toUpperCase()} ${pos.leg1Shares}份 @${pos.leg1FillPrice.toFixed(2)} from ${Math.floor(ageMs/1000)}s ago`);
+        this.hedgeState = "leg1_filled";
+        this.leg1Dir = pos.leg1Dir;
+        this.leg1Token = pos.leg1Token;
+        this.leg1Shares = pos.leg1Shares;
+        this.leg1FillPrice = pos.leg1FillPrice;
+        this.leg1Price = pos.leg1FillPrice;
+        this.leg1OrderId = pos.leg1OrderId;
+        this.totalCost = pos.totalCost;
+        this.roundStartBtcPrice = pos.roundStartBtcPrice;
+        this.leg1EntrySource = pos.entrySource;
+        this.leg1FilledAt = pos.filledAt;
+        this.currentConditionId = pos.conditionId;
+        this.leg1AttemptedThisRound = true;
+        this.activeStrategyMode = "mispricing";
+        this.status = `恢复持仓: ${pos.leg1Dir.toUpperCase()} @${pos.leg1FillPrice.toFixed(2)} x${pos.leg1Shares}`;
+        this.writeRoundAudit("crash-recovery", { position: pos, ageMs });
+      } else {
+        logger.info(`CRASH RECOVERY: stale position (${Math.floor(ageMs/60000)}min old), discarding`);
+      }
+    }
+
     this.savePaperRuntimeSnapshot();
 
     logger.info(`Hedge15m started (${this.tradingMode}), balance=$${this.balance.toFixed(2)}`);
@@ -945,8 +992,30 @@ export class Hedge15mEngine {
           this.roundStartBtcPrice = getBtcPrice();
           setRoundStartPrice(); // 同步设置 btcPrice 模块的回合基准
           this.negRisk = !!rnd.negRisk;
+
+          // ── 资金安全守护 ──
+          if (this.balance < MIN_BALANCE_TO_TRADE) {
+            this.hedgeState = "done";
+            this.status = `暂停: 余额$${this.balance.toFixed(2)} < $${MIN_BALANCE_TO_TRADE}`;
+            this.skips++;
+            logger.warn(`CAPITAL GUARD: balance $${this.balance.toFixed(2)} < $${MIN_BALANCE_TO_TRADE}, skipping round`);
+            this.writeRoundAudit("round-skip-capital", { reason: "low-balance", balance: this.balance });
+          } else if (this.initialBankroll > 0 && this.sessionProfit < -(this.initialBankroll * MAX_SESSION_LOSS_PCT)) {
+            this.hedgeState = "done";
+            this.status = `暂停: 会话亏损$${Math.abs(this.sessionProfit).toFixed(2)} > ${(MAX_SESSION_LOSS_PCT * 100).toFixed(0)}%本金`;
+            this.skips++;
+            logger.warn(`CAPITAL GUARD: session loss $${this.sessionProfit.toFixed(2)} exceeds ${(MAX_SESSION_LOSS_PCT * 100).toFixed(0)}% of bankroll $${this.initialBankroll.toFixed(2)}, skipping`);
+            this.writeRoundAudit("round-skip-capital", { reason: "session-loss-limit", sessionProfit: this.sessionProfit, initialBankroll: this.initialBankroll });
+          } else if (this.consecutiveLosses >= CONSECUTIVE_LOSS_PAUSE) {
+            this.hedgeState = "done";
+            this.status = `冷静期: 连亏${this.consecutiveLosses}次, 跳过1轮`;
+            this.skips++;
+            logger.warn(`CAPITAL GUARD: ${this.consecutiveLosses} consecutive losses, cooling down 1 round`);
+            this.writeRoundAudit("round-skip-capital", { reason: "consecutive-losses", consecutiveLosses: this.consecutiveLosses });
+            this.consecutiveLosses = 0; // 冷静1轮后重置
+          }
           // 跳过剩余时间不足的回合 — 无法完成 dump检测 + 对冲
-          if (secs < this.rtMinEntrySecs) {
+          else if (secs < this.rtMinEntrySecs) {
             this.hedgeState = "done";
             this.status = `跳过: 剩余${Math.floor(secs)}s < ${this.rtMinEntrySecs}s`;
             this.skips++;
@@ -1019,17 +1088,32 @@ export class Hedge15mEngine {
               });
 
               if (mispricing.bothSidesDumping) {
-                // 双侧都在dump: 选ask更低的那侧入场 (≤$0.35仍然EV+, 不完全跳过)
-                const cheaperDir: "up" | "down" = this.upAsk <= this.downAsk ? "up" : "down";
-                const cheaperAsk = cheaperDir === "up" ? this.upAsk : this.downAsk;
+                // 双侧都在dump: 选BTC方向一致且ask更低的那侧入场
+                const btcDir = getBtcDirection();
+                // 优先选与BTC方向一致的侧 (BTC涨→买UP, BTC跌→买DOWN)
+                let cheaperDir: "up" | "down";
+                const btcAlignedDir: "up" | "down" = btcDir === "up" ? "up" : "down";
+                const btcAlignedAsk = btcAlignedDir === "up" ? this.upAsk : this.downAsk;
                 const maxAsk = this.getMaxEntryAsk();
+                if (btcAlignedAsk > 0 && btcAlignedAsk <= maxAsk && btcAlignedAsk >= MIN_ENTRY_ASK) {
+                  cheaperDir = btcAlignedDir;
+                } else {
+                  cheaperDir = this.upAsk <= this.downAsk ? "up" : "down";
+                }
+                const cheaperAsk = cheaperDir === "up" ? this.upAsk : this.downAsk;
                 if (cheaperAsk > 0 && cheaperAsk <= maxAsk && cheaperAsk >= MIN_ENTRY_ASK) {
-                  logger.info(`HEDGE15M BOTH DUMP → picking cheaper ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)} (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
-                  this.dumpDetected = `BOTH-DUMP → ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)}`;
-                  this.currentDumpDrop = cheaperDir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
-                  this.activeStrategyMode = "mispricing";
-                  const buyToken = cheaperDir === "up" ? rnd.upToken : rnd.downToken;
-                  await this.buyLeg1(trader, rnd, cheaperDir, cheaperAsk, buyToken);
+                  // BTC方向逆向检查
+                  const btcContra = (cheaperDir === "up" && btcDir === "down") || (cheaperDir === "down" && btcDir === "up");
+                  if (btcContra) {
+                    logger.warn(`HEDGE15M SKIP: both dump → ${cheaperDir.toUpperCase()} but BTC=${btcDir} — 不逆势入场`);
+                  } else {
+                    logger.info(`HEDGE15M BOTH DUMP → picking ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)} (BTC=${btcDir}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
+                    this.dumpDetected = `BOTH-DUMP → ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)}`;
+                    this.currentDumpDrop = cheaperDir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                    this.activeStrategyMode = "mispricing";
+                    const buyToken = cheaperDir === "up" ? rnd.upToken : rnd.downToken;
+                    await this.buyLeg1(trader, rnd, cheaperDir, cheaperAsk, buyToken);
+                  }
                 } else {
                   logger.warn(`HEDGE15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) cheapest=${cheaperAsk.toFixed(2)} > maxAsk=$${maxAsk.toFixed(2)}`);
                 }
@@ -1078,12 +1162,17 @@ export class Hedge15mEngine {
                           logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — no mispricing edge`);
                         }
                       } else {
-                        // ── 直接入场 (无信号门控 — ≤$0.35即EV+, 信号仅记录) ──
+                        // ── BTC方向逆向过滤: 买方向与BTC实时走势直接矛盾时拒绝 ──
+                        const btcDir = getBtcDirection();
+                        const btcContra = (candidate.dir === "up" && btcDir === "down") || (candidate.dir === "down" && btcDir === "up");
+                        if (btcContra) {
+                          this.trackRoundRejectReason(`btc_contra: buy ${candidate.dir} but BTC=${btcDir}`);
+                          logger.warn(`HEDGE15M SKIP: buy ${candidate.dir.toUpperCase()} but BTC=${btcDir} — 重定价而非砸盘`);
+                        } else {
+                        // ── 入场: 价格达标 + BTC方向不矛盾 ──
                         this.dumpDetected = candidate.dumpDetected;
                         this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                         this.activeStrategyMode = "mispricing";
-                        const btcDir = getBtcDirection();
-                        // 信号仅记录用于诊断, 不影响入场决策
                         const flow = getTakerFlowRatio();
                         const depth = getDepthImbalance();
                         const liq = getLiquidationInfo();
@@ -1095,6 +1184,7 @@ export class Hedge15mEngine {
                           candidate.askPrice,
                           rnd[candidate.buyTokenKey],
                         );
+                        }
                       }
                     }
                   }
@@ -1244,16 +1334,14 @@ export class Hedge15mEngine {
     // Kelly: f* = (p*b - q) / b, b = (1-ask)/ask, Half-Kelly = f*/2
     const odds = (1 - askPrice) / askPrice;  // 赔率
     const kellyFull = (KELLY_WIN_RATE * odds - (1 - KELLY_WIN_RATE)) / odds;
-    const kellyBase = Math.max(0.08, Math.min(0.30, kellyFull * this.rtKellyFraction));
+    // ── EV+分层Kelly上限: 越便宜EV越高, 允许更大仓位 ──
+    const kellyCapForPrice = askPrice <= 0.20 ? 0.40 : askPrice <= 0.25 ? 0.35 : askPrice <= 0.30 ? 0.32 : 0.30;
+    const kellyBase = Math.max(0.08, Math.min(kellyCapForPrice, kellyFull * this.rtKellyFraction));
     let budgetPct = kellyBase;
     if (directionalBias === dir) {
       budgetPct += TREND_BUDGET_BOOST; // 趋势一致追加
     } else if (directionalBias === "flat") {
       budgetPct -= TREND_BUDGET_CUT;   // 中性减仓
-    }
-    // ── 超低价加仓: ask≤$0.25时EV+$0.25/份, 值得更大仓位 ──
-    if (askPrice <= 0.25) {
-      budgetPct += 0.05; // 超低价额外+5%
     }
     // ── 统一7源信号Kelly调权: aligned多→加仓, contra多→减仓 ──
     if (this.dirAlignedCount >= 3) {
@@ -1263,7 +1351,7 @@ export class Hedge15mEngine {
       budgetPct *= 1.0 - (this.dirContraCount - 2) * 0.10; // 3→×0.90, 4→×0.80, 5→×0.70...
       logger.info(`KELLY SIG SHRINK: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
     }
-    budgetPct = Math.max(0.08, Math.min(0.30, budgetPct)); // 硬限 8%-30% (低价EV+大, 允许更大仓位)
+    budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
     await this.openLeg1Position(
       trader,
@@ -1297,14 +1385,16 @@ export class Hedge15mEngine {
     // ── 趋势专用 Kelly: 假设比随机更高的胜率(58%) ──
     const odds = (1 - askPrice) / askPrice;
     const kellyFull = (TREND_KELLY_WIN_RATE * odds - (1 - TREND_KELLY_WIN_RATE)) / odds;
-    let budgetPct = Math.max(0.06, Math.min(0.18, kellyFull * this.rtKellyFraction));
+    // 趋势Kelly: 低价趋势EV+大→放开上限
+    const trendKellyCap = askPrice <= 0.40 ? 0.22 : 0.18;
+    let budgetPct = Math.max(0.06, Math.min(trendKellyCap, kellyFull * this.rtKellyFraction));
     // 信号加权 (趋势trade也受信号影响, 但Kelly更保守)
     if (this.dirAlignedCount >= 3) {
       budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.04;
     } else if (this.dirContraCount >= 3) {
       budgetPct *= 1.0 - (this.dirContraCount - 2) * 0.08;
     }
-    budgetPct = Math.max(0.06, Math.min(0.18, budgetPct)); // 趋势trade更保守: 6%-18%
+    budgetPct = Math.max(0.06, Math.min(trendKellyCap, budgetPct)); // 趋势trade: 6%-18/22%
 
     this.dumpDetected = `TREND ${dir.toUpperCase()} @${askPrice.toFixed(2)} (${this.trendConfirmCount}cycle)`;
     this.activeStrategyMode = "trend";
@@ -1465,14 +1555,16 @@ export class Hedge15mEngine {
     // ── 计算理想挂单价 ──
     // 目标: 如果一侧被吃到, sum = myFillPrice + oppositeAsk ≤ DUAL_SIDE_SUM_CEILING
     // → myLimit ≤ DUAL_SIDE_SUM_CEILING - oppositeCurrentAsk
-    // 同时至少比当前ask低一个offset
+    // 动态offset: 按ask的6%计算, 至少DUAL_SIDE_OFFSET, ask越高offset越大→EV+更高
+    const dynamicUpOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(upAsk * 0.06 * 100) / 100);
+    const dynamicDnOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(downAsk * 0.06 * 100) / 100);
     const idealUpLimit = Math.min(
       DUAL_SIDE_SUM_CEILING - downAsk,
-      upAsk - DUAL_SIDE_OFFSET,
+      upAsk - dynamicUpOffset,
     );
     const idealDownLimit = Math.min(
       DUAL_SIDE_SUM_CEILING - upAsk,
-      downAsk - DUAL_SIDE_OFFSET,
+      downAsk - dynamicDnOffset,
     );
 
     // 价格精度 0.01
@@ -1527,7 +1619,9 @@ export class Hedge15mEngine {
     const avgLimitPrice = (upLimit + downLimit) / 2;
     const preOdds = avgLimitPrice > 0 ? (1 - avgLimitPrice) / avgLimitPrice : 2.0;
     const preKelly = (KELLY_WIN_RATE * preOdds - (1 - KELLY_WIN_RATE)) / preOdds;
-    const preBudgetPct = Math.max(0.08, Math.min(0.25, preKelly * this.rtKellyFraction));
+    // 预挂单Kelly: 低价EV+更大, 提高上限
+    const preKellyCap = avgLimitPrice <= 0.25 ? 0.30 : 0.25;
+    const preBudgetPct = Math.max(0.08, Math.min(preKellyCap, preKelly * this.rtKellyFraction));
     const singleSideBudget = this.balance * preBudgetPct * 0.5;
 
     const now = Date.now();
@@ -1827,6 +1921,8 @@ export class Hedge15mEngine {
       if (this.currentDumpDrop >= LIMIT_RACE_FAST_DUMP_THRESHOLD) {
         limitOffset = LIMIT_RACE_FAST_OFFSET;
       }
+      // EV+: 趋势入场价格更稳定, 给maker更多等待时间 → 省2%fee
+      const raceTimeout = entrySource === "trend-follow" ? LIMIT_RACE_TIMEOUT_MS + 400 : LIMIT_RACE_TIMEOUT_MS;
 
       const adjustedCost = adjustedShares * entryAsk;
       logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
@@ -1835,7 +1931,7 @@ export class Hedge15mEngine {
 
       let fillResult: { orderId: string; filled: number; avgPrice: number; maker: boolean } | null = null;
       if (LIMIT_RACE_ENABLED) {
-        fillResult = await this.limitRaceBuy(trader, buyToken, adjustedShares, entryAsk, limitOffset, LIMIT_RACE_TIMEOUT_MS, this.negRisk);
+        fillResult = await this.limitRaceBuy(trader, buyToken, adjustedShares, entryAsk, limitOffset, raceTimeout, this.negRisk);
       } else {
         fillResult = await this.fakBuyFallback(trader, buyToken, adjustedShares, entryAsk, this.negRisk);
       }
@@ -1895,6 +1991,7 @@ export class Hedge15mEngine {
   }
 
   private async settleHedge(): Promise<void> {
+    const preSettleBalance = this.balance; // 记录结算前余额用于校验
     await sleep(2000); // 等待价格源更新
 
     // 结算方向判断: Binance BTC 价格对比回合开始价
@@ -1934,8 +2031,8 @@ export class Hedge15mEngine {
     const profit = returnVal - this.totalCost;
     const result = profit >= 0 ? "WIN" : "LOSS";
 
-    if (result === "WIN") { this.wins++; }
-    else { this.losses++; }
+    if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
+    else { this.losses++; this.consecutiveLosses++; }
     this.totalProfit += profit;
     this.sessionProfit += profit;
     this.recordRollingPnL(profit);
@@ -1980,6 +2077,17 @@ export class Hedge15mEngine {
     // 等待链上结算生效后再同步余额
     await sleep(5000);
     await this.refreshBalance();
+
+    // ── 结算 P/L 校验: 链上余额 vs 本地预期 ──
+    if (this.tradingMode === "live") {
+      const expectedBalance = preSettleBalance + returnVal;
+      const drift = Math.abs(this.balance - expectedBalance);
+      if (drift > 0.50) {
+        logger.warn(`SETTLE P/L DRIFT: expected=$${expectedBalance.toFixed(2)} actual=$${this.balance.toFixed(2)} drift=$${drift.toFixed(2)} (cost=$${this.totalCost.toFixed(2)} return=$${returnVal.toFixed(2)})`);
+        this.writeRoundAudit("settle-pl-drift", { preSettleBalance, expectedBalance, actualBalance: this.balance, drift, returnVal, totalCost: this.totalCost });
+      }
+    }
+
     this.totalCost = 0;
     this.leg1Shares = 0;
     this.hedgeState = "done";

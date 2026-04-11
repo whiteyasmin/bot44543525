@@ -155,7 +155,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 <div id="login-overlay">
   <div class="login-box">
     <h2>DumpCatcher-15m</h2>
-    <p class="login-sub">BTC 15分钟二元期权 · 低价入场+纯持有+趋势追涨</p>
+    <p class="login-sub">BTC 15分钟二元期权 · EV+正期望值交易系统</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
     <div style="margin-top:14px"><button class="btn-g" onclick="doLogin()" style="width:100%">登录</button></div>
@@ -181,7 +181,8 @@ tr:hover{background:rgba(118,183,255,.03)}
       <div class="cell"><div class="val" id="s-profit">$0.00</div><div class="lbl">总盈亏</div></div>
       <div class="cell"><div class="val" id="s-balance">$0.00</div><div class="lbl">余额</div></div>
       <div class="cell"><div class="val" id="s-record">0W / 0L</div><div class="lbl">战绩 / ROI</div></div>
-      <div class="cell"><div class="val" id="s-sum">--</div><div class="lbl">实时 SUM</div></div>
+      <div class="cell"><div class="val" id="s-ev">--</div><div class="lbl">实时 EV/份</div></div>
+      <div class="cell"><div class="val" id="s-avg-ev">--</div><div class="lbl">实际 EV/份</div></div>
     </div>
 
     <div class="grid">
@@ -211,10 +212,11 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">策略</span><span class="v" id="h-strategy-mode">--</span></div>
           <div class="r"><span class="k">趋势</span><span class="v" id="h-trend-bias">--</span></div>
           <div class="r"><span class="k">BTC</span><span class="v" id="h-btc">--</span></div>
-          <div class="r"><span class="k">UP/DN Ask</span><span class="v" id="h-asks">--</span></div>
+          <div class="r"><span class="k">UP Ask · EV</span><span class="v" id="h-up-ev">--</span></div>
+          <div class="r"><span class="k">DN Ask · EV</span><span class="v" id="h-dn-ev">--</span></div>
           <div class="r"><span class="k">持仓</span><span class="v" id="h-leg1">--</span></div>
           <div class="r"><span class="k">预挂单</span><span class="v" id="h-preorder">--</span></div>
-          <div class="r"><span class="k">入场上限</span><span class="v" id="h-expected">--</span></div>
+          <div class="r"><span class="k">入场EV阈值</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
           <div class="r"><span class="k">买卖流</span><span class="v" id="h-taker-flow">--</span></div>
           <div class="r"><span class="k">量能/大单</span><span class="v" id="h-vol-large">--</span></div>
@@ -230,7 +232,7 @@ tr:hover{background:rgba(118,183,255,.03)}
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;color:var(--muted)">
             <span>确认 <b id="dump-confirm" style="color:var(--text)">--</b></span>
-            <span>EV/份 <b id="dump-signals" style="color:var(--text)">--</b></span>
+            <span>持仓EV <b id="dump-signals" style="color:var(--text)">--</b></span>
             <span>动量拒绝 <b id="dump-mom-rej" style="color:var(--text)">--</b></span>
             <span>价格拒绝 <b id="dump-ask-rej" style="color:var(--text)">--</b></span>
           </div>
@@ -242,13 +244,13 @@ tr:hover{background:rgba(118,183,255,.03)}
         <h3>盈利质量</h3>
         <div class="hero3">
           <div class="box"><div class="eye">样本</div><div class="big" id="a-trades">--</div></div>
-          <div class="box"><div class="eye">边际</div><div class="big" id="a-est">--</div></div>
-          <div class="box"><div class="eye">判定</div><div class="big" id="a-warning">--</div></div>
+          <div class="box"><div class="eye">实际EV/份</div><div class="big" id="a-est">--</div></div>
+          <div class="box"><div class="eye">EV状态</div><div class="big" id="a-warning">--</div></div>
         </div>
         <div class="kv single">
-          <div class="r"><span class="k">价格分桶</span><span class="v" id="a-winrate">--</span></div>
-          <div class="r"><span class="k">趋势分桶</span><span class="v" id="a-pf">--</span></div>
-          <div class="r"><span class="k">入场来源</span><span class="v" id="a-dd">--</span></div>
+          <div class="r"><span class="k">EV分桶 (价格)</span><span class="v" id="a-winrate">--</span></div>
+          <div class="r"><span class="k">EV分桶 (趋势)</span><span class="v" id="a-pf">--</span></div>
+          <div class="r"><span class="k">EV分桶 (来源)</span><span class="v" id="a-dd">--</span></div>
         </div>
         <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
           <h3 style="margin-bottom:6px">运行状态</h3>
@@ -299,15 +301,15 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div>
             <label>反应入场上限</label>
             <select id="cfg-max-entry-ask">
-              <option value="0.30">$0.30 (极保守)</option>
-              <option value="0.35" selected>$0.35 (EV+$0.15)</option>
+              <option value="0.30">$0.30 → EV≥+$0.20</option>
+              <option value="0.35" selected>$0.35 → EV≥+$0.15</option>
             </select>
           </div>
           <div>
             <label>预挂上限</label>
             <select id="cfg-dual-max-ask">
-              <option value="0.30">$0.30 (保守)</option>
-              <option value="0.35" selected>$0.35 (EV+$0.15)</option>
+              <option value="0.30">$0.30 → EV≥+$0.20</option>
+              <option value="0.35" selected>$0.35 → EV≥+$0.15</option>
             </select>
           </div>
           <div>
@@ -332,9 +334,9 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div>
             <label>趋势上限</label>
             <select id="cfg-trend-max-ask">
-              <option value="0.45">$0.45 (保守)</option>
-              <option value="0.50" selected>$0.50 (默认)</option>
-              <option value="0.55">$0.55 (激进)</option>
+              <option value="0.45">$0.45 → EV≥+$0.13</option>
+              <option value="0.50" selected>$0.50 → EV≥+$0.08</option>
+              <option value="0.55">$0.55 → EV≥+$0.03</option>
             </select>
           </div>
           <div class="span2">
@@ -349,8 +351,8 @@ tr:hover{background:rgba(118,183,255,.03)}
         <h3>运行参数</h3>
         <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px" id="params-bar">
           <span style="color:var(--muted)">仓位 <b id="p-kelly" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">预挂上限 <b id="p-dual-ask" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">反应上限 <b id="p-max-ask" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">预挂EV≥ <b id="p-dual-ask" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">反应EV≥ <b id="p-max-ask" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">砸盘确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">趋势 <b id="p-trend" style="color:var(--text)">--</b></span>
@@ -369,6 +371,7 @@ tr:hover{background:rgba(118,183,255,.03)}
                 <th>结果</th>
                 <th>方向</th>
                 <th>入场</th>
+                <th>EV/份</th>
                 <th>份数</th>
                 <th>成本</th>
                 <th>盈亏</th>
@@ -505,28 +508,29 @@ function renderDirectionalAudit(history) {
     mid: settled.filter(h => { const p=h.leg1FillPrice||h.leg1Price||0; return p>0.25&&p<=0.30; }),
     high: settled.filter(h => { const p=h.leg1FillPrice||h.leg1Price||0; return p>0.30&&p<=0.35; }),
   };
-  document.getElementById('a-winrate').textContent = '≤.25 '+summarizeWinRate(byP.low)+' .25-.30 '+summarizeWinRate(byP.mid)+' .30-.35 '+summarizeWinRate(byP.high);
+  document.getElementById('a-winrate').textContent = '≤.25 '+evBucket(byP.low)+' .26-.30 '+evBucket(byP.mid)+' .31-.35 '+evBucket(byP.high);
   const tG = {
     up: settled.filter(h => h.entryTrendBias === 'up'),
     down: settled.filter(h => h.entryTrendBias === 'down'),
     flat: settled.filter(h => !h.entryTrendBias || h.entryTrendBias === 'flat'),
   };
-  document.getElementById('a-pf').textContent = 'UP '+summarizeWinRate(tG.up)+' DN '+summarizeWinRate(tG.down)+' FLAT '+summarizeWinRate(tG.flat);
+  const evBucket = (items) => { if(!items.length) return '--'; const avg=items.reduce((s,h)=>s+((h.result==='WIN'?1:0)-(h.leg1FillPrice||h.leg1Price||0)),0)/items.length; return (avg>=0?'+':'')+avg.toFixed(3); };
+  document.getElementById('a-pf').textContent = 'UP '+evBucket(tG.up)+' DN '+evBucket(tG.down)+' FLAT '+evBucket(tG.flat);
   const sG = {
     pre: settled.filter(h => h.entrySource === 'dual-side-preorder'),
     mis: settled.filter(h => h.entrySource === 'reactive-mispricing'),
     trend: settled.filter(h => h.entrySource === 'trend-follow'),
   };
-  document.getElementById('a-dd').textContent = '预挂 '+summarizeWinRate(sG.pre)+' / 砸盘 '+summarizeWinRate(sG.mis)+' / 趋势 '+summarizeWinRate(sG.trend);
+  document.getElementById('a-dd').textContent = '预挂 '+evBucket(sG.pre)+' / 砸盘 '+evBucket(sG.mis)+' / 趋势 '+evBucket(sG.trend);
   const avgEdge = settled.reduce((s,h) => s+((h.result==='WIN'?1:0)-(h.leg1FillPrice||h.leg1Price||0)),0)/settled.length;
   const eEl = document.getElementById('a-est');
   eEl.textContent = (avgEdge>=0?'+':'')+avgEdge.toFixed(3);
   eEl.style.color = avgEdge>0?'#42d392':avgEdge<0?'#ff6b6b':'#f4c96b';
   const hiWR = byP.high.length ? byP.high.filter(h=>h.result==='WIN').length/byP.high.length : null;
   const wEl = document.getElementById('a-warning');
-  if (avgEdge>0 && (hiWR==null||hiWR>=0.35)) { wEl.textContent='正边际'; wEl.style.color='#42d392'; }
-  else if (avgEdge<=0) { wEl.textContent='未盈利'; wEl.style.color='#ff6b6b'; }
-  else { wEl.textContent='高价桶低'; wEl.style.color='#f4c96b'; }
+  if (avgEdge>0 && (hiWR==null||hiWR>=0.35)) { wEl.textContent='EV+正边际'; wEl.style.color='#42d392'; }
+  else if (avgEdge<=0) { wEl.textContent='EV-需调整'; wEl.style.color='#ff6b6b'; }
+  else { wEl.textContent='高价EV弱'; wEl.style.color='#f4c96b'; }
 }
 
 function connectWS() {
@@ -560,10 +564,24 @@ function render(s) {
   pEl.style.color = s.totalProfit>=0?'#42d392':'#ff6b6b';
   document.getElementById('s-balance').textContent = '\$'+s.balance.toFixed(2);
   document.getElementById('s-record').textContent = s.wins+'W/'+s.losses+'L '+s.sessionROI.toFixed(1)+'%';
-  const sumV = s.askSum || ((s.upAsk>0&&s.downAsk>0)?s.upAsk+s.downAsk:0);
-  const sumEl = document.getElementById('s-sum');
-  sumEl.textContent = sumV>0?sumV.toFixed(3):'--';
-  sumEl.style.color = sumV>0?(sumV<=0.96?'#42d392':sumV<=0.98?'#f4c96b':'#ff6b6b'):'';
+  // 实时EV: 取UP/DN中更便宜一侧的EV (50%胜率)
+  const evEl0 = document.getElementById('s-ev');
+  const cheaperAsk = (s.upAsk>0&&s.downAsk>0)?Math.min(s.upAsk,s.downAsk):(s.upAsk||s.downAsk||0);
+  if (cheaperAsk>0&&cheaperAsk<=0.50) {
+    const liveEv = 0.50-cheaperAsk;
+    evEl0.textContent = (liveEv>=0?'+':'')+'\$'+liveEv.toFixed(2);
+    evEl0.style.color = liveEv>=0.15?'#42d392':liveEv>=0.08?'#76b7ff':liveEv>=0?'#f4c96b':'#ff6b6b';
+  } else { evEl0.textContent='--'; evEl0.style.color=''; }
+  // 实际EV: 历史平均每份盈利
+  const avgEvEl = document.getElementById('s-avg-ev');
+  const settled = (s.history||[]).filter(h=>h.exitType==='settlement'&&(h.leg1FillPrice||h.leg1Price||0)>0);
+  if (settled.length>0) {
+    const totalShares = settled.reduce((a,h)=>a+(h.leg1Shares||0),0);
+    const totalPnl = settled.reduce((a,h)=>a+h.profit,0);
+    const avgEv = totalShares>0?totalPnl/totalShares:0;
+    avgEvEl.textContent = (avgEv>=0?'+':'')+'\$'+avgEv.toFixed(3);
+    avgEvEl.style.color = avgEv>0?'#42d392':avgEv<0?'#ff6b6b':'#f4c96b';
+  } else { avgEvEl.textContent='--'; avgEvEl.style.color=''; }
 
   // Timer
   const secs = Math.max(0,Math.floor(s.secondsLeft));
@@ -596,13 +614,16 @@ function render(s) {
   trEl.textContent = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
   trEl.style.color = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'';
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
-  // Merge UP/DN asks into one row
+  // UP/DN asks with EV
   const upA = s.upAsk>0?s.upAsk.toFixed(2):'--';
   const dnA = s.downAsk>0?s.downAsk.toFixed(2):'--';
-  document.getElementById('h-asks').textContent = '\$'+upA+' / \$'+dnA;
-  // Hidden compat asks
-  const upEl = document.getElementById('h-up-ask'); if(upEl) upEl.textContent = upA;
-  const dnEl = document.getElementById('h-dn-ask'); if(dnEl) dnEl.textContent = dnA;
+  const fmtEv = (ask,wr) => {if(ask<=0||ask>0.60) return ''; const ev=wr-ask; return ' EV'+(ev>=0?'+':'')+ev.toFixed(2);};
+  const upEvStr = s.upAsk>0?fmtEv(s.upAsk,0.50):'';
+  const dnEvStr = s.downAsk>0?fmtEv(s.downAsk,0.50):'';
+  const upEvEl = document.getElementById('h-up-ev');
+  upEvEl.innerHTML = '\$'+upA+'<span style=\"margin-left:6px;color:'+(s.upAsk>0&&(0.50-s.upAsk)>=0.10?'#42d392':(0.50-s.upAsk)>=0?'#f4c96b':'#ff6b6b')+'\">'+(upEvStr||'')+'</span>';
+  const dnEvEl = document.getElementById('h-dn-ev');
+  dnEvEl.innerHTML = '\$'+dnA+'<span style=\"margin-left:6px;color:'+(s.downAsk>0&&(0.50-s.downAsk)>=0.10?'#42d392':(0.50-s.downAsk)>=0?'#f4c96b':'#ff6b6b')+'\">'+(dnEvStr||'')+'</span>';
   document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
   // Dump monitor panel
   const dumpSt = document.getElementById('dump-status');
@@ -616,36 +637,41 @@ function render(s) {
     dumpSt.textContent = '未触发'; dumpSt.style.color = '#7a8ea6';
   }
   document.getElementById('dump-confirm').textContent = s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles;
-  // EV per share: at 50% win rate, EV = $0.50 - entryPrice
+  // 持仓EV per share: invested at leg1Price, win pays $1
   const evEl = document.getElementById('dump-signals');
   if (s.hedgeLeg1Price > 0) {
-    const ev = (0.50 - s.hedgeLeg1Price).toFixed(2);
-    evEl.textContent = '$'+ev;
-    evEl.style.color = ev >= 0.10 ? '#42d392' : ev >= 0 ? '#f4c96b' : '#ff6b6b';
+    const evPerShare = 1.00 - s.hedgeLeg1Price;
+    const winRate = s.activeStrategyMode==='trend'?0.58:0.50;
+    const ev = winRate * 1.00 - s.hedgeLeg1Price;
+    evEl.textContent = 'EV+$'+ev.toFixed(2)+'/\u4efd (\u80dc$'+evPerShare.toFixed(2)+')';
+    evEl.style.color = ev >= 0.10 ? '#42d392' : ev >= 0.05 ? '#76b7ff' : '#f4c96b';
   } else {
     evEl.textContent = '--'; evEl.style.color = '';
   }
   document.getElementById('dump-mom-rej').textContent = s.roundMomentumRejects||0;
   document.getElementById('dump-ask-rej').textContent = s.roundEntryAskRejects||0;
-  // 持仓策略: 纯持有到结算
+  // 持仓策略: EV-centric显示
   const meEl = document.getElementById('h-mid-exit');
   if (s.hedgeState === 'leg1_filled') {
     const ep = s.hedgeLeg1Price||0;
-    const evPerShare = (1.00 - ep).toFixed(2);
-    const srcLabel = s.activeStrategyMode==='trend'?'趋势持有':'纯持有';
-    meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' EV+$'+evPerShare+'/份</span>';
+    const wr = s.activeStrategyMode==='trend'?0.58:0.50;
+    const ev = wr - ep;
+    const srcLabel = s.activeStrategyMode==='trend'?'趋势持有':'砸盘持有';
+    meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' EV+$'+ev.toFixed(2)+'/份</span>';
   } else if (s.trendTradeEnabled && s.trendConfirmCount>0) {
     meEl.innerHTML = '<span class=\"tag tag-b\">趋势确认中 '+s.trendConfirmCount+'/3</span>';
   } else {
     meEl.textContent = '--'; meEl.style.color = '';
   }
   if (s.hedgeLeg1Price>0) {
-    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+'</span>';
+    const posEv = (s.activeStrategyMode==='trend'?0.58:0.50) - s.hedgeLeg1Price;
+    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' EV+$'+posEv.toFixed(2)+'</span>';
   } else {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '\$'+s.effectiveMaxAsk.toFixed(2);
+  const maxAskEv = 0.50 - s.effectiveMaxAsk;
+  xEl.textContent = '≤$'+s.effectiveMaxAsk.toFixed(2)+' (EV≥+$'+maxAskEv.toFixed(2)+')';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -711,13 +737,14 @@ function render(s) {
   if (s.rtKellyFraction != null) {
     const kMap = {0.25:'1/4 Kelly',0.5:'1/2 Kelly',0.75:'3/4 Kelly'};
     document.getElementById('p-kelly').textContent = kMap[s.rtKellyFraction] || (s.rtKellyFraction*100).toFixed(0)+'% Kelly';
-    document.getElementById('p-dual-ask').textContent = '$'+s.rtDualSideMaxAsk.toFixed(2);
-    document.getElementById('p-max-ask').textContent = '$'+s.rtMaxEntryAsk.toFixed(2);
+    document.getElementById('p-dual-ask').textContent = '+$'+(0.50-s.rtDualSideMaxAsk).toFixed(2)+'/份 (≤$'+s.rtDualSideMaxAsk.toFixed(2)+')';
+    document.getElementById('p-max-ask').textContent = '+$'+(0.50-s.rtMaxEntryAsk).toFixed(2)+'/份 (≤$'+s.rtMaxEntryAsk.toFixed(2)+')';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
     const tEl = document.getElementById('p-trend');
     if (s.rtTrendEnabled) {
-      tEl.textContent = '开 $'+s.rtTrendMaxAsk.toFixed(2)+(s.trendConfirmCount>0?' ('+s.trendConfirmCount+'/3)':'');
+      const trendEv = (0.58-s.rtTrendMaxAsk).toFixed(2);
+      tEl.textContent = '开 EV+$'+trendEv+' (≤$'+s.rtTrendMaxAsk.toFixed(2)+')'+(s.trendConfirmCount>0?' '+s.trendConfirmCount+'/3':'');
       tEl.style.color = s.trendConfirmCount>=2?'#42d392':'#76b7ff';
     } else { tEl.textContent = '关'; tEl.style.color = '#7a8ea6'; }
   }
@@ -752,10 +779,14 @@ function render(s) {
     const l1 = h.leg1FillPrice>0?'\$'+h.leg1FillPrice.toFixed(2):'\$'+(h.leg1Price||0).toFixed(2);
     const est = h.estimated?'<span style="color:#f4c96b" title="估算"> ⚠</span>':'';
     const bd = h.profitBreakdown?' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"':'';
+    const hwr = (h.entrySource==='trend-follow')?0.58:0.50;
+    const hep = h.leg1FillPrice>0?h.leg1FillPrice:(h.leg1Price||0);
+    const hev = hep>0?(hwr-hep):0;
     return '<tr><td>'+h.time+'</td>'
       +'<td><span class="tag '+cls+'">'+h.result+'</span>'+est+'</td>'
       +'<td>'+h.leg1Dir+'</td>'
       +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+(h.leg1Shares||0).toFixed(0)+'</small></td>'
+      +'<td style="color:'+(hev>=0.10?'#42d392':hev>=0.05?'#76b7ff':hev>=0?'#f4c96b':'#ff6b6b')+'">'+((hev>=0?'+':'')+hev.toFixed(2))+'</td>'
       +'<td>'+(h.leg1Shares>0?h.leg1Shares.toFixed(0):'-')+'</td>'
       +'<td>\$'+(h.totalCost||0).toFixed(2)+'</td>'
       +'<td style="color:'+(h.profit>=0?'#42d392':'#ff6b6b')+'"'+bd+'>'+pf+'</td>'
