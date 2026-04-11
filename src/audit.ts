@@ -67,10 +67,7 @@ export function buildAuditReport(history: HedgeHistoryEntry[], filePath = HISTOR
   for (const trade of history) {
     const profit = safeNumber(trade.profit);
     const cost = safeNumber(trade.totalCost);
-    const sellShares = safeNumber(trade.sellShares);
-    const sellPrice = safeNumber(trade.sellPrice);
     const leg1Shares = safeNumber(trade.leg1Shares);
-    const leg2Shares = safeNumber(trade.leg2Shares);
     const exitType = trade.exitType || "unknown";
 
     exitTypeBreakdown[exitType] = (exitTypeBreakdown[exitType] || 0) + 1;
@@ -82,10 +79,8 @@ export function buildAuditReport(history: HedgeHistoryEntry[], filePath = HISTOR
     if (profit > largestWin) largestWin = profit;
     if (profit < largestLoss) largestLoss = profit;
 
-    if (sellShares > 0 && sellPrice > 0) {
-      totalReturn += sellShares * sellPrice;
-    } else if (exitType === "settlement") {
-      totalReturn += leg1Shares + leg2Shares;
+    if (exitType === "settlement" && trade.result === "WIN") {
+      totalReturn += leg1Shares;
     }
 
     runningProfit += profit;
@@ -99,9 +94,7 @@ export function buildAuditReport(history: HedgeHistoryEntry[], filePath = HISTOR
     if (trade.estimated && !trade.orderId && exitType === "settlement") {
       warnings.push(`存在估算成交且无orderId的结算记录: ${trade.time} ${trade.leg1Dir}`);
     }
-    if (sellShares > 0 && sellShares > leg1Shares && leg1Shares > 0) {
-      warnings.push(`卖出份数大于记录的Leg1份数: ${trade.time}`);
-    }
+
   }
 
   const avgProfit = history.length > 0 ? realizedProfit / history.length : 0;
