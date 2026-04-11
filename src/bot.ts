@@ -33,10 +33,10 @@ import { Trader, type TraderDiagnostics } from "./trader";
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
 const MAX_SHARES      = 100;      // 单腿上限100份
 const DUMP_THRESHOLD  = 0.10;     // ask 跌幅 ≥10% 触发Leg1
-const ENTRY_WINDOW_S  = 360;      // 开局6分钟内监控砸盘, 配合MIN_ENTRY_SECS=540
+const ENTRY_WINDOW_S  = 540;      // 开局9分钟内监控砸盘, 配合MIN_ENTRY_SECS=360
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
-const MIN_ENTRY_SECS  = 540;      // 剩余 <9分钟不开新仓 (从480收紧, 接近结算时方向更确定)
+const MIN_ENTRY_SECS  = 360;      // 剩余 <6分钟不开新仓 (从540放宽, 避免API延迟导致连续skip-late)
 const MAX_ENTRY_ASK   = 0.40;     // Leg1 入场价上限 (实盘: ≤$0.40时EV≥$0.10/份@50%胜率)
 const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功概率极低
 const PAPER_MAX_ENTRY_ASK = 0.59;
@@ -361,14 +361,16 @@ export class Hedge15mEngine {
   private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
-  // ── 中途退出: 信号恶化止损 ──
+  // ── 中途退出: 强趋势止损 (BTC反向≥0.3% + 信号≥5/7反向) ──
   private midExitContraStreak = 0;          // 连续信号反向cycle数
   private midExitSignalAligned = 0;         // 当前cycle方向一致信号数
   private midExitSignalContra = 0;          // 当前cycle方向反向信号数
-  private midExitEnabled = true;            // 中途退出开关
+  private midExitEnabled = true;             // 强趋势止损开关
   private static readonly MID_EXIT_CONTRA_CYCLES = 3; // 连续N个cycle信号反转才退出
-  private static readonly MID_EXIT_MIN_SECS_HELD = 60; // 持仓至少60s后才允许退出
-  private static readonly MID_EXIT_MIN_SECS_LEFT = 60; // 剩余<60s不退出(快结算了)
+  private static readonly MID_EXIT_MIN_SECS_HELD = 120; // 持仓至少120s后才允许退出 (从60加长, 减少噪声触发)
+  private static readonly MID_EXIT_MIN_SECS_LEFT = 90; // 剩余<90s不退出(快结算了, 持有到底)
+  private static readonly MID_EXIT_BTC_CONTRA_PCT = 0.003; // BTC反向移动≥0.3%才视为强趋势
+  private static readonly MID_EXIT_MIN_CONTRA_SIGNALS = 5; // 至少5/7个信号反向
 
   // ── 运行时可调参数 (覆盖 const) ──
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
@@ -731,8 +733,8 @@ export class Hedge15mEngine {
     // ── 应用运行时参数 ──
     this.rtDumpConfirmCycles = options.dumpConfirmCycles ?? DUMP_CONFIRM_CYCLES;
     const ewPreset = options.entryWindowPreset ?? "medium";
-    if (ewPreset === "short") { this.rtEntryWindowS = 240; this.rtMinEntrySecs = 660; }
-    else if (ewPreset === "long") { this.rtEntryWindowS = 480; this.rtMinEntrySecs = 420; }
+    if (ewPreset === "short") { this.rtEntryWindowS = 360; this.rtMinEntrySecs = 540; }
+    else if (ewPreset === "long") { this.rtEntryWindowS = 660; this.rtMinEntrySecs = 240; }
     else { this.rtEntryWindowS = ENTRY_WINDOW_S; this.rtMinEntrySecs = MIN_ENTRY_SECS; }
     this.rtChainlinkEnabled = options.chainlinkEnabled ?? CHAINLINK_CONFIRM_ENABLED;
     this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
@@ -1215,19 +1217,25 @@ export class Hedge15mEngine {
             this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned, clMEAligned].filter(Boolean).length;
             this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra, clMEContra].filter(Boolean).length;
 
-            // 信号反转判定: contra >= 3 且 contra > aligned
-            if (this.midExitSignalContra >= 3 && this.midExitSignalContra > this.midExitSignalAligned) {
+            // 强趋势判定: BTC反向≥0.3% + contra >= 5/7
+            const clMove = getChainlinkMovePct();
+            const clDir = getChainlinkDirection();
+            const btcContraMove = (heldDir === "up" && clDir === "down") || (heldDir === "down" && clDir === "up");
+            const btcStrongContra = btcContraMove && clMove >= Hedge15mEngine.MID_EXIT_BTC_CONTRA_PCT;
+
+            if (btcStrongContra && this.midExitSignalContra >= Hedge15mEngine.MID_EXIT_MIN_CONTRA_SIGNALS && this.midExitSignalContra > this.midExitSignalAligned) {
               this.midExitContraStreak++;
             } else {
-              this.midExitContraStreak = Math.max(0, this.midExitContraStreak - 1); // 信号恢复则衰减
+              this.midExitContraStreak = Math.max(0, this.midExitContraStreak - 1); // 条件未满足则衰减
             }
 
-            // 连续N个cycle确认信号恶化 → 卖出止损
+            // 连续N个cycle确认强趋势反向 → 卖出止损
             if (this.midExitContraStreak >= Hedge15mEngine.MID_EXIT_CONTRA_CYCLES && leg1Bid && leg1Bid > 0.02) {
-              logger.warn(`HEDGE15M MID-EXIT: ${heldDir.toUpperCase()} held=${secsHeld.toFixed(0)}s contraStreak=${this.midExitContraStreak} aligned=${this.midExitSignalAligned} contra=${this.midExitSignalContra} bid=$${leg1Bid.toFixed(2)} — selling`);
+              logger.warn(`HEDGE15M STRONG-TREND EXIT: ${heldDir.toUpperCase()} held=${secsHeld.toFixed(0)}s btcContra=${(clMove*100).toFixed(2)}% contraStreak=${this.midExitContraStreak} sig=${this.midExitSignalAligned}↑${this.midExitSignalContra}↓ bid=$${leg1Bid.toFixed(2)} — selling`);
               this.writeRoundAudit("mid_exit_sell", {
                 heldDir,
                 secsHeld,
+                btcContraMovePct: +(clMove * 100).toFixed(2),
                 contraStreak: this.midExitContraStreak,
                 signalAligned: this.midExitSignalAligned,
                 signalContra: this.midExitSignalContra,
@@ -1252,7 +1260,7 @@ export class Hedge15mEngine {
                   this.balance += returnVal;
                 }
 
-                const exitReason = `中途止损: 信号反转${this.midExitContraStreak}轮 (aligned=${this.midExitSignalAligned} contra=${this.midExitSignalContra}) bid=$${leg1Bid.toFixed(2)}`;
+                const exitReason = `强趋势止损: BTC反向${(clMove*100).toFixed(2)}% 信号${this.midExitSignalContra}/7反向 连续${this.midExitContraStreak}轮 bid=$${leg1Bid.toFixed(2)}`;
                 this.history.push({
                   time: timeStr(),
                   result,
@@ -1275,7 +1283,7 @@ export class Hedge15mEngine {
                 if (this.history.length > 200) this.history.shift();
                 this.saveHistory();
 
-                this.status = `中途止损: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} bid=$${leg1Bid.toFixed(2)}`;
+                this.status = `强趋势止损: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} bid=$${leg1Bid.toFixed(2)}`;
                 logger.info(`HEDGE15M MID-EXIT DONE: ${result} return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)}`);
                 this.totalCost = 0;
                 this.leg1Shares = 0;
