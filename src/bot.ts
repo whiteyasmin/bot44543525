@@ -367,10 +367,10 @@ export class Hedge15mEngine {
   private midExitSignalContra = 0;          // 当前cycle方向反向信号数
   private midExitEnabled = true;             // 强趋势止损开关
   private static readonly MID_EXIT_CONTRA_CYCLES = 3; // 连续N个cycle信号反转才退出
-  private static readonly MID_EXIT_MIN_SECS_HELD = 120; // 持仓至少120s后才允许退出 (从60加长, 减少噪声触发)
+  private static readonly MID_EXIT_MIN_SECS_HELD = 90; // 持仓至少90s后才允许退出
   private static readonly MID_EXIT_MIN_SECS_LEFT = 90; // 剩余<90s不退出(快结算了, 持有到底)
-  private static readonly MID_EXIT_BTC_CONTRA_PCT = 0.003; // BTC反向移动≥0.3%才视为强趋势
-  private static readonly MID_EXIT_MIN_CONTRA_SIGNALS = 5; // 至少5/7个信号反向
+  private static readonly MID_EXIT_BTC_CONTRA_PCT = 0.002; // BTC反向移动≥0.2%才视为强趋势
+  private static readonly MID_EXIT_MIN_CONTRA_SIGNALS = 4; // 至少4/7个信号反向
 
   // ── 运行时可调参数 (覆盖 const) ──
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
@@ -1020,6 +1020,7 @@ export class Hedge15mEngine {
                 trendContraPct: TREND_CONTRA_PCT,
                 momentumWindowSec: MOMENTUM_WINDOW_SEC,
                 trendWindowSec: TREND_WINDOW_SEC,
+                btcMovePct: getChainlinkMovePct(),
               });
 
               if (mispricing.bothSidesDumping) {
@@ -1131,9 +1132,9 @@ export class Hedge15mEngine {
                   const fundingContra = funding.extreme && ((candidate.dir === "up" && funding.direction === "long_pay") || (candidate.dir === "down" && funding.direction === "short_pay"));
                   this.dirAlignedCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor, clSignalAligned].filter(Boolean).length;
                   this.dirContraCount = [flowContra, volContra, largeContra, depthContra, liqContra, fundingContra, clSignalContra].filter(Boolean).length;
-                  // ── 信号门控: (contra>=3 且 contra>aligned) 或 aligned==0 → 拒绝入场 ──
-                  if ((this.dirContraCount >= 3 && this.dirContraCount > this.dirAlignedCount) || this.dirAlignedCount === 0) {
-                    logger.warn(`HEDGE15M SKIP: sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ — too many contra signals`);
+                  // ── 信号门控: aligned<2 或 (contra>=3 且 contra>aligned) → 拒绝入场 ──
+                  if (this.dirAlignedCount < 2 || (this.dirContraCount >= 3 && this.dirContraCount > this.dirAlignedCount)) {
+                    logger.warn(`HEDGE15M SKIP: sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ — need aligned≥2`);
                     this.trackRoundRejectReason(`signal_contra: ${this.dirAlignedCount}↑/${this.dirContraCount}↓`);
                   } else {
                   logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"}/${clTier} sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);

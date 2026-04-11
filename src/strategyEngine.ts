@@ -26,6 +26,7 @@ export interface MispricingEvaluationParams {
   trendContraPct: number;
   momentumWindowSec: number;
   trendWindowSec: number;
+  btcMovePct: number;           // CL价格变动幅度 (abs), 用于计算dumpRatio
 }
 
 export interface MispricingCandidate {
@@ -73,22 +74,28 @@ export function getDirectionalBias(params: DirectionalBiasParams): DirectionalBi
   return "flat";
 }
 
+// ask跌幅 / BTC变动 的最低比值 — 低于此值说明BTC变动可以解释ask下跌, 是正确定价而非砸盘
+const MIN_DUMP_RATIO = 30;
+// 对侧ask上涨阈值 — 一侧跌N%, 对侧涨 ≥ N*此比例 说明市场在重定价而非恐慌
+const OPPOSITE_RISE_RATIO = 0.50;
+
 export function evaluateMispricingOpportunity(params: MispricingEvaluationParams): MispricingEvaluation {
-  const {
-    upAsk,
-    downAsk,
-    oldestUpAsk,
-    oldestDownAsk,
-    upDrop,
-    downDrop,
-    dumpThreshold,
-    nearThresholdRatio,
-    shortMomentum,
-    trendMomentum,
-    momentumContraPct,
-    trendContraPct,
-    momentumWindowSec,
-    trendWindowSec,
+    const {
+      upAsk,
+      downAsk,
+      oldestUpAsk,
+      oldestDownAsk,
+      upDrop,
+      downDrop,
+      dumpThreshold,
+      nearThresholdRatio,
+      shortMomentum,
+      trendMomentum,
+      momentumContraPct,
+      trendContraPct,
+      momentumWindowSec,
+      trendWindowSec,
+      btcMovePct,
   } = params;
 
   const result: MispricingEvaluation = {
@@ -129,24 +136,54 @@ export function evaluateMispricingOpportunity(params: MispricingEvaluationParams
     );
   }
 
-  if (upValid && !upRejected) {
-    result.candidates.push({
-      dir: "up",
-      askPrice: upAsk,
-      buyTokenKey: "upToken",
-      oppTokenKey: "downToken",
-      dumpDetected: `UP ask ${oldestUpAsk.toFixed(2)}→${upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) [BTC${momentumWindowSec} ${(shortMomentum * 100).toFixed(3)}% BTC${trendWindowSec} ${(trendMomentum * 100).toFixed(3)}%]`,
-    });
-  }
+// ── 对侧ask变动: 检测重定价 vs 真砸盘 ──
+    const upRise = oldestUpAsk > 0.10 ? (upAsk - oldestUpAsk) / oldestUpAsk : 0;  // UP侧涨幅(正=涨)
+    const downRise = oldestDownAsk > 0.10 ? (downAsk - oldestDownAsk) / oldestDownAsk : 0;
 
-  if (downValid && !downRejected) {
-    result.candidates.push({
-      dir: "down",
-      askPrice: downAsk,
-      buyTokenKey: "downToken",
-      oppTokenKey: "upToken",
-      dumpDetected: `DOWN ask ${oldestDownAsk.toFixed(2)}→${downAsk.toFixed(2)} (-${(downDrop * 100).toFixed(1)}%) [BTC${momentumWindowSec} ${(shortMomentum * 100).toFixed(3)}% BTC${trendWindowSec} ${(trendMomentum * 100).toFixed(3)}%]`,
-    });
+    if (upValid && !upRejected) {
+      // dumpRatio: ask跌幅 vs BTC变动 — BTC大幅变动可解释ask下跌 = 正确定价
+      const dumpRatio = btcMovePct > 0.0001 ? upDrop / btcMovePct : Infinity;
+      // 对侧验证: DOWN ask 上涨 ≥ UP跌幅的50% → 市场零和重定价
+      const oppositeRose = downRise >= upDrop * OPPOSITE_RISE_RATIO;
+      if (dumpRatio < MIN_DUMP_RATIO) {
+        result.momentumRejects.push(
+          `UP dump ratio=${dumpRatio.toFixed(1)} < ${MIN_DUMP_RATIO} (ask-${(upDrop*100).toFixed(1)}% vs BTC ${(btcMovePct*100).toFixed(3)}%) — likely correct repricing`,
+        );
+      } else if (oppositeRose) {
+        result.momentumRejects.push(
+          `UP dump but DN ask rose +${(downRise*100).toFixed(1)}% (≥${(upDrop*OPPOSITE_RISE_RATIO*100).toFixed(1)}%) — zero-sum repricing`,
+        );
+      } else {
+        result.candidates.push({
+          dir: "up",
+          askPrice: upAsk,
+          buyTokenKey: "upToken",
+          oppTokenKey: "downToken",
+          dumpDetected: `UP ask ${oldestUpAsk.toFixed(2)}→${upAsk.toFixed(2)} (-${(upDrop * 100).toFixed(1)}%) [BTC${momentumWindowSec} ${(shortMomentum * 100).toFixed(3)}% BTC${trendWindowSec} ${(trendMomentum * 100).toFixed(3)}% ratio=${dumpRatio.toFixed(0)} dnΔ=${(downRise*100).toFixed(1)}%]`,
+        });
+      }
+    }
+
+    if (downValid && !downRejected) {
+      const dumpRatio = btcMovePct > 0.0001 ? downDrop / btcMovePct : Infinity;
+      const oppositeRose = upRise >= downDrop * OPPOSITE_RISE_RATIO;
+      if (dumpRatio < MIN_DUMP_RATIO) {
+        result.momentumRejects.push(
+          `DN dump ratio=${dumpRatio.toFixed(1)} < ${MIN_DUMP_RATIO} (ask-${(downDrop*100).toFixed(1)}% vs BTC ${(btcMovePct*100).toFixed(3)}%) — likely correct repricing`,
+        );
+      } else if (oppositeRose) {
+        result.momentumRejects.push(
+          `DN dump but UP ask rose +${(upRise*100).toFixed(1)}% (≥${(downDrop*OPPOSITE_RISE_RATIO*100).toFixed(1)}%) — zero-sum repricing`,
+        );
+      } else {
+        result.candidates.push({
+          dir: "down",
+          askPrice: downAsk,
+          buyTokenKey: "downToken",
+          oppTokenKey: "upToken",
+          dumpDetected: `DOWN ask ${oldestDownAsk.toFixed(2)}→${downAsk.toFixed(2)} (-${(downDrop * 100).toFixed(1)}%) [BTC${momentumWindowSec} ${(shortMomentum * 100).toFixed(3)}% BTC${trendWindowSec} ${(trendMomentum * 100).toFixed(3)}% ratio=${dumpRatio.toFixed(0)} upΔ=${(upRise*100).toFixed(1)}%]`,
+        });
+      }
   }
 
   result.candidates.sort((left, right) => {
