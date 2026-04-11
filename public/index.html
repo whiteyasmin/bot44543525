@@ -225,6 +225,18 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">持仓信号</span><span class="v" id="h-mid-exit">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
         </div>
+        <div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(8,15,24,.6);font-size:11px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="color:var(--muted);font-weight:600">砸盘监控</span>
+            <span id="dump-status" style="font-family:var(--mono)">--</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;color:var(--muted)">
+            <span>确认 <b id="dump-confirm" style="color:var(--text)">--</b></span>
+            <span>信号 <b id="dump-signals" style="color:var(--text)">--</b></span>
+            <span>动量拒绝 <b id="dump-mom-rej" style="color:var(--text)">--</b></span>
+            <span>价格拒绝 <b id="dump-ask-rej" style="color:var(--text)">--</b></span>
+          </div>
+        </div>
       </div>
 
       <!-- Col 3: Quality + Infra -->
@@ -285,13 +297,7 @@ tr:hover{background:rgba(118,183,255,.03)}
               <option value="long">长 11min</option>
             </select>
           </div>
-          <div>
-            <label>Chainlink方向</label>
-            <select id="cfg-chainlink">
-              <option value="true" selected>开启</option>
-              <option value="false">关闭</option>
-            </select>
-          </div>
+
           <div>
             <label>反应入场上限</label>
             <select id="cfg-max-entry-ask">
@@ -336,7 +342,7 @@ tr:hover{background:rgba(118,183,255,.03)}
           <span style="color:var(--muted)">反应上限 <b id="p-max-ask" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">砸盘确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">Chainlink <b id="p-chainlink" style="color:var(--text)">--</b></span>
+
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
         </div>
       </div>
@@ -430,14 +436,13 @@ async function startBot() {
   const paperSessionMode = document.getElementById('cfg-paper-session-mode').value;
   const dumpConfirmCycles = Number(document.getElementById('cfg-dump-confirm').value);
   const entryWindowPreset = document.getElementById('cfg-entry-window').value;
-  const chainlinkEnabled = document.getElementById('cfg-chainlink').value === 'true';
   const maxEntryAsk = Number(document.getElementById('cfg-max-entry-ask').value);
   const dualSideMaxAsk = Number(document.getElementById('cfg-dual-max-ask').value);
   const kellyFraction = Number(document.getElementById('cfg-kelly').value);
   if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
   if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
   try {
-    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, chainlinkEnabled, maxEntryAsk, dualSideMaxAsk, kellyFraction };
+    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction };
     const payload = mode === 'paper' ? base : { ...base, privateKey: pk, funderAddress: fa };
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
@@ -610,6 +615,22 @@ function render(s) {
   const upEl = document.getElementById('h-up-ask'); if(upEl) upEl.textContent = upA;
   const dnEl = document.getElementById('h-dn-ask'); if(dnEl) dnEl.textContent = dnA;
   document.getElementById('h-dump').textContent = s.dumpDetected || '未触发';
+  // Dump monitor panel
+  const dumpSt = document.getElementById('dump-status');
+  if (s.dumpDetected) {
+    dumpSt.innerHTML = '<span class="tag tag-r">'+s.dumpDetected.substring(0, s.dumpDetected.indexOf('[') > 0 ? s.dumpDetected.indexOf('[') : 40).trim()+'</span>';
+  } else if (s.dumpConfirmCount > 0) {
+    dumpSt.innerHTML = '<span class="tag tag-b">确认中 '+s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles+'</span>';
+  } else {
+    dumpSt.textContent = '未触发'; dumpSt.style.color = '#7a8ea6';
+  }
+  document.getElementById('dump-confirm').textContent = s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles;
+  const sigA = s.dirAlignedCount||0, sigC = s.dirContraCount||0;
+  const sigEl = document.getElementById('dump-signals');
+  sigEl.textContent = sigA+'↑/'+sigC+'↓';
+  sigEl.style.color = sigA>=2?'#42d392':sigC>=3?'#ff6b6b':'';
+  document.getElementById('dump-mom-rej').textContent = s.roundMomentumRejects||0;
+  document.getElementById('dump-ask-rej').textContent = s.roundEntryAskRejects||0;
   // Mid-exit signal stability
   const meEl = document.getElementById('h-mid-exit');
   if (s.hedgeState === 'leg1_filled' && s.midExitEnabled) {
@@ -700,9 +721,7 @@ function render(s) {
     document.getElementById('p-max-ask').textContent = '$'+s.rtMaxEntryAsk.toFixed(2);
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
-    const clEl = document.getElementById('p-chainlink');
-    clEl.textContent = s.rtChainlinkEnabled?'开':'关';
-    clEl.style.color = s.rtChainlinkEnabled?'#42d392':'#ff6b6b';
+
   }
 
   // Hidden compat elements

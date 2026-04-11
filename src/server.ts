@@ -154,7 +154,7 @@ app.post("/api/start", auth, async (req, res) => {
     return;
   }
   const { privateKey, funderAddress, mode, paperBalance, paperSessionMode,
-    dumpConfirmCycles, entryWindowPreset, chainlinkEnabled, maxEntryAsk, dualSideMaxAsk, kellyFraction } = req.body;
+    dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction } = req.body;
   const tradingMode = mode === "paper" ? "paper" : "live";
   if (privateKey) updateConfig({ PRIVATE_KEY: privateKey });
   if (funderAddress) updateConfig({ FUNDER_ADDRESS: funderAddress });
@@ -170,7 +170,6 @@ app.post("/api/start", auth, async (req, res) => {
       paperSessionMode: paperSessionMode === "persistent" ? "persistent" : "session",
       dumpConfirmCycles: dumpConfirmCycles != null ? Number(dumpConfirmCycles) : undefined,
       entryWindowPreset: entryWindowPreset || undefined,
-      chainlinkEnabled: chainlinkEnabled != null ? Boolean(chainlinkEnabled) : undefined,
       maxEntryAsk: maxEntryAsk != null ? Number(maxEntryAsk) : undefined,
       dualSideMaxAsk: dualSideMaxAsk != null ? Number(dualSideMaxAsk) : undefined,
       kellyFraction: kellyFraction != null ? Number(kellyFraction) : undefined,

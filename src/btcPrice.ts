@@ -626,6 +626,17 @@ export function getDirection(): string {
   return getPriceChange() >= 0 ? "up" : "down";
 }
 
+/** Binance 回合内 BTC 绝对变动幅度 (用于替代 getChainlinkMovePct) */
+export function getBtcMovePct(): number {
+  if (latestPrice <= 0 || roundStartPrice <= 0) return 0;
+  return Math.abs(latestPrice - roundStartPrice) / roundStartPrice;
+}
+
+/** Binance 方向 (与 getChainlinkDirection 等价) */
+export function getBtcDirection(): "up" | "down" {
+  return latestPrice >= roundStartPrice ? "up" : "down";
+}
+
 export function setRoundSecsLeft(secs: number): void {
   roundSecsLeft = secs;
 }

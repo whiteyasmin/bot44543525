@@ -7,11 +7,7 @@ import { getExecutionTelemetry, recordExecutionLatency, resetExecutionTelemetry 
 import { getCurrentRound15m, prefetchNextRound, Round15m } from "./market";
 import {
   startPriceFeed, getBtcPrice,
-  getChainlinkPrice, getChainlinkDirection, isChainlinkFresh,
-  getChainlinkMovePct, getChainlinkFreshnessTier, getBinanceDirection,
-  getChainlinkDirStability, getChainlinkRoundUpdates,
-  getChainlinkFlipCount, getClBinanceSpreadTrend,
-  getChainlinkMomentumTrend, getChainlinkUpdateIntervalMs,
+  getBtcMovePct, getBtcDirection,
   getTakerFlowRatio, getTakerFlowTrend,
   getVolumeSpikeInfo, getLargeOrderInfo,
   getDepthImbalance, getLiquidationInfo, getFundingRateInfo,
@@ -55,7 +51,6 @@ const LIMIT_RACE_FAST_OFFSET = 0.02;       // dump 快速时更激进
 const LIMIT_RACE_TIMEOUT_MS = 400;         // limit 等待上限 ms
 const LIMIT_RACE_POLL_MS = 50;             // 每 50ms 检查一次
 const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
-const CHAINLINK_CONFIRM_ENABLED = true;    // Chainlink 方向确认
 const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
 const DUAL_SIDE_SUM_CEILING = 0.96;        // 预挂单目标: 双侧sum ≤ 此值 (较0.94放宽, 提高挂单与成交机会)
 const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少)
@@ -116,6 +111,10 @@ export interface Hedge15mState {
   effectiveMaxAsk: number;
   askSum: number;
   dumpConfirmCount: number;
+  dirAlignedCount: number;
+  dirContraCount: number;
+  roundMomentumRejects: number;
+  roundEntryAskRejects: number;
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
@@ -157,7 +156,6 @@ export interface Hedge15mState {
   rtDumpConfirmCycles: number;
   rtEntryWindowS: number;
   rtMinEntrySecs: number;
-  rtChainlinkEnabled: boolean;
   rtMaxEntryAsk: number;
   rtDualSideMaxAsk: number;
   rtKellyFraction: number;
@@ -213,7 +211,6 @@ export interface Hedge15mStartOptions {
   // ── 运行时可调参数 ──
   dumpConfirmCycles?: number;       // 砸盘确认周期: 1/2/3
   entryWindowPreset?: "short" | "medium" | "long";  // 入场窗口: 短4min/中6min/长8min
-  chainlinkEnabled?: boolean;       // Chainlink方向过滤开关
   maxEntryAsk?: number;             // 反应入场上限: 0.35/0.40/0.45
   dualSideMaxAsk?: number;          // 预挂上限: 0.30/0.35/0.40
   kellyFraction?: number;           // 仓位计算: 0.25/0.50/0.75
@@ -351,7 +348,6 @@ export class Hedge15mEngine {
   private leg1EntrySource = "";
   private leg1EntryTrendBias: "up" | "down" | "flat" = "flat";
   private leg1EntrySecondsLeft = 0;
-  private lastMomentumRejectSignature = "";
   private roundRejectReasonCounts = new Map<string, number>();
   private rollingPnL: Array<{ ts: number; profit: number }> = []; // 滚动P/L记录
   private drawdownProtected = false;        // 当前是否在亏损保护模式
@@ -359,6 +355,8 @@ export class Hedge15mEngine {
   private lastDumpCandidateDir = "";        // 上个cycle的dump方向
   private lastEntrySkipKey = "";            // 去重: 上次入场跳过的key (dir:price)
   private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
+  private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
+  private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   // ── 中途退出: 强趋势止损 (BTC反向≥0.3% + 信号≥5/7反向) ──
@@ -376,7 +374,6 @@ export class Hedge15mEngine {
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
   private rtEntryWindowS = ENTRY_WINDOW_S;
   private rtMinEntrySecs = MIN_ENTRY_SECS;
-  private rtChainlinkEnabled = CHAINLINK_CONFIRM_ENABLED;
   private rtMaxEntryAsk = MAX_ENTRY_ASK;
   private rtDualSideMaxAsk = DUAL_SIDE_MAX_ASK;
   private rtKellyFraction = KELLY_FRACTION;
@@ -387,7 +384,6 @@ export class Hedge15mEngine {
   private resetRoundRejectStats(): void {
     this.roundMomentumRejects = 0;
     this.roundEntryAskRejects = 0;
-    this.lastMomentumRejectSignature = "";
     this.roundRejectReasonCounts.clear();
   }
 
@@ -576,6 +572,10 @@ export class Hedge15mEngine {
       effectiveMaxAsk: this.getEffectiveMaxAsk(),
       askSum: this.upAsk > 0 && this.downAsk > 0 ? this.upAsk + this.downAsk : 0,
       dumpConfirmCount: this.dumpConfirmCount,
+      dirAlignedCount: this.dirAlignedCount,
+      dirContraCount: this.dirContraCount,
+      roundMomentumRejects: this.roundMomentumRejects,
+      roundEntryAskRejects: this.roundEntryAskRejects,
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
@@ -630,7 +630,6 @@ export class Hedge15mEngine {
       rtDumpConfirmCycles: this.rtDumpConfirmCycles,
       rtEntryWindowS: this.rtEntryWindowS,
       rtMinEntrySecs: this.rtMinEntrySecs,
-      rtChainlinkEnabled: this.rtChainlinkEnabled,
       rtMaxEntryAsk: this.rtMaxEntryAsk,
       rtDualSideMaxAsk: this.rtDualSideMaxAsk,
       rtKellyFraction: this.rtKellyFraction,
@@ -736,11 +735,10 @@ export class Hedge15mEngine {
     if (ewPreset === "short") { this.rtEntryWindowS = 360; this.rtMinEntrySecs = 540; }
     else if (ewPreset === "long") { this.rtEntryWindowS = 660; this.rtMinEntrySecs = 240; }
     else { this.rtEntryWindowS = ENTRY_WINDOW_S; this.rtMinEntrySecs = MIN_ENTRY_SECS; }
-    this.rtChainlinkEnabled = options.chainlinkEnabled ?? CHAINLINK_CONFIRM_ENABLED;
     this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
     this.rtDualSideMaxAsk = options.dualSideMaxAsk ?? DUAL_SIDE_MAX_ASK;
     this.rtKellyFraction = options.kellyFraction ?? KELLY_FRACTION;
-    logger.info(`RT params: dumpConfirm=${this.rtDumpConfirmCycles} window=${ewPreset}(${this.rtEntryWindowS}s) CL=${this.rtChainlinkEnabled} maxAsk=$${this.rtMaxEntryAsk} dualAsk=$${this.rtDualSideMaxAsk} kelly=${this.rtKellyFraction}`);
+    logger.info(`RT params: dumpConfirm=${this.rtDumpConfirmCycles} window=${ewPreset}(${this.rtEntryWindowS}s) maxAsk=$${this.rtMaxEntryAsk} dualAsk=$${this.rtDualSideMaxAsk} kelly=${this.rtKellyFraction}`);
 
     resetExecutionTelemetry();
     this.loopRunId += 1;
@@ -883,6 +881,8 @@ export class Hedge15mEngine {
     this.dumpConfirmCount = 0;
     this.lastDumpCandidateDir = "";
     this.lastEntrySkipKey = "";
+    this.lastSignalSkipKey = "";
+    this.lastRepricingRejectKey = "";
     this.lastDumpLogKey = "";
     this.dirAlignedCount = 0;
     this.dirContraCount = 0;
@@ -948,7 +948,7 @@ export class Hedge15mEngine {
           await this.refreshBalance();
           this.totalRounds++;
           this.roundStartBtcPrice = getBtcPrice();
-          setRoundStartPrice(); // 同步设置 btcPrice 模块的回合基准, 修正 Chainlink 方向判断
+          setRoundStartPrice(); // 同步设置 btcPrice 模块的回合基准
           this.negRisk = !!rnd.negRisk;
           // 跳过剩余时间不足的回合 — 无法完成 dump检测 + 对冲
           if (secs < this.rtMinEntrySecs) {
@@ -1020,21 +1020,25 @@ export class Hedge15mEngine {
                 trendContraPct: TREND_CONTRA_PCT,
                 momentumWindowSec: MOMENTUM_WINDOW_SEC,
                 trendWindowSec: TREND_WINDOW_SEC,
-                btcMovePct: getChainlinkMovePct(),
+                btcMovePct: getBtcMovePct(),
               });
 
               if (mispricing.bothSidesDumping) {
                 logger.warn(`HEDGE15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) — liquidity drain`);
               } else {
                 if (mispricing.cautionMessage) {
-                  logger.warn(`HEDGE15M CAUTION: ${mispricing.cautionMessage} — proceeding with caution`);
-                }
-                const rejectSignature = mispricing.momentumRejects.join(" | ");
-                if (rejectSignature && rejectSignature !== this.lastMomentumRejectSignature) {
-                  this.lastMomentumRejectSignature = rejectSignature;
-                  this.roundMomentumRejects += mispricing.momentumRejects.length;
-                  for (const rejectMessage of mispricing.momentumRejects) {
-                    logger.warn(`HEDGE15M MOMENTUM REJECT: ${rejectMessage}`);
+                  logger.warn(`HEDGE15M SKIP: ${mispricing.cautionMessage} — blocked near-dual-dump`);
+                  this.trackRoundRejectReason(`near_dual_dump`);
+                } else {
+                if (mispricing.momentumRejects.length > 0) {
+                  // 去重: 只用方向做 key, 不含精确百分比 (避免每个cycle都日志)
+                  const rejectDirKey = mispricing.momentumRejects.map(r => r.slice(0, 30)).join("||");
+                  if (rejectDirKey !== this.lastRepricingRejectKey) {
+                    this.lastRepricingRejectKey = rejectDirKey;
+                    this.roundMomentumRejects += mispricing.momentumRejects.length;
+                    for (const rejectMessage of mispricing.momentumRejects) {
+                      logger.warn(`HEDGE15M MOMENTUM REJECT: ${rejectMessage}`);
+                    }
                   }
                 }
 
@@ -1044,7 +1048,7 @@ export class Hedge15mEngine {
                   if (elapsed < MIN_ENTRY_ELAPSED) {
                     this.trackRoundRejectReason(`early_entry: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s`);
                     if (this.dumpConfirmCount <= 1) { // 只在首次打日志避免刷屏
-                      logger.info(`HEDGE15M EARLY: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s — waiting for more CL data`);
+                      logger.info(`HEDGE15M EARLY: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s — waiting for stable data`);
                     }
                   } else {
                   // ── #4 连续砸盘确认: 需连续 N 个cycle看到dump才触发 ──
@@ -1067,43 +1071,12 @@ export class Hedge15mEngine {
                       logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — no mispricing edge`);
                     }
                   } else {
-                  // ── #1 Chainlink 强化过滤 (A+B+C+D+F+G+H+I+J+K全叠加) ──
-                  const clFresh = isChainlinkFresh();
-                  const clDir = clFresh ? getChainlinkDirection() : null;
-                  const clMovePct = getChainlinkMovePct();
-                  const clTier = getChainlinkFreshnessTier();   // high/mid/low/stale
-                  const binDir = getBinanceDirection();
-                  const clStability = getChainlinkDirStability(); // F
-                  const clUpdates = getChainlinkRoundUpdates();   // G
-                  const clFlips = getChainlinkFlipCount();        // H
-                  const clSpreadTrend = getClBinanceSpreadTrend(); // I
-                  const clMomentum = getChainlinkMomentumTrend(); // J
-                  const clInterval = getChainlinkUpdateIntervalMs(); // K
-
-                  // A: 幅度阈值 — CL变动 < 0.01% 视为噪音, 不作为方向信号
-                  const clSignificant = clMovePct >= 0.0001;
-                  // B: 双源确认 — CL 和 Binance 方向一致时信号更强
-                  const dualConfirm = clDir === binDir;
-                  // D: 新鲜度分档 — high 强制执行, mid 正常执行, low 仅日志
-                  const clEnforce = clTier === "high" || clTier === "mid";
-                  // F: 方向稳定性 — CL需连续≥2次同方向才算稳定信号
-                  const clStable = clStability >= 2;
-                  // G: 本回合CL需至少有过1次实际更新才信任方向
-                  const clHasUpdated = clUpdates >= 1;
-                  // H: 翻转频率 — 翻转≥3次认为CL噪音过大, 降级为不阻断
-                  const clNoisy = clFlips >= 3;
-                  // K: 更新间隔 — 间隔<120s为活跃期(高置信), 否则普通心跳
-                  const clActive = clInterval > 0 && clInterval < 120_000;
-
-                  // ── CL 作为第7个等权信号 (与Binance 6信号同权) ──
-                  // CL有效 = 新鲜 + 有方向 + 变动显著 + 稳定 + 有更新 + 非噪音
-                  const clValid = !!(this.rtChainlinkEnabled && clFresh && clDir && clSignificant && clStable && clHasUpdated && !clNoisy);
-                  const clSignalAligned = clValid && clDir === candidate.dir;
-                  const clSignalContra = clValid && clDir !== candidate.dir;
+                  // ── Binance 6源方向信号 ──
                   {
                   this.dumpDetected = candidate.dumpDetected;
                   this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                   this.activeStrategyMode = "mispricing";
+                  const btcDir = getBtcDirection();
                   // L: Taker Flow 方向信号
                   const flow = getTakerFlowRatio();
                   const flowTrend = getTakerFlowTrend();
@@ -1124,20 +1097,24 @@ export class Hedge15mEngine {
                   // Q: Funding Rate 信号 (极端反转: 正费率+做空或负费率+做多)
                   const funding = getFundingRateInfo();
                   const fundingFavor = funding.extreme && ((candidate.dir === "down" && funding.direction === "long_pay") || (candidate.dir === "up" && funding.direction === "short_pay"));
-                  // ── 统一7源信号计数 (CL = 第7个, 与Binance同权) ──
+                  // ── 统一6源信号计数 (纯Binance) ──
                   const volContra = volSpike.isSpike && ((candidate.dir === "up" && volSpike.direction === "sell") || (candidate.dir === "down" && volSpike.direction === "buy"));
                   const largeContra = (candidate.dir === "up" && largeOrd.direction === "sell") || (candidate.dir === "down" && largeOrd.direction === "buy");
                   const depthContra = depth.fresh && ((candidate.dir === "up" && depth.direction === "sell") || (candidate.dir === "down" && depth.direction === "buy"));
                   const liqContra = liq.intensity !== "low" && ((candidate.dir === "up" && liq.direction === "sell") || (candidate.dir === "down" && liq.direction === "buy"));
                   const fundingContra = funding.extreme && ((candidate.dir === "up" && funding.direction === "long_pay") || (candidate.dir === "down" && funding.direction === "short_pay"));
-                  this.dirAlignedCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor, clSignalAligned].filter(Boolean).length;
-                  this.dirContraCount = [flowContra, volContra, largeContra, depthContra, liqContra, fundingContra, clSignalContra].filter(Boolean).length;
-                  // ── 信号门控: aligned<2 或 (contra>=3 且 contra>aligned) → 拒绝入场 ──
-                  if (this.dirAlignedCount < 2 || (this.dirContraCount >= 3 && this.dirContraCount > this.dirAlignedCount)) {
-                    logger.warn(`HEDGE15M SKIP: sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ — need aligned≥2`);
+                  this.dirAlignedCount = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundingFavor].filter(Boolean).length;
+                  this.dirContraCount = [flowContra, volContra, largeContra, depthContra, liqContra, fundingContra].filter(Boolean).length;
+                  // ── 信号门控: aligned<3 或 (contra>=3 且 contra>aligned) → 拒绝入场 ──
+                  if (this.dirAlignedCount < 3 || (this.dirContraCount >= 3 && this.dirContraCount > this.dirAlignedCount)) {
+                    const sigKey = `${this.dirAlignedCount}:${this.dirContraCount}`;
+                    if (sigKey !== this.lastSignalSkipKey) {
+                      this.lastSignalSkipKey = sigKey;
+                      logger.warn(`HEDGE15M SKIP: sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ — need aligned≥3`);
+                    }
                     this.trackRoundRejectReason(`signal_contra: ${this.dirAlignedCount}↑/${this.dirContraCount}↓`);
                   } else {
-                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} CL=${clDir||"N/A"}/${clTier} sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);
+                  logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} BTC=${btcDir} sig=${this.dirAlignedCount}↑/${this.dirContraCount}↓ flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);
                   await this.buyLeg1(
                     trader,
                     rnd,
@@ -1155,6 +1132,7 @@ export class Hedge15mEngine {
                   this.dumpConfirmCount = 0;
                   this.lastDumpCandidateDir = "";
                 }
+                } // end near-dual-dump guard
               }
             }
             } // end dual-side pre-order guard
@@ -1204,25 +1182,15 @@ export class Hedge15mEngine {
             const fundAligned = funding.extreme && ((heldDir === "down" && funding.direction === "long_pay") || (heldDir === "up" && funding.direction === "short_pay"));
             const fundContra = funding.extreme && ((heldDir === "up" && funding.direction === "long_pay") || (heldDir === "down" && funding.direction === "short_pay"));
 
-            // CL作为第7个等权信号参与mid-exit
-            const clFreshME = isChainlinkFresh();
-            const clDirME = clFreshME ? getChainlinkDirection() : null;
-            const clMoveME = getChainlinkMovePct();
-            const clStabME = getChainlinkDirStability();
-            const clUpdME = getChainlinkRoundUpdates();
-            const clFlipsME = getChainlinkFlipCount();
-            const clValidME = !!(clFreshME && clDirME && clMoveME >= 0.0001 && clStabME >= 2 && clUpdME >= 1 && clFlipsME < 3);
-            const clMEAligned = clValidME && clDirME === heldDir;
-            const clMEContra = clValidME && clDirME !== heldDir;
+            // ── 6源信号计数 (纯Binance) ──
+            this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned].filter(Boolean).length;
+            this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra].filter(Boolean).length;
 
-            this.midExitSignalAligned = [flowAligned, volAligned, largeAligned, depthAligned, liqAligned, fundAligned, clMEAligned].filter(Boolean).length;
-            this.midExitSignalContra = [flowContra, volContra, largeContra, depthContra, liqContra, fundContra, clMEContra].filter(Boolean).length;
-
-            // 强趋势判定: BTC反向≥0.3% + contra >= 5/7
-            const clMove = getChainlinkMovePct();
-            const clDir = getChainlinkDirection();
-            const btcContraMove = (heldDir === "up" && clDir === "down") || (heldDir === "down" && clDir === "up");
-            const btcStrongContra = btcContraMove && clMove >= Hedge15mEngine.MID_EXIT_BTC_CONTRA_PCT;
+            // 强趋势判定: BTC(Binance)反向≥0.2% + contra >= 4/6
+            const btcMove = getBtcMovePct();
+            const btcDir = getBtcDirection();
+            const btcContraMove = (heldDir === "up" && btcDir === "down") || (heldDir === "down" && btcDir === "up");
+            const btcStrongContra = btcContraMove && btcMove >= Hedge15mEngine.MID_EXIT_BTC_CONTRA_PCT;
 
             if (btcStrongContra && this.midExitSignalContra >= Hedge15mEngine.MID_EXIT_MIN_CONTRA_SIGNALS && this.midExitSignalContra > this.midExitSignalAligned) {
               this.midExitContraStreak++;
@@ -1232,11 +1200,11 @@ export class Hedge15mEngine {
 
             // 连续N个cycle确认强趋势反向 → 卖出止损
             if (this.midExitContraStreak >= Hedge15mEngine.MID_EXIT_CONTRA_CYCLES && leg1Bid && leg1Bid > 0.02) {
-              logger.warn(`HEDGE15M STRONG-TREND EXIT: ${heldDir.toUpperCase()} held=${secsHeld.toFixed(0)}s btcContra=${(clMove*100).toFixed(2)}% contraStreak=${this.midExitContraStreak} sig=${this.midExitSignalAligned}↑${this.midExitSignalContra}↓ bid=$${leg1Bid.toFixed(2)} — selling`);
+              logger.warn(`HEDGE15M STRONG-TREND EXIT: ${heldDir.toUpperCase()} held=${secsHeld.toFixed(0)}s btcContra=${(btcMove*100).toFixed(2)}% contraStreak=${this.midExitContraStreak} sig=${this.midExitSignalAligned}↑${this.midExitSignalContra}↓ bid=$${leg1Bid.toFixed(2)} — selling`);
               this.writeRoundAudit("mid_exit_sell", {
                 heldDir,
                 secsHeld,
-                btcContraMovePct: +(clMove * 100).toFixed(2),
+                btcContraMovePct: +(btcMove * 100).toFixed(2),
                 contraStreak: this.midExitContraStreak,
                 signalAligned: this.midExitSignalAligned,
                 signalContra: this.midExitSignalContra,
@@ -1261,7 +1229,7 @@ export class Hedge15mEngine {
                   this.balance += returnVal;
                 }
 
-                const exitReason = `强趋势止损: BTC反向${(clMove*100).toFixed(2)}% 信号${this.midExitSignalContra}/7反向 连续${this.midExitContraStreak}轮 bid=$${leg1Bid.toFixed(2)}`;
+                const exitReason = `强趋势止损: BTC反向${(btcMove*100).toFixed(2)}% 信号${this.midExitSignalContra}/6反向 连续${this.midExitContraStreak}轮 bid=$${leg1Bid.toFixed(2)}`;
                 this.history.push({
                   time: timeStr(),
                   result,
@@ -1583,31 +1551,19 @@ export class Hedge15mEngine {
       logger.info(`DUAL SIDE: DOWN cancelled (trendBias=up, avoid counter-trend fill)`);
     }
 
-    // ── #1 Chainlink 强化过滤: CL方向明确时撤销逆CL侧预挂单 (A+D+F+G+H+I) ──
-    const clFreshPreOrder = isChainlinkFresh();
-    const clDirPreOrder = clFreshPreOrder ? getChainlinkDirection() : null;
-    const clMovePctPre = getChainlinkMovePct();
-    const clTierPre = getChainlinkFreshnessTier();
-    const clStabPre = getChainlinkDirStability();       // F
-    const clUpdPre = getChainlinkRoundUpdates();         // G
-    const clFlipsPre = getChainlinkFlipCount();          // H
-    const clSpreadPre = getClBinanceSpreadTrend();       // I
-    const clSignificantPre = clMovePctPre >= 0.0001;   // A: 幅度阈值
-    const clEnforcePre = clTierPre === "high" || clTierPre === "mid"; // D: 新鲜度分档
-    const clStablePre = clStabPre >= 2;                 // F: 方向稳定
-    const clUpdatedPre = clUpdPre >= 1;                 // G: 有实际更新
-    const clNoisyPre = clFlipsPre >= 3;                 // H: 翻转过多
-    // H: noisy → 不撤; I: diverging → 不撤
-    if (this.rtChainlinkEnabled && clSignificantPre && clEnforcePre && clStablePre && clUpdatedPre && !clNoisyPre && clSpreadPre !== "diverging") {
-    if (clDirPreOrder === "down" && this.preOrderUpId) {
+    // ── Binance 方向过滤: BTC方向明确时撤销逆向侧预挂单 ──
+    const btcDirPre = getBtcDirection();
+    const btcMovePre = getBtcMovePct();
+    if (btcMovePre >= 0.001) { // BTC 变动≥0.1%才认为方向有意义
+    if (btcDirPre === "down" && this.preOrderUpId) {
       await trader.cancelOrder(this.preOrderUpId).catch(() => {});
       this.preOrderUpId = ""; this.preOrderUpPrice = 0; this.preOrderUpShares = 0;
-      logger.info(`DUAL SIDE: UP cancelled (CL=down move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre} stab=${clStabPre} upd=${clUpdPre} flips=${clFlipsPre})`);
+      logger.info(`DUAL SIDE: UP cancelled (BTC=down move=${(btcMovePre*100).toFixed(3)}%)`);
     }
-    if (clDirPreOrder === "up" && this.preOrderDownId) {
+    if (btcDirPre === "up" && this.preOrderDownId) {
       await trader.cancelOrder(this.preOrderDownId).catch(() => {});
       this.preOrderDownId = ""; this.preOrderDownPrice = 0; this.preOrderDownShares = 0;
-      logger.info(`DUAL SIDE: DOWN cancelled (CL=up move=${(clMovePctPre*100).toFixed(3)}% tier=${clTierPre} stab=${clStabPre} upd=${clUpdPre} flips=${clFlipsPre})`);
+      logger.info(`DUAL SIDE: DOWN cancelled (BTC=up move=${(btcMovePre*100).toFixed(3)}%)`);
     }
     }
 
@@ -1638,7 +1594,7 @@ export class Hedge15mEngine {
 
     // ── UP 侧挂单管理 (趋势down/CL=down时跳过, 低流动性时跳过) ──
     const effectiveMaxAsk = this.getEffectiveMaxAsk();
-    if (!lowLiquidity && trend !== "down" && clDirPreOrder !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= effectiveMaxAsk) {
+    if (!lowLiquidity && trend !== "down" && btcDirPre !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= effectiveMaxAsk) {
       const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1684,7 +1640,7 @@ export class Hedge15mEngine {
     }
 
     // ── DOWN 侧挂单管理 (趋势up/CL=up时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "up" && clDirPreOrder !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= effectiveMaxAsk) {
+    if (!lowLiquidity && trend !== "up" && btcDirPre !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= effectiveMaxAsk) {
       const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
@@ -1849,9 +1805,9 @@ export class Hedge15mEngine {
       }
     }
 
-    // 完全未成交, FAK fallback
-    logger.info(`LIMIT RACE MISS: no fill in ${timeoutMs}ms @limit=${limitPrice.toFixed(2)}, fallback FAK`);
-    return this.fakBuyFallback(trader, tokenId, shares, currentAsk, negRisk);
+    // 完全未成交, FAK fallback — 使用 limit price 而非原始 ask, 防止溢价成交
+    logger.info(`LIMIT RACE MISS: no fill in ${timeoutMs}ms @limit=${limitPrice.toFixed(2)}, fallback FAK @${limitPrice.toFixed(2)}`);
+    return this.fakBuyFallback(trader, tokenId, shares, limitPrice, negRisk);
   }
 
   private async fakBuyFallback(
@@ -1873,7 +1829,7 @@ export class Hedge15mEngine {
     return null;
   }
 
-  /** 计算 Chainlink 价格滞后度 (与 Binance 的差异百分比) */
+  /** 下单入场 */
   private async openLeg1Position(
     trader: Trader,
     dir: string,
@@ -1997,22 +1953,15 @@ export class Hedge15mEngine {
   }
 
   private async settleHedge(): Promise<void> {
-    for (let w = 0; w < 8; w++) {
-      await sleep(2000);
-      if (isChainlinkFresh()) break;
-    }
+    await sleep(2000); // 等待价格源更新
 
-    // 结算方向判断: 优先 Chainlink (链上结算数据源), 回退到 BTC 价格对比
-    const clFresh = isChainlinkFresh() && getChainlinkPrice() > 0;
+    // 结算方向判断: Binance BTC 价格对比回合开始价
     const btcNow = getBtcPrice();
     let actualDir: "up" | "down";
-    let dirSource = "CL";
-    if (clFresh) {
-      actualDir = getChainlinkDirection() === "down" ? "down" : "up";
-    } else if (this.roundStartBtcPrice > 0 && btcNow > 0) {
+    let dirSource = "BTC";
+    if (this.roundStartBtcPrice > 0 && btcNow > 0) {
       actualDir = btcNow >= this.roundStartBtcPrice ? "up" : "down";
-      dirSource = "BTC";
-      logger.warn(`HEDGE15M SETTLE: Chainlink not fresh, using BTC price fallback (start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir})`);
+      logger.info(`HEDGE15M SETTLE: BTC start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir}`);
     } else {
       dirSource = "BOOK";
       let leg1Score = 0;
@@ -2027,7 +1976,7 @@ export class Hedge15mEngine {
 
       if (leg1Score > 0) {
         actualDir = leg1Score >= 0.50 ? (this.leg1Dir === "down" ? "down" : "up") : (this.leg1Dir === "up" ? "down" : "up");
-        logger.error(`HEDGE15M SETTLE: Chainlink/BTC unavailable, using orderbook fallback (L1=${leg1Score.toFixed(2)} → ${actualDir})`);
+        logger.error(`HEDGE15M SETTLE: BTC unavailable, using orderbook fallback (L1=${leg1Score.toFixed(2)} → ${actualDir})`);
       } else {
         actualDir = this.leg1Dir === "down" ? "down" : "up";
         dirSource = "LEG1_FALLBACK";
