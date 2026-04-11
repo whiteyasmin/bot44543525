@@ -1135,8 +1135,26 @@ export class Hedge15mEngine {
 
                 const candidate = mispricing.candidates[0];
                 if (candidate) {
+                  // ── 早期价格过滤: ask低于MIN_ENTRY_ASK时不尝试入场 (避免无用循环) ──
+                  if (candidate.askPrice < MIN_ENTRY_ASK) {
+                    // 去重: 只在首次或方向变化时打日志
+                    const skipKey = `minask:${candidate.dir}:${candidate.askPrice.toFixed(2)}`;
+                    if (skipKey !== this.lastEntrySkipKey) {
+                      this.lastEntrySkipKey = skipKey;
+                      logger.warn(`Hedge15m Leg1 skipped: ask=${candidate.askPrice.toFixed(2)} < MIN_ENTRY_ASK=${MIN_ENTRY_ASK}`);
+                    }
+                  }
+                  // ── 早期价格过滤: ask高于MAX_ENTRY_ASK时不尝试 ──
+                  else if (candidate.askPrice > this.getMaxEntryAsk()) {
+                    const skipKey = `maxask:${candidate.dir}:${candidate.askPrice.toFixed(2)}`;
+                    if (skipKey !== this.lastEntrySkipKey) {
+                      this.lastEntrySkipKey = skipKey;
+                      logger.warn(`Hedge15m Leg1 skipped: ask=${candidate.askPrice.toFixed(2)} > MAX_ENTRY_ASK=${this.getMaxEntryAsk()}`);
+                    }
+                    this.roundEntryAskRejects += 1;
+                  }
                   // ── #5 早期入场保护: 回合开始<90s内不允许反应式入场 ──
-                  if (elapsed < MIN_ENTRY_ELAPSED) {
+                  else if (elapsed < MIN_ENTRY_ELAPSED) {
                     this.trackRoundRejectReason(`early_entry: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s`);
                     if (this.dumpConfirmCount <= 1) { // 只在首次打日志避免刷屏
                       logger.info(`HEDGE15M EARLY: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s — waiting for stable data`);
@@ -1166,8 +1184,12 @@ export class Hedge15mEngine {
                         const btcDir = getBtcDirection();
                         const btcContra = (candidate.dir === "up" && btcDir === "down") || (candidate.dir === "down" && btcDir === "up");
                         if (btcContra) {
-                          this.trackRoundRejectReason(`btc_contra: buy ${candidate.dir} but BTC=${btcDir}`);
-                          logger.warn(`HEDGE15M SKIP: buy ${candidate.dir.toUpperCase()} but BTC=${btcDir} — 重定价而非砸盘`);
+                          const contraKey = `btccontra:${candidate.dir}:${btcDir}`;
+                          if (contraKey !== this.lastSignalSkipKey) {
+                            this.lastSignalSkipKey = contraKey;
+                            this.trackRoundRejectReason(`btc_contra: buy ${candidate.dir} but BTC=${btcDir}`);
+                            logger.warn(`HEDGE15M SKIP: buy ${candidate.dir.toUpperCase()} but BTC=${btcDir} — 重定价而非砸盘`);
+                          }
                         } else {
                         // ── 入场: 价格达标 + BTC方向不矛盾 ──
                         this.dumpDetected = candidate.dumpDetected;
@@ -1571,6 +1593,11 @@ export class Hedge15mEngine {
     const upLimit = Math.round(idealUpLimit * 100) / 100;
     const downLimit = Math.round(idealDownLimit * 100) / 100;
 
+    // ── 预检查: limit价超出max范围时不挂新单 (避免挂→立即取消的无效循环) ──
+    const effectiveMaxAsk = this.getEffectiveMaxAsk();
+    const upInRange = upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= effectiveMaxAsk;
+    const downInRange = downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= effectiveMaxAsk;
+
     // ── 趋势方向过滤: 有明确趋势时撤销逆势侧预挂单 ──
     const trend = this.currentTrendBias;
     if (trend === "down" && this.preOrderUpId) {
@@ -1628,8 +1655,7 @@ export class Hedge15mEngine {
     const needRefresh = now - this.preOrderLastRefresh >= DUAL_SIDE_REFRESH_MS;
 
     // ── UP 侧挂单管理 (趋势down/CL=down时跳过, 低流动性时跳过) ──
-    const effectiveMaxAsk = this.getEffectiveMaxAsk();
-    if (!lowLiquidity && trend !== "down" && btcDirPre !== "down" && upLimit >= DUAL_SIDE_MIN_ASK && upLimit <= effectiveMaxAsk) {
+    if (!lowLiquidity && trend !== "down" && btcDirPre !== "down" && upInRange) {
       const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1675,7 +1701,7 @@ export class Hedge15mEngine {
     }
 
     // ── DOWN 侧挂单管理 (趋势up/CL=up时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "up" && btcDirPre !== "up" && downLimit >= DUAL_SIDE_MIN_ASK && downLimit <= effectiveMaxAsk) {
+    if (!lowLiquidity && trend !== "up" && btcDirPre !== "up" && downInRange) {
       const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
