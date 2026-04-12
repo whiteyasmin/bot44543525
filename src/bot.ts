@@ -34,7 +34,7 @@ const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
 const MIN_ENTRY_SECS  = 240;      // 剩余 <4分钟不开新仓 (放宽: 低价入场EV+即使时间短, 4min足够结算)
 const MAX_ENTRY_ASK   = 0.35;     // Leg1 入场价上限 (实盘: ≤$0.35时EV≥$0.15/份@50%胜率)
-const MIN_ENTRY_ASK   = 0.25;     // Leg1 入场价下限, 低于此成功概率极低
+const MIN_ENTRY_ASK   = 0.18;     // Leg1 入场价下限, 深度砸盘时低价=高EV (dumpThreshold已过滤噪声)
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
 const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
 const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 60s内反方向移动超过 0.10% 才拒绝dump
@@ -62,18 +62,11 @@ const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$
 const DUAL_SIDE_MIN_DRIFT = 0.02;          // 价格偏移>此值才重挂 (0.01太敏感导致频繁re-place)
 const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%), 低于此视为微行情不挂单
 
-// ── 趋势追涨: 强趋势方向入场 (≤$0.50时60%胜率即EV+$0.10/份) ──
-const TREND_TRADE_ENABLED = true;           // 启用趋势追涨
-const TREND_MAX_ASK = 0.50;                 // 趋势入场上限 ($0.50: 60%胜率即breakeven, >60%即EV+)
-const TREND_KELLY_WIN_RATE_BASE = 0.52;     // 趋势基础胜率 (刚过门槛, 接近随机)
-const TREND_KELLY_WIN_RATE_MAX = 0.72;      // 趋势最高胜率 (极端行情+全信号一致)
-const TREND_MIN_ELAPSED = 120;              // 趋势确认最少120s (比dump的90s更长, 趋势需要更多数据)
-const TREND_CONFIRM_CYCLES = 3;             // 连续3个cycle确认趋势才入场
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const SUM_DIVERGENCE_MAX = 1.03;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (sum≥1.03=市场公平定价, 无dump错定价edge)
 const SUM_DIVERGENCE_MIN = 0.85;            // 入场时 upAsk+downAsk < 此值 → 方向性强、砸盘更可信
-const DUMP_CONFIRM_CYCLES = 2;              // 连续 N 个循环看到 dump 才触发入场 (从3降到2: 保留确认但不过分延迟)
-const MIN_ENTRY_ELAPSED = 60;               // 回合开始至少60s后才允许反应式入场 (60s够检测砸盘, 更早入场=更多机会)
+const DUMP_CONFIRM_CYCLES = 1;              // 连续 N 个循环看到 dump 才触发入场 (1: dumpThreshold已过滤噪声, 无需多次确认)
+const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许反应式入场 (30s数据已足够稳定)
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -118,9 +111,6 @@ export interface Hedge15mState {
   maxEntryAsk: number;
   activeStrategyMode: string;
   trendBias: string;
-  trendTradeEnabled: boolean;
-  trendMaxAsk: number;
-  trendConfirmCount: number;
   sessionROI: number;
   rolling4hPnL: number;
   effectiveMaxAsk: number;
@@ -170,8 +160,6 @@ export interface Hedge15mState {
   rtMaxEntryAsk: number;
   rtDualSideMaxAsk: number;
   rtKellyFraction: number;
-  rtTrendEnabled: boolean;
-  rtTrendMaxAsk: number;
   latencyP50: number;
   latencyP90: number;
   latencyNetworkSource: string;
@@ -228,8 +216,6 @@ export interface Hedge15mStartOptions {
   maxEntryAsk?: number;             // 反应入场上限: 0.35
   dualSideMaxAsk?: number;          // 预挂上限: 0.30/0.35
   kellyFraction?: number;           // 仓位计算: 0.25/0.50/0.75
-  trendEnabled?: boolean;           // 趋势追涨: 开/关
-  trendMaxAsk?: number;             // 趋势入场上限: 0.45/0.50/0.55
 }
 
 export interface HedgeHistoryEntry {
@@ -376,8 +362,6 @@ export class Hedge15mEngine {
   private _volGateLoggedThisRound = false;  // 去重: 波动率门控日志每轮只打一次
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
-  private trendConfirmCount = 0;            // 趋势连续确认计数
-  private lastTrendConfirmDir = "";         // 上个cycle的趋势方向
   private consecutiveLosses = 0;            // 连续亏损计数 (资金安全守护)
 
   // ── 运行时可调参数 (覆盖 const) ──
@@ -387,8 +371,6 @@ export class Hedge15mEngine {
   private rtMaxEntryAsk = MAX_ENTRY_ASK;
   private rtDualSideMaxAsk = DUAL_SIDE_MAX_ASK;
   private rtKellyFraction = KELLY_FRACTION;
-  private rtTrendEnabled = TREND_TRADE_ENABLED;
-  private rtTrendMaxAsk = TREND_MAX_ASK;
 
   // Market state layer
   private marketState = new RoundMarketState();
@@ -632,9 +614,6 @@ export class Hedge15mEngine {
       maxEntryAsk: this.getMaxEntryAsk(),
       activeStrategyMode: this.activeStrategyMode,
       trendBias: this.currentTrendBias,
-      trendTradeEnabled: this.rtTrendEnabled,
-      trendMaxAsk: this.rtTrendMaxAsk,
-      trendConfirmCount: this.trendConfirmCount,
       sessionROI: this.initialBankroll > 0 ? (this.totalProfit / this.initialBankroll) * 100 : 0,
       rolling4hPnL: this.getRolling4hPnL(),
       effectiveMaxAsk: this.getEffectiveMaxAsk(),
@@ -698,8 +677,6 @@ export class Hedge15mEngine {
       rtMaxEntryAsk: this.rtMaxEntryAsk,
       rtDualSideMaxAsk: this.rtDualSideMaxAsk,
       rtKellyFraction: this.rtKellyFraction,
-      rtTrendEnabled: this.rtTrendEnabled,
-      rtTrendMaxAsk: this.rtTrendMaxAsk,
       latencyP50: dp.p50,
       latencyP90: dp.p90,
       latencyNetworkSource: latency.networkSource,
@@ -818,9 +795,7 @@ export class Hedge15mEngine {
     this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
     this.rtDualSideMaxAsk = options.dualSideMaxAsk ?? DUAL_SIDE_MAX_ASK;
     this.rtKellyFraction = options.kellyFraction ?? KELLY_FRACTION;
-    this.rtTrendEnabled = options.trendEnabled ?? TREND_TRADE_ENABLED;
-    this.rtTrendMaxAsk = options.trendMaxAsk ?? TREND_MAX_ASK;
-    logger.info(`RT params: dumpConfirm=${this.rtDumpConfirmCycles} window=${ewPreset}(${this.rtEntryWindowS}s) maxAsk=$${this.rtMaxEntryAsk} dualAsk=$${this.rtDualSideMaxAsk} kelly=${this.rtKellyFraction} trend=${this.rtTrendEnabled}/$${this.rtTrendMaxAsk}`);
+    logger.info(`RT params: dumpConfirm=${this.rtDumpConfirmCycles} window=${ewPreset}(${this.rtEntryWindowS}s) maxAsk=$${this.rtMaxEntryAsk} dualAsk=$${this.rtDualSideMaxAsk} kelly=${this.rtKellyFraction}`);
 
     resetExecutionTelemetry();
     this.loopRunId += 1;
@@ -998,8 +973,6 @@ export class Hedge15mEngine {
     this._volGateLoggedThisRound = false;
     this.dirAlignedCount = 0;
     this.dirContraCount = 0;
-    this.trendConfirmCount = 0;
-    this.lastTrendConfirmDir = "";
     this.preOrderUpId = "";
     this.preOrderDownId = "";
     this.preOrderUpPrice = 0;
@@ -1170,18 +1143,12 @@ export class Hedge15mEngine {
                 }
                 const cheaperAsk = cheaperDir === "up" ? this.upAsk : this.downAsk;
                 if (cheaperAsk > 0 && cheaperAsk <= maxAsk && cheaperAsk >= MIN_ENTRY_ASK) {
-                  // BTC方向逆向检查
-                  const btcContra = (cheaperDir === "up" && btcDir === "down") || (cheaperDir === "down" && btcDir === "up");
-                  if (btcContra) {
-                    logger.warn(`HEDGE15M SKIP: both dump → ${cheaperDir.toUpperCase()} but BTC=${btcDir} — 不逆势入场`);
-                  } else {
                     logger.info(`HEDGE15M BOTH DUMP → picking ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)} (BTC=${btcDir}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
                     this.dumpDetected = `BOTH-DUMP → ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)}`;
                     this.currentDumpDrop = cheaperDir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                     this.activeStrategyMode = "mispricing";
                     const buyToken = cheaperDir === "up" ? rnd.upToken : rnd.downToken;
                     await this.buyLeg1(trader, rnd, cheaperDir, cheaperAsk, buyToken);
-                  }
                 } else {
                   logger.warn(`HEDGE15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) cheapest=${cheaperAsk.toFixed(2)} > maxAsk=$${maxAsk.toFixed(2)}`);
                 }
@@ -1248,18 +1215,8 @@ export class Hedge15mEngine {
                           logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — no mispricing edge`);
                         }
                       } else {
-                        // ── BTC方向逆向过滤: 买方向与BTC实时走势直接矛盾时拒绝 ──
+                        // ── 入场: 价格达标 ──
                         const btcDir = getBtcDirection();
-                        const btcContra = (candidate.dir === "up" && btcDir === "down") || (candidate.dir === "down" && btcDir === "up");
-                        if (btcContra) {
-                          const contraKey = `btccontra:${candidate.dir}:${btcDir}`;
-                          if (contraKey !== this.lastSignalSkipKey) {
-                            this.lastSignalSkipKey = contraKey;
-                            this.trackRoundRejectReason(`btc_contra: buy ${candidate.dir} but BTC=${btcDir}`);
-                            logger.warn(`HEDGE15M SKIP: buy ${candidate.dir.toUpperCase()} but BTC=${btcDir} — 重定价而非砸盘`);
-                          }
-                        } else {
-                        // ── 入场: 价格达标 + BTC方向不矛盾 ──
                         this.dumpDetected = candidate.dumpDetected;
                         this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                         this.activeStrategyMode = "mispricing";
@@ -1274,7 +1231,6 @@ export class Hedge15mEngine {
                           candidate.askPrice,
                           rnd[candidate.buyTokenKey],
                         );
-                        }
                       }
                     }
                   }
@@ -1286,33 +1242,6 @@ export class Hedge15mEngine {
               }
             }
             } // end dual-side pre-order guard
-
-            // ── 趋势追涨: 无dump时, 强趋势方向ask低于阈值直接入场 ──
-            if (this.rtTrendEnabled && !this.leg1AttemptedThisRound && !this.leg1EntryInFlight
-                && this.hedgeState === "watching" && elapsed >= TREND_MIN_ELAPSED && secs >= this.rtMinEntrySecs) {
-              const trend = this.getRoundDirectionalBias();
-              if (trend !== "flat") {
-                const trendAsk = trend === "up" ? this.upAsk : this.downAsk;
-                const trendToken = trend === "up" ? rnd.upToken : rnd.downToken;
-                if (trendAsk > 0 && trendAsk <= this.rtTrendMaxAsk && trendAsk > MIN_ENTRY_ASK) {
-                  if (trend === this.lastTrendConfirmDir) {
-                    this.trendConfirmCount++;
-                  } else {
-                    this.trendConfirmCount = 1;
-                    this.lastTrendConfirmDir = trend;
-                  }
-                  if (this.trendConfirmCount >= TREND_CONFIRM_CYCLES) {
-                    await this.buyTrendLeg1(trader, rnd, trend, trendAsk, trendToken);
-                  }
-                } else {
-                  this.trendConfirmCount = 0;
-                  this.lastTrendConfirmDir = "";
-                }
-              } else {
-                this.trendConfirmCount = 0;
-                this.lastTrendConfirmDir = "";
-              }
-            }
           }
 
           // Window expired
@@ -1339,7 +1268,7 @@ export class Hedge15mEngine {
           // 卖出要付2% taker fee, 持有到结算 0 fee — 任何中途卖出都是EV-
           const entryPrice = this.leg1FillPrice > 0 ? this.leg1FillPrice : this.leg1Price;
           const secsHeld = this.leg1FilledAt > 0 ? (Date.now() - this.leg1FilledAt) / 1000 : 0;
-          const sourceTag = this.leg1EntrySource === "trend-follow" ? "趋势" : this.leg1EntrySource === "dual-side-preorder" ? "预挂" : "砸盘";
+          const sourceTag = this.leg1EntrySource === "dual-side-preorder" ? "预挂" : "砸盘";
           this.status = `纯持仓[${sourceTag}]: ${this.leg1Dir.toUpperCase()}@$${entryPrice.toFixed(2)} ${this.leg1Shares}份 EV+$${(this.leg1Shares * (1 - entryPrice)).toFixed(2)} ${secs.toFixed(0)}s → 等结算`;
         }
 
@@ -1465,95 +1394,6 @@ export class Hedge15mEngine {
       budgetPct,
       "mispricing",
       Date.now(),
-    );
-  }
-
-  /** 趋势追涨入场: 强趋势方向 ask ≤ TREND_MAX_ASK 时入场 */
-  private async buyTrendLeg1(
-    trader: Trader,
-    rnd: Round15m,
-    dir: string,
-    askPrice: number,
-    buyToken: string,
-  ): Promise<void> {
-    if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
-    if (this.leg1AttemptedThisRound) return;
-
-    // 取消双侧预挂单, 释放资金
-    if (this.preOrderUpId || this.preOrderDownId) {
-      const ghostFilled = await this.cancelDualSideOrders(trader);
-      if (ghostFilled) {
-        logger.info(`HEDGE15M buyTrendLeg1 aborted: pre-order ghost fill detected, already transitioned to leg1`);
-        return;
-      }
-    }
-
-    if (askPrice > this.rtTrendMaxAsk || askPrice < MIN_ENTRY_ASK) return;
-
-    // ── 统计7源信号对齐度 ──
-    this.computeSignalAlignment(dir);
-
-    // ── 动态胜率: 根据趋势强度 + 信号一致性计算, 替代固定58% ──
-    const btcMove = getBtcMovePct();                       // 回合内BTC变动幅度
-    const flow = getTakerFlowRatio();
-    const depth = getDepthImbalance();
-    const liq = getLiquidationInfo();
-    const trendMom = Math.abs(getRecentMomentum(TREND_WINDOW_SEC));  // 180s动量绝对值
-
-    // (1) 趋势强度分: btcMove越大越可信, 0.24%→0分, 1%→满分
-    const moveScore = Math.min(1.0, Math.max(0, (btcMove - 0.0024) / (0.01 - 0.0024)));
-    // (2) 动量分: 180s动量越强越可信
-    const momScore = Math.min(1.0, Math.max(0, (trendMom - 0.0024) / (0.008 - 0.0024)));
-    // (3) 信号一致分: aligned多加分, contra多减分
-    const signalScore = Math.min(1.0, Math.max(-0.5,
-      (this.dirAlignedCount - this.dirContraCount) / 5));
-    // (4) Taker flow 分: 方向一致的极端flow加分
-    const flowAligned = (dir === "down" && flow.direction === "sell") || (dir === "up" && flow.direction === "buy");
-    const flowContra = (dir === "down" && flow.direction === "buy") || (dir === "up" && flow.direction === "sell");
-    const flowScore = flowAligned ? Math.min(0.5, Math.abs(flow.ratio - 1) * 0.5) : flowContra ? -0.2 : 0;
-    // (5) 强平级联分: 方向一致的强平加分
-    const liqAligned = (dir === "down" && liq.direction === "sell") || (dir === "up" && liq.direction === "buy");
-    const liqScore = liqAligned && liq.intensity !== "low" ? 0.15 : 0;
-
-    // 综合分 0~1 → 映射到胜率
-    const rawScore = moveScore * 0.30 + momScore * 0.25 + signalScore * 0.20 + flowScore * 0.15 + liqScore * 0.10;
-    const clampedScore = Math.min(1.0, Math.max(0, rawScore));
-    const dynamicWinRate = TREND_KELLY_WIN_RATE_BASE + clampedScore * (TREND_KELLY_WIN_RATE_MAX - TREND_KELLY_WIN_RATE_BASE);
-    // 弱趋势保护: winRate < 54% 时不入场 (EV太低不值得冒险)
-    if (dynamicWinRate < 0.54) {
-      const skipKey = `trend-weak:${dir}:${dynamicWinRate.toFixed(2)}`;
-      if (skipKey !== this.lastEntrySkipKey) {
-        this.lastEntrySkipKey = skipKey;
-        logger.info(`TREND SKIP weak signal: winRate=${(dynamicWinRate*100).toFixed(1)}%<54% move=${(btcMove*100).toFixed(2)}% flow=${flow.ratio.toFixed(2)}/${flow.direction} aligned=${this.dirAlignedCount} contra=${this.dirContraCount}`);
-      }
-      return;
-    }
-
-    // ── 趋势专用 Kelly: 动态胜率驱动仓位 ──
-    const odds = (1 - askPrice) / askPrice;
-    const kellyFull = (dynamicWinRate * odds - (1 - dynamicWinRate)) / odds;
-    // 趋势Kelly: 低价趋势EV+大→放开上限
-    const trendKellyCap = askPrice <= 0.40 ? 0.22 : 0.18;
-    // 连亏缩仓: 趋势入场同样适用
-    const trendLossScale = this.consecutiveLosses > 0 ? Math.max(0.4, Math.pow(0.85, this.consecutiveLosses)) : 1.0;
-    let budgetPct = Math.max(0.06, Math.min(trendKellyCap, kellyFull * this.rtKellyFraction * trendLossScale));
-    budgetPct = Math.max(0.06, Math.min(trendKellyCap, budgetPct));
-
-    this.dumpDetected = `TREND ${dir.toUpperCase()} @${askPrice.toFixed(2)} (${this.trendConfirmCount}cycle)`;
-    this.activeStrategyMode = "trend";
-    this.currentTrendBias = dir as "up" | "down";
-    this.leg1WinRate = dynamicWinRate;
-    logger.info(`HEDGE15M TREND ENTRY: ${dir.toUpperCase()} @${askPrice.toFixed(2)} budget=${(budgetPct*100).toFixed(1)}% winRate=${(dynamicWinRate*100).toFixed(1)}% score=${clampedScore.toFixed(2)} move=${(btcMove*100).toFixed(2)}% mom=${(trendMom*100).toFixed(2)}% flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} aligned=${this.dirAlignedCount} contra=${this.dirContraCount} confirmed=${this.trendConfirmCount}`);
-
-    await this.openLeg1Position(
-      trader,
-      dir,
-      askPrice,
-      buyToken,
-      budgetPct,
-      "mispricing",
-      Date.now(),
-      "trend-follow",
     );
   }
 
@@ -2149,7 +1989,7 @@ export class Hedge15mEngine {
         limitOffset = LIMIT_RACE_FAST_OFFSET;
       }
       // 趋势入场: 方向明确价格上行中, 不等limit直接FAK; dump入场: 价格下跌中等maker
-      const raceTimeout = entrySource === "trend-follow" ? 0 : LIMIT_RACE_TIMEOUT_MS;
+      const raceTimeout = LIMIT_RACE_TIMEOUT_MS;
 
       const adjustedCost = adjustedShares * entryAsk;
       logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
@@ -2198,7 +2038,7 @@ export class Hedge15mEngine {
       this.leg1Token = buyToken;
       this.leg1MakerFill = isMaker;
       this.leg1EntrySource = entrySource;
-      this.leg1WinRate = entrySource === "trend-follow" ? this.leg1WinRate : KELLY_WIN_RATE;
+      this.leg1WinRate = KELLY_WIN_RATE;
       this.leg1EntryTrendBias = this.currentTrendBias;
       this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
       this.totalCost = filledShares * realFillPrice * (1 + actualFee);

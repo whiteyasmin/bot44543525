@@ -154,8 +154,7 @@ app.post("/api/start", auth, async (req, res) => {
     return;
   }
   const { privateKey, funderAddress, mode, paperBalance, paperSessionMode,
-    dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction,
-    trendEnabled, trendMaxAsk } = req.body;
+    dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction } = req.body;
   const tradingMode = mode === "paper" ? "paper" : "live";
   if (privateKey) updateConfig({ PRIVATE_KEY: privateKey });
   if (funderAddress) updateConfig({ FUNDER_ADDRESS: funderAddress });
@@ -174,8 +173,6 @@ app.post("/api/start", auth, async (req, res) => {
       maxEntryAsk: maxEntryAsk != null ? Number(maxEntryAsk) : undefined,
       dualSideMaxAsk: dualSideMaxAsk != null ? Number(dualSideMaxAsk) : undefined,
       kellyFraction: kellyFraction != null ? Number(kellyFraction) : undefined,
-      trendEnabled: trendEnabled != null ? trendEnabled === true || trendEnabled === "1" || trendEnabled === 1 : undefined,
-      trendMaxAsk: trendMaxAsk != null ? Number(trendMaxAsk) : undefined,
     });
     res.json({
       ok: true,

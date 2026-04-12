@@ -325,21 +325,6 @@ tr:hover{background:rgba(118,183,255,.03)}
             <label>资金地址</label>
             <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
           </div>
-          <div>
-            <label>趋势追涨</label>
-            <select id="cfg-trend-enabled">
-              <option value="1" selected>开启</option>
-              <option value="0">关闭</option>
-            </select>
-          </div>
-          <div>
-            <label>趋势上限</label>
-            <select id="cfg-trend-max-ask">
-              <option value="0.45">$0.45 → EV≥+$0.13</option>
-              <option value="0.50" selected>$0.50 → EV≥+$0.08</option>
-              <option value="0.55">$0.55 → EV≥+$0.03</option>
-            </select>
-          </div>
           <div class="span2">
             <label>私钥</label>
             <input type="password" id="cfg-pk" placeholder="0x..." autocomplete="off">
@@ -356,7 +341,6 @@ tr:hover{background:rgba(118,183,255,.03)}
           <span style="color:var(--muted)">反应EV≥ <b id="p-max-ask" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">砸盘确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">趋势 <b id="p-trend" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
         </div>
       </div>
@@ -428,12 +412,10 @@ async function startBot() {
   const maxEntryAsk = Number(document.getElementById('cfg-max-entry-ask').value);
   const dualSideMaxAsk = Number(document.getElementById('cfg-dual-max-ask').value);
   const kellyFraction = Number(document.getElementById('cfg-kelly').value);
-  const trendEnabled = document.getElementById('cfg-trend-enabled').value === '1';
-  const trendMaxAsk = Number(document.getElementById('cfg-trend-max-ask').value);
   if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
   if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
   try {
-    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction, trendEnabled, trendMaxAsk };
+    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction };
     const payload = mode === 'paper' ? base : { ...base, privateKey: pk, funderAddress: fa };
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
@@ -519,9 +501,8 @@ function renderDirectionalAudit(history) {
   const sG = {
     pre: settled.filter(h => h.entrySource === 'dual-side-preorder'),
     mis: settled.filter(h => h.entrySource === 'reactive-mispricing'),
-    trend: settled.filter(h => h.entrySource === 'trend-follow'),
   };
-  document.getElementById('a-dd').textContent = '预挂 '+evBucket(sG.pre)+' / 砸盘 '+evBucket(sG.mis)+' / 趋势 '+evBucket(sG.trend);
+  document.getElementById('a-dd').textContent = '预挂 '+evBucket(sG.pre)+' / 砸盘 '+evBucket(sG.mis);
   const avgEdge = settled.reduce((s,h) => s+((h.result==='WIN'?1:0)-(h.leg1FillPrice||h.leg1Price||0)),0)/settled.length;
   const eEl = document.getElementById('a-est');
   eEl.textContent = (avgEdge>=0?'+':'')+avgEdge.toFixed(3);
@@ -608,8 +589,8 @@ function render(s) {
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
   const strEl = document.getElementById('h-strategy-mode');
-  strEl.textContent = {none:'待机',mispricing:'砸盘持有',trend:'趋势追涨'}[s.activeStrategyMode]||s.activeStrategyMode||'--';
-  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='trend'?'#76b7ff':'';
+  strEl.textContent = {none:'待机',mispricing:'砸盘持有'}[s.activeStrategyMode]||s.activeStrategyMode||'--';
+  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':'';
   const trEl = document.getElementById('h-trend-bias');
   trEl.textContent = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
   trEl.style.color = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'';
@@ -628,9 +609,7 @@ function render(s) {
   // Dump monitor panel
   const dumpSt = document.getElementById('dump-status');
   if (s.dumpDetected) {
-    const isTrend = s.dumpDetected.startsWith('TREND');
-    const cls = isTrend ? 'tag-b' : 'tag-r';
-    dumpSt.innerHTML = '<span class=\"tag '+cls+'\">'+s.dumpDetected.substring(0, s.dumpDetected.indexOf('[') > 0 ? s.dumpDetected.indexOf('[') : 40).trim()+'</span>';
+    dumpSt.innerHTML = '<span class=\"tag tag-r\">'+s.dumpDetected.substring(0, s.dumpDetected.indexOf('[') > 0 ? s.dumpDetected.indexOf('[') : 40).trim()+'</span>';
   } else if (s.dumpConfirmCount > 0) {
     dumpSt.innerHTML = '<span class="tag tag-b">确认中 '+s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles+'</span>';
   } else {
@@ -665,10 +644,8 @@ function render(s) {
     const ep = s.hedgeLeg1Price||0;
     const wr = s.leg1WinRate || 0.50;
     const ev = wr - ep;
-    const srcLabel = s.activeStrategyMode==='trend'?'趋势持有':'砸盘持有';
+    const srcLabel = '砸盘持有';
     meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' EV+$'+ev.toFixed(2)+'/份 '+(wr*100).toFixed(0)+'%</span>';
-  } else if (s.trendTradeEnabled && s.trendConfirmCount>0) {
-    meEl.innerHTML = '<span class=\"tag tag-b\">趋势确认中 '+s.trendConfirmCount+'/3</span>';
   } else {
     meEl.textContent = '--'; meEl.style.color = '';
   }
@@ -751,11 +728,6 @@ function render(s) {
     document.getElementById('p-max-ask').textContent = '+$'+(0.50-s.rtMaxEntryAsk).toFixed(2)+'/份 (≤$'+s.rtMaxEntryAsk.toFixed(2)+')';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
-    const tEl = document.getElementById('p-trend');
-    if (s.rtTrendEnabled) {
-      tEl.textContent = '开 52-72% (≤$'+s.rtTrendMaxAsk.toFixed(2)+')'+(s.trendConfirmCount>0?' '+s.trendConfirmCount+'/3':'');
-      tEl.style.color = s.trendConfirmCount>=2?'#42d392':'#76b7ff';
-    } else { tEl.textContent = '关'; tEl.style.color = '#7a8ea6'; }
   }
 
   // Infra
@@ -788,7 +760,7 @@ function render(s) {
     const l1 = h.leg1FillPrice>0?'\$'+h.leg1FillPrice.toFixed(2):'\$'+(h.leg1Price||0).toFixed(2);
     const est = h.estimated?'<span style="color:#f4c96b" title="估算"> ⚠</span>':'';
     const bd = h.profitBreakdown?' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"':'';
-    const hwr = h.entryWinRate || ((h.entrySource==='trend-follow')?0.58:0.50);
+    const hwr = h.entryWinRate || 0.50;
     const hep = h.leg1FillPrice>0?h.leg1FillPrice:(h.leg1Price||0);
     const hev = hep>0?(hwr-hep):0;
     return '<tr><td>'+h.time+'</td>'
