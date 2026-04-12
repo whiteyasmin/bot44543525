@@ -178,7 +178,7 @@ export function getDynamicParams(): {
 
   return {
     // 砸盘基准年龄: 延迟低时可用更新鲜的参考点, 快速响应行情
-    dumpBaselineMs:     lerp(30, 300,  300, 1200),
+    dumpBaselineMs:     lerp(30, 300,  150, 1200),
     // 快照缓冲窗口: 延迟低时用更窄窗口, 减少噪音
     dumpWindowMs:       lerp(30, 300,  800, 2500),
     // 成交确认等待: 低延迟回报更快
