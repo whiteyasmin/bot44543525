@@ -20,7 +20,7 @@ let cacheTs = 0;
 // 下一轮预加载缓存 — 消除回合切换时的冷启动延迟
 let prefetchedSlug = "";
 let prefetchedRound: Round15m | null = null;
-let prefetchedAt = 0;
+let prefetchedEndTime = 0;   // endDate的毫秒时间戳, 用于精确计算secondsLeft
 
 function clampRoundSeconds(secondsLeft: number): number {
   return Math.max(0, Math.min(ROUND_DURATION, secondsLeft));
@@ -108,16 +108,16 @@ export async function prefetchNextRound(): Promise<void> {
     if (!tokens) { prefetchedSlug = ""; return; }
     const endStr = event.endDate || market.endDate;
     if (!endStr) { prefetchedSlug = ""; return; }
+    prefetchedEndTime = new Date(endStr).getTime();
     prefetchedRound = {
       market,
       upToken: tokens.up,
       downToken: tokens.down,
-      secondsLeft: clampRoundSeconds((new Date(endStr).getTime() - Date.now()) / 1000),
+      secondsLeft: 0,  // 占位, 使用时从 prefetchedEndTime 实时计算
       question: market.question || "",
       conditionId: market.conditionId || "",
       negRisk: !!market.negRisk,
     };
-    prefetchedAt = Date.now();
     logger.info(`下一轮预加载: ${prefetchedRound.question}`);
   } catch {
     prefetchedSlug = "";
@@ -130,7 +130,7 @@ export async function getCurrentRound15m(): Promise<Round15m | null> {
   // 优先使用预加载数据，消除回合切换时的冷启动延迟
   const curSlug = computeSlug();
   if (prefetchedRound && prefetchedSlug === curSlug) {
-    const secondsLeft = clampRoundSeconds(prefetchedRound.secondsLeft - (now - prefetchedAt) / 1000);
+    const secondsLeft = clampRoundSeconds((prefetchedEndTime - now) / 1000);
     if (secondsLeft > 0) {
       cache = { ...prefetchedRound, secondsLeft };
       cacheTs = now;

@@ -373,6 +373,7 @@ export class Hedge15mEngine {
   private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
   private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
   private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
+  private _volGateLoggedThisRound = false;  // 去重: 波动率门控日志每轮只打一次
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   private trendConfirmCount = 0;            // 趋势连续确认计数
@@ -938,6 +939,7 @@ export class Hedge15mEngine {
     this.lastSignalSkipKey = "";
     this.lastRepricingRejectKey = "";
     this.lastDumpLogKey = "";
+    this._volGateLoggedThisRound = false;
     this.dirAlignedCount = 0;
     this.dirContraCount = 0;
     this.trendConfirmCount = 0;
@@ -1609,7 +1611,11 @@ export class Hedge15mEngine {
       // 波动率不足 → 取消已有预挂单, 不挂新单
       if (this.preOrderUpId || this.preOrderDownId) {
         await this.cancelDualSideOrders(trader);
-        logger.info(`DUAL SIDE: vol=${(recentVol*100).toFixed(3)}% < ${(DUAL_SIDE_MIN_VOL*100).toFixed(2)}% — 微行情, 撤销预挂单等待波动`);
+      }
+      // 每轮只打一次日志, 避免刷屏
+      if (!this._volGateLoggedThisRound) {
+        this._volGateLoggedThisRound = true;
+        logger.info(`DUAL SIDE: vol=${(recentVol*100).toFixed(3)}% < ${(DUAL_SIDE_MIN_VOL*100).toFixed(2)}% — 微行情, 跳过预挂单`);
       }
       return;
     }
