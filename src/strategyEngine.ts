@@ -77,7 +77,7 @@ export function getDirectionalBias(params: DirectionalBiasParams): DirectionalBi
 // ask跌幅 / BTC变动 的最低比值 — 低于此值说明BTC变动可以解释ask下跌, 是正确定价而非砸盘
 const MIN_DUMP_RATIO = 20;
 // 对侧ask上涨阈值 — 一侧跌N%, 对侧涨 ≥ N*此比例 说明市场在重定价而非恐慌
-const OPPOSITE_RISE_RATIO = 0.45; // 从0.65收紧→0.45: 对侧涨≥跌幅45%即视为零和重定价
+const OPPOSITE_RISE_RATIO = 0.65; // 回调→0.65: btc_contra已提供方向保护, 0.45过严导致35轮0入场
 
 export function evaluateMispricingOpportunity(params: MispricingEvaluationParams): MispricingEvaluation {
     const {
