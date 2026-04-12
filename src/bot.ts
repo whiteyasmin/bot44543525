@@ -550,25 +550,34 @@ export class Hedge15mEngine {
   }
 
   /**
-   * BSM数字期权: P(BTC结算时 > 开盘价) = N(-d), d = ln(S/K) / (σ√T)
+   * BSM数字期权: P(BTC结算时 > 开盘价) = N(d), d = ln(S/K) / (σ√T)
    * - S = 当前BTC, K = 本回合开盘BTC, T = 剩余时间(年), σ = 年化波动率
    * - σ由 getRecentVolatility(300) 的Parkinson估计量换算
-   * - 返回 [0.30, 0.70] 限幅, 避免极端值破坏Kelly
+   * - fairRaw 用于入场过滤; fairKelly 限幅到 [0.30, 0.70] 仅用于Kelly sizing
    */
-  private bsFairWinRate(dir: string, secsLeft: number): number {
+  private getBsSnapshot(dir: string, secsLeft: number): { fairRaw: number; fairKelly: number; dAbs: number } {
     const K = this.roundStartBtcPrice;
     const S = getBtcPrice();
-    if (K <= 0 || S <= 0 || secsLeft < 30) return KELLY_WIN_RATE;
+    if (K <= 0 || S <= 0 || secsLeft < 30) {
+      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0 };
+    }
     // Parkinson estimator: σ_5min = range / (2*sqrt(2*ln2)) ≈ range / 2.355
     // σ_annual = σ_5min * sqrt(31557600/300) = σ_5min * 324.5
     const vol5m = getRecentVolatility(300);
     const sigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
     const tYears = secsLeft / (365.25 * 24 * 3600);
     const sigSqrtT = sigAnnual * Math.sqrt(tYears);
+    if (sigSqrtT <= 0) {
+      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0 };
+    }
     const d = Math.log(S / K) / sigSqrtT;  // ln(S/K) / σ√T
     const pUp = this.normalCdf(d);          // P(S_T > K): S>K时d>0→N(d)>0.5, UP更可能
-    const fair = dir === "up" ? pUp : (1 - pUp);
-    return Math.max(0.30, Math.min(0.70, fair));
+    const fairRaw = dir === "up" ? pUp : (1 - pUp);
+    return {
+      fairRaw,
+      fairKelly: Math.max(0.30, Math.min(0.70, fairRaw)),
+      dAbs: Math.abs(d),
+    };
   }
 
   private getMaxEntryAsk(): number {
@@ -1399,36 +1408,24 @@ export class Hedge15mEngine {
     this.computeSignalAlignment(dir);
 
     // ── BSM数字期权动态胜率 ──
-    const bsWinRate = this.bsFairWinRate(dir, rnd.secondsLeft);
-    const bsEdge = bsWinRate - askPrice;
+    const { fairRaw: bsFairRaw, fairKelly: bsWinRate, dAbs } = this.getBsSnapshot(dir, rnd.secondsLeft);
+    const bsEdgeRaw = bsFairRaw - askPrice;
 
-    // ── Doji / BSM截断 过滤 ──
-    // d = ln(S/K) / σ√T 描述BTC当前对开盘价的标准化偏离
-    const K = this.roundStartBtcPrice;
-    const S = getBtcPrice();
-    const vol5m = getRecentVolatility(300);
-    const sigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
-    const tYears = rnd.secondsLeft / (365.25 * 24 * 3600);
-    const sigSqrtT = sigAnnual * Math.sqrt(tYears);
-    const dAbs = (K > 0 && S > 0 && sigSqrtT > 0) ? Math.abs(Math.log(S / K) / sigSqrtT) : 0;
-    // [规则A] BSM截断在0.30底部时edge为负 → 真实fair可能远低于0.30, 真实edge可能远远更负
-    //   例: d=-2.0 → 真实fair≈0.023, ask=0.32 → 真实edge=-29.7%, 但截断后显示-2%
-    const bsFloorClamped = bsWinRate <= 0.301;
-    if (bsFloorClamped && bsEdge < 0) {
-      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)}(clamped) ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=floor-clamped-neg-edge`);
+    // ── Doji / BSM过滤 ──
+    // 过滤使用原始fair, 不能用截断后的fairKelly, 否则会把深度负edge伪装成可入场单
+    // [规则A] 原始edge<=0 一律拒绝: mispricing路径不做负EV单
+    if (bsEdgeRaw <= 0) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsFairRaw.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdgeRaw*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=non-positive-edge`);
       return;
     }
-    // [规则B] 真正Doji (|d|<0.05, BTC几乎未动): BSM fair≈0.50, 无方向信号
-    //   此时依然可以入场, 但需要AMM有明显折扣 (edge≥2%)
-    //   注: 不能用Infinity拒绝, 否则会屏蔽高折扣大边际的优质入场机会
-    const isDoji = dAbs < 0.05;
-    if (isDoji && bsEdge < 0.02) {
-      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=doji-small-edge`);
+    // [规则B] 真Doji (|d|<0.05): BTC几乎未偏离开盘, 只做深折价单
+    if (dAbs < 0.05 && bsEdgeRaw < 0.18) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsFairRaw.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdgeRaw*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=doji-edge<18%`);
       return;
     }
-    // [规则C] 普通情况: edge < -5% → ask远高于BSM公允, 无入场价值
-    if (bsEdge < -0.05) {
-      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=edge<-5%`);
+    // [规则C] near-doji (|d|<0.10): 方向仍弱, 要求更高折价
+    if (dAbs < 0.10 && bsEdgeRaw < 0.12) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsFairRaw.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdgeRaw*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=near-doji-edge<12%`);
       return;
     }
 
@@ -1460,7 +1457,7 @@ export class Hedge15mEngine {
       budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.05; // 3→+5%, 4→+10%, 5→+15%...
       logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
     } else {
-      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsWinRate.toFixed(3)} edge=${(bsEdge*100).toFixed(1)}%`);
+      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} edge=${(bsEdgeRaw*100).toFixed(1)}%`);
     }
     budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
