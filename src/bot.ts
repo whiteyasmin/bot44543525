@@ -57,7 +57,7 @@ const DUAL_SIDE_SUM_CEILING = 0.97;        // 预挂单目标: 双侧sum ≤ 此
 const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少, 实际用动态offset)
 const DUAL_SIDE_REFRESH_MS = 2000;         // 每2秒刷新挂单价格 (3s在快行情中偏移过大)
 const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
-const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
+const DUAL_SIDE_MIN_SECS = 300;            // 剩余≥5min才预挂 (原540太保守, 低价maker成交即使剩5min仍EV+)
 const DUAL_SIDE_MIN_ASK = 0.18;            // 挂单价下限 (与反应入场MIN_ENTRY_ASK对齐)
 const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
 
