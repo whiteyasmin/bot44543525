@@ -1401,9 +1401,24 @@ export class Hedge15mEngine {
     // ── BSM数字期权动态胜率 ──
     const bsWinRate = this.bsFairWinRate(dir, rnd.secondsLeft);
     const bsEdge = bsWinRate - askPrice;
-    // 数学边际 < -5%: ask定价高于BSM公允值 → 不入场
-    if (bsEdge < -0.05) {
-      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% secsLeft=${Math.floor(rnd.secondsLeft)}`);
+
+    // ── Doji过滤: BTC几乎未偏离开盘价 → 方向信号极弱, 砸盘是随机噪声 ──
+    // ML研究验证: 涨跌<0.03%的回合模型无法预测, 屏蔽可显著提升精度
+    // d = ln(S/K) / σ√T; |d| < 0.10 意味着BSM胜率在 N(-0.1)~N(0.1) = 46%~54%区间
+    const K = this.roundStartBtcPrice;
+    const S = getBtcPrice();
+    const vol5m = getRecentVolatility(300);
+    const sigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
+    const tYears = rnd.secondsLeft / (365.25 * 24 * 3600);
+    const sigSqrtT = sigAnnual * Math.sqrt(tYears);
+    const dAbs = (K > 0 && S > 0 && sigSqrtT > 0) ? Math.abs(Math.log(S / K) / sigSqrtT) : 0;
+    // doji阈值: |d| < 0.10 → edge门槛提高到10%; |d| < 0.05 → 完全拒绝
+    const isDoji = dAbs < 0.05;
+    const isNearDoji = dAbs < 0.10;
+    const edgeThreshold = isDoji ? Infinity : (isNearDoji ? 0.10 : -0.05);
+    if (bsEdge < edgeThreshold) {
+      const reason = isDoji ? "doji(|d|<0.05)" : isNearDoji ? "near-doji(|d|<0.10,need edge≥10%)" : "edge<-5%";
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=${reason}`);
       return;
     }
 
