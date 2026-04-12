@@ -486,6 +486,62 @@ export class Hedge15mEngine {
     return this.rtDualSideMaxAsk;
   }
 
+  /**
+   * 统计7大信号源与入场方向的一致/矛盾数.
+   * 每个信号的 direction 字段为 "buy"/"sell"/"neutral".
+   * buy 等同 "up", sell 等同 "down".
+   */
+  private computeSignalAlignment(dir: string): void {
+    const targetDir = dir === "up" ? "buy" : "sell";
+    const contraDir = dir === "up" ? "sell" : "buy";
+    let aligned = 0;
+    let contra = 0;
+
+    // 1. Taker Flow
+    const flow = getTakerFlowRatio();
+    if (flow.direction === targetDir) aligned++;
+    else if (flow.direction === contraDir) contra++;
+
+    // 2. Volume Spike
+    const vol = getVolumeSpikeInfo();
+    if (vol.isSpike) {
+      if (vol.direction === targetDir) aligned++;
+      else if (vol.direction === contraDir) contra++;
+    }
+
+    // 3. Large Orders
+    const large = getLargeOrderInfo();
+    if (large.direction === targetDir) aligned++;
+    else if (large.direction === contraDir) contra++;
+
+    // 4. Depth Imbalance
+    const depth = getDepthImbalance();
+    if (depth.fresh) {
+      if (depth.direction === targetDir) aligned++;
+      else if (depth.direction === contraDir) contra++;
+    }
+
+    // 5. Liquidation
+    const liq = getLiquidationInfo();
+    if (liq.intensity !== "low") {
+      if (liq.direction === targetDir) aligned++;
+      else if (liq.direction === contraDir) contra++;
+    }
+
+    // 6. Taker Flow Trend (strengthening=主导方加强)
+    const flowTrend = getTakerFlowTrend();
+    if (flowTrend === "strengthening" && flow.direction === targetDir) aligned++;
+    else if (flowTrend === "strengthening" && flow.direction === contraDir) contra++;
+
+    // 7. BTC 180s Momentum
+    const mom180 = getRecentMomentum(180);
+    if ((dir === "up" && mom180 > 0.001) || (dir === "down" && mom180 < -0.001)) aligned++;
+    else if ((dir === "up" && mom180 < -0.001) || (dir === "down" && mom180 > 0.001)) contra++;
+
+    this.dirAlignedCount = aligned;
+    this.dirContraCount = contra;
+  }
+
   private getRolling4hPnL(): number {
     const cutoff = Date.now() - 4 * 3600_000;
     return this.rollingPnL.reduce((sum, item) => item.ts >= cutoff ? sum + item.profit : sum, 0);
@@ -1373,6 +1429,9 @@ export class Hedge15mEngine {
       return;
     }
 
+    // ── 统计7源信号对齐度 ──
+    this.computeSignalAlignment(dir);
+
     // ── Half-Kelly分层仓位: 越便宜买越多, 再叠加趋势加权 ──
     // Kelly: f* = (p*b - q) / b, b = (1-ask)/ask, Half-Kelly = f*/2
     const odds = (1 - askPrice) / askPrice;  // 赔率
@@ -1430,6 +1489,9 @@ export class Hedge15mEngine {
     }
 
     if (askPrice > this.rtTrendMaxAsk || askPrice < MIN_ENTRY_ASK) return;
+
+    // ── 统计7源信号对齐度 ──
+    this.computeSignalAlignment(dir);
 
     // ── 动态胜率: 根据趋势强度 + 信号一致性计算, 替代固定58% ──
     const btcMove = getBtcMovePct();                       // 回合内BTC变动幅度
