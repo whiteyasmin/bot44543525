@@ -415,9 +415,9 @@ export function getBtcMovePct(): number {
   return Math.abs(latestPrice - roundStartPrice) / roundStartPrice;
 }
 
-/** Binance 方向 */
+/** Binance 方向 (equal = down: Polymarket "Up" = strictly above open) */
 export function getBtcDirection(): "up" | "down" {
-  return latestPrice >= roundStartPrice ? "up" : "down";
+  return latestPrice > roundStartPrice ? "up" : "down";
 }
 
 export function setRoundSecsLeft(secs: number): void {

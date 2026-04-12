@@ -16,6 +16,7 @@ export interface Round15m {
 
 let cache: Round15m | null = null;
 let cacheTs = 0;
+let cacheEndTime = 0;  // 缓存对应回合的endTime毫秒戳, 用于实时计算secondsLeft
 
 // 下一轮预加载缓存 — 消除回合切换时的冷启动延迟
 let prefetchedSlug = "";
@@ -134,16 +135,19 @@ export async function getCurrentRound15m(): Promise<Round15m | null> {
     if (secondsLeft > 0) {
       cache = { ...prefetchedRound, secondsLeft };
       cacheTs = now;
+      cacheEndTime = prefetchedEndTime;
       prefetchedRound = null;
       prefetchedSlug = "";
       return cache;
     }
   }
 
-  if (cache && now - cacheTs < CACHE_TTL) {
-    cache.secondsLeft -= (now - cacheTs) / 1000;
-    cacheTs = now;
-    return cache.secondsLeft > 0 ? cache : null;
+  if (cache && now - cacheTs < CACHE_TTL && cacheEndTime > 0) {
+    // 从endTime实时计算secondsLeft, 避免高频调用累计扣减漂移
+    const freshSecsLeft = clampRoundSeconds((cacheEndTime - now) / 1000);
+    if (freshSecsLeft <= 0) { cache = null; return null; }
+    cache.secondsLeft = freshSecsLeft;
+    return cache;
   }
 
   let slug = computeSlug();
@@ -191,5 +195,6 @@ export async function getCurrentRound15m(): Promise<Round15m | null> {
     negRisk: !!market.negRisk,
   };
   cacheTs = Date.now();
+  cacheEndTime = endTime;
   return cache;
 }

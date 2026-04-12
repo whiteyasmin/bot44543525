@@ -28,7 +28,9 @@ import { Trader, type TraderDiagnostics } from "./trader";
 // ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
 const MAX_SHARES      = 150;      // 单腿上限150份 (低价入场EV+大, 允许更大仓位)
-const DUMP_THRESHOLD  = 0.08;     // ask 跌幅 ≥8% 触发Leg1 (0.10太晚, 8%已足够提前截获砸盘)
+const DUMP_THRESHOLD  = 0.08;     // ask 跌幅 ≥8% 触发Leg1 (基准值, 低价位会动态降低)
+const DUMP_THRESHOLD_LOW_PRICE = 0.06;  // ask≤$0.22时降到6% (低价位EV已高, 不需等大跌)
+const DUMP_LOW_PRICE_CUTOFF = 0.22;     // 低价位分界线
 const ENTRY_WINDOW_S  = 660;      // 开局11分钟内监控砸盘, 窗口关闭=ROUND-660=240s=MIN_ENTRY_SECS
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
@@ -53,7 +55,7 @@ const LIMIT_RACE_FAST_DUMP_THRESHOLD = 0.15; // dump>=15% 视为快速dump
 const DUAL_SIDE_ENABLED = true;            // 启用双侧预挂单做市
 const DUAL_SIDE_SUM_CEILING = 0.97;        // 预挂单目标: 双侧sum ≤ 此值 (0.97: fill@0.35+opp@0.62=0.97→EV+$0.15, 0.93太紧导致挂单离市场30%无法成交)
 const DUAL_SIDE_OFFSET = 0.02;             // 挂单价 = currentAsk - offset (最少, 实际用动态offset)
-const DUAL_SIDE_REFRESH_MS = 3000;         // 每3秒刷新挂单价格
+const DUAL_SIDE_REFRESH_MS = 2000;         // 每2秒刷新挂单价格 (3s在快行情中偏移过大)
 const DUAL_SIDE_BUDGET_PCT = 0.25;         // 预挂单仓位 (单侧) - 方向性策略EV+加大仓位
 const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.18;            // 挂单价下限 (与反应入场MIN_ENTRY_ASK对齐)
@@ -64,6 +66,7 @@ const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%),
 
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const SUM_DIVERGENCE_MAX = 1.03;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (sum≥1.03=市场公平定价, 无dump错定价edge)
+const SUM_DIVERGENCE_RELAXED = 1.05;        // 大dump(≥12%)时放宽sum上限: 深度砸盘说明定价效率低, sum略高仍有edge
 const SUM_DIVERGENCE_MIN = 0.85;            // 入场时 upAsk+downAsk < 此值 → 方向性强、砸盘更可信
 const DUMP_CONFIRM_CYCLES = 1;              // 连续 N 个循环看到 dump 才触发入场 (1: dumpThreshold已过滤噪声, 无需多次确认)
 const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许反应式入场 (30s数据已足够稳定)
@@ -127,6 +130,19 @@ export interface Hedge15mState {
   preOrderDownPrice: number;
   leg1Maker: boolean;
   leg1WinRate: number;
+  leg1BsFair: number;
+  leg1EffectiveCost: number;
+  leg1EffectiveEdge: number;
+  leg1EdgeTier: string;
+  upBsFair: number;
+  downBsFair: number;
+  upEffectiveCost: number;
+  downEffectiveCost: number;
+  upNetEdge: number;
+  downNetEdge: number;
+  upEdgeTier: string;
+  downEdgeTier: string;
+  lastBsmRejectReason: string;
   // L: Taker Flow
   takerFlowRatio: number;
   takerFlowDirection: string;
@@ -241,6 +257,10 @@ export interface HedgeHistoryEntry {
   entryTrendBias?: string;  // up | down | flat
   entrySecondsLeft?: number; // 入场时回合剩余秒数
   entryWinRate?: number;    // 入场时动态胜率
+  entryBsFair?: number;     // 入场时BSM公平胜率(raw)
+  entryEffectiveCost?: number; // 入场综合成本(含费率/滑点)
+  entryEffectiveEdge?: number; // 入场净edge = bsFair - effectiveCost
+  entryEdgeTier?: string;   // net-edge档位: small/normal/strong
 }
 
 function sleep(ms: number): Promise<void> {
@@ -340,8 +360,13 @@ export class Hedge15mEngine {
   private activeStrategyMode: "none" | "mispricing" | "trend" = "none";
   private currentTrendBias: "up" | "down" | "flat" = "flat";
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
+  private currentDumpVelocity: "fast" | "normal" | "slow" = "normal"; // dump速度
   private leg1MakerFill = false;             // Leg1是否maker成交
   private leg1WinRate = 0.50;                // Leg1入场时动态胜率
+  private leg1BsFair = 0.50;
+  private leg1EffectiveCost = 0;
+  private leg1EffectiveEdge = 0;
+  private leg1EdgeTier = "--";
   private preOrderUpId = "";                 // 双侧预挂单: UP token GTC orderId
   private preOrderDownId = "";               // 双侧预挂单: DOWN token GTC orderId
   private preOrderUpPrice = 0;
@@ -363,11 +388,15 @@ export class Hedge15mEngine {
   private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
   private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
   private lastBsmRejectKey = "";            // 去重: 上次BSM拒绝日志key
+  private lastBsmRejectReason = "";
   private _volGateLoggedThisRound = false;  // 去重: 波动率门控日志每轮只打一次
   private _earlyEntryLoggedThisRound = false; // 去重: EARLY日志每轮只打一次
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   private consecutiveLosses = 0;            // 连续亏损计数 (资金安全守护)
+  private leg1FailedAttempts = 0;           // 本回合FAK失败次数 (限制重试)
+  private emaVolAnnual = 0;                 // EMA平滑的年化波动率 (BSM用)
+  private emaVolWarmup = 0;                  // EMA warm-up计数: 前3次用均值种子, 之后切EMA
 
   // ── 运行时可调参数 (覆盖 const) ──
   private rtDumpConfirmCycles = DUMP_CONFIRM_CYCLES;
@@ -559,28 +588,47 @@ export class Hedge15mEngine {
    * - σ由 getRecentVolatility(300) 的Parkinson估计量换算
    * - fairRaw 用于入场过滤; fairKelly 限幅到 [0.30, 0.70] 仅用于Kelly sizing
    */
-  private getBsSnapshot(dir: string, secsLeft: number): { fairRaw: number; fairKelly: number; dAbs: number } {
+  private getBsSnapshot(dir: string, secsLeft: number, readonly_ = false): { fairRaw: number; fairKelly: number; dAbs: number; lnMoneyness: number } {
     const K = this.roundStartBtcPrice;
     const S = getBtcPrice();
     if (K <= 0 || S <= 0 || secsLeft < 30) {
-      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0 };
+      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0, lnMoneyness: 0 };
     }
     // Parkinson estimator: σ_5min = range / (2*sqrt(2*ln2)) ≈ range / 2.355
     // σ_annual = σ_5min * sqrt(31557600/300) = σ_5min * 324.5
+    // EMA平滑(α=0.3): 减少短窗口噪声导致BSM公允概率剧烈波动
     const vol5m = getRecentVolatility(300);
-    const sigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
+    const rawSigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
+    // readonly模式(面板轮询): 只读EMA, 不更新 — 防止250ms面板轮询污染EMA采样率
+    let sigAnnual: number;
+    if (readonly_) {
+      sigAnnual = this.emaVolAnnual > 0 ? this.emaVolAnnual : rawSigAnnual;
+    } else {
+      // Warm-up: 前3次采样用累积均值做种子, 避免首笔尖刺直接成为EMA基准
+      this.emaVolWarmup++;
+      if (this.emaVolWarmup <= 3) {
+        this.emaVolAnnual = this.emaVolAnnual <= 0
+          ? rawSigAnnual
+          : (this.emaVolAnnual * (this.emaVolWarmup - 1) + rawSigAnnual) / this.emaVolWarmup;
+      } else {
+        this.emaVolAnnual = 0.3 * rawSigAnnual + 0.7 * this.emaVolAnnual;
+      }
+      sigAnnual = this.emaVolAnnual;
+    }
     const tYears = secsLeft / (365.25 * 24 * 3600);
     const sigSqrtT = sigAnnual * Math.sqrt(tYears);
     if (sigSqrtT <= 0) {
-      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0 };
+      return { fairRaw: KELLY_WIN_RATE, fairKelly: KELLY_WIN_RATE, dAbs: 0, lnMoneyness: 0 };
     }
-    const d = Math.log(S / K) / sigSqrtT;  // ln(S/K) / σ√T
-    const pUp = this.normalCdf(d);          // P(S_T > K): S>K时d>0→N(d)>0.5, UP更可能
+    const lnSK = Math.log(S / K);            // ln(S/K): BTC偏离幅度 (绝对)
+    const d = lnSK / sigSqrtT;               // ln(S/K) / σ√T
+    const pUp = this.normalCdf(d);            // P(S_T > K): S>K时d>0→N(d)>0.5, UP更可能
     const fairRaw = dir === "up" ? pUp : (1 - pUp);
     return {
       fairRaw,
       fairKelly: Math.max(0.30, Math.min(0.70, fairRaw)),
       dAbs: Math.abs(d),
+      lnMoneyness: Math.abs(lnSK),           // |ln(S/K)|: 波动率无关的BTC偏离度
     };
   }
 
@@ -589,6 +637,7 @@ export class Hedge15mEngine {
     quotedPrice: number,
     secsLeft: number,
     mode: "reactive" | "dual-side",
+    readonly_ = false,
   ): {
     allowed: boolean;
     fairRaw: number;
@@ -598,7 +647,7 @@ export class Hedge15mEngine {
     effectiveEdge: number;
     reason: string;
   } {
-    const { fairRaw, fairKelly, dAbs } = this.getBsSnapshot(dir, secsLeft);
+    const { fairRaw, fairKelly, dAbs, lnMoneyness } = this.getBsSnapshot(dir, secsLeft, readonly_);
     const takerFeeBuffer = mode === "reactive" ? quotedPrice * TAKER_FEE : 0;
     const slippageBuffer = mode === "reactive" ? 0.005 : 0;
     const effectiveCost = quotedPrice + takerFeeBuffer + slippageBuffer;
@@ -607,10 +656,15 @@ export class Hedge15mEngine {
     if (effectiveEdge < MIN_NET_EDGE) {
       return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "net-edge<8%" };
     }
-    if (dAbs < 0.05 && effectiveEdge < 0.18) {
+    // Doji检测: 用 |ln(S/K)| (BTC偏离幅度) 而非 |d| (σ√T归一化后的值)
+    // 15分钟期权σ√T≈0.003, BTC偏$15→|d|=0.06但|ln(S/K)|=0.00015
+    // 旧阈值|d|<0.05误杀: BTC偏$10就触发doji (砸盘场景BTC可能确实没大动)
+    // 新阈值: |ln(S/K)|<0.0001 (BTC偏<0.01%≈$10) 才是真doji
+    if (lnMoneyness < 0.0001 && effectiveEdge < 0.18) {
       return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<18%" };
     }
-    if (dAbs < 0.10 && effectiveEdge < 0.12) {
+    // near-doji: BTC偏<0.03% (≈$30) — 方向不明确, 要求更高edge
+    if (lnMoneyness < 0.0003 && effectiveEdge < 0.12) {
       return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<12%" };
     }
 
@@ -638,6 +692,7 @@ export class Hedge15mEngine {
     const rejectKey = `${source}:${dir}:${quotedPrice.toFixed(2)}:${result.reason}`;
     if (rejectKey === this.lastBsmRejectKey) return;
     this.lastBsmRejectKey = rejectKey;
+    this.lastBsmRejectReason = `${source}:${dir} ${result.reason} edge=${(result.effectiveEdge * 100).toFixed(1)}%`;
     logger.warn(
       `Leg1 BSM REJECT: ${dir} fair=${result.fairRaw.toFixed(3)} price=${quotedPrice.toFixed(2)} effCost=${result.effectiveCost.toFixed(3)} edge=${(result.effectiveEdge * 100).toFixed(1)}% |d|=${result.dAbs.toFixed(3)} reason=${result.reason}`,
     );
@@ -689,6 +744,10 @@ export class Hedge15mEngine {
     const roundElapsed = hasRoundClock ? Math.max(0, Math.min(ROUND_DURATION, ROUND_DURATION - secondsLeft)) : 0;
     const roundProgressPct = hasRoundClock && ROUND_DURATION > 0 ? (roundElapsed / ROUND_DURATION) * 100 : 0;
     const entryWindowLeft = Math.max(0, secondsLeft - this.rtMinEntrySecs);
+    const upBs = this.upAsk > 0 ? this.evaluateBsEntry("up", this.upAsk, secondsLeft, "reactive", true) : null;
+    const downBs = this.downAsk > 0 ? this.evaluateBsEntry("down", this.downAsk, secondsLeft, "reactive", true) : null;
+    const upTier = upBs ? this.getNetEdgeTier(upBs.effectiveEdge).label : "--";
+    const downTier = downBs ? this.getNetEdgeTier(downBs.effectiveEdge).label : "--";
     return {
       botRunning: this.running,
       tradingMode: this.tradingMode,
@@ -735,6 +794,19 @@ export class Hedge15mEngine {
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
       leg1WinRate: this.leg1WinRate,
+      leg1BsFair: this.leg1BsFair,
+      leg1EffectiveCost: this.leg1EffectiveCost,
+      leg1EffectiveEdge: this.leg1EffectiveEdge,
+      leg1EdgeTier: this.leg1EdgeTier,
+      upBsFair: upBs?.fairRaw ?? 0,
+      downBsFair: downBs?.fairRaw ?? 0,
+      upEffectiveCost: upBs?.effectiveCost ?? 0,
+      downEffectiveCost: downBs?.effectiveCost ?? 0,
+      upNetEdge: upBs?.effectiveEdge ?? 0,
+      downNetEdge: downBs?.effectiveEdge ?? 0,
+      upEdgeTier: upTier,
+      downEdgeTier: downTier,
+      lastBsmRejectReason: this.lastBsmRejectReason,
       // L: Taker Flow
       ...(() => { const tf = getTakerFlowRatio(); return {
         takerFlowRatio: tf.ratio,
@@ -1066,8 +1138,13 @@ export class Hedge15mEngine {
     this.leg1FilledAt = 0;
     this.leg1Estimated = false;
     this.currentDumpDrop = 0;
+    this.currentDumpVelocity = "normal";
     this.leg1MakerFill = false;
     this.leg1WinRate = 0.50;
+    this.leg1BsFair = 0.50;
+    this.leg1EffectiveCost = 0;
+    this.leg1EffectiveEdge = 0;
+    this.leg1EdgeTier = "--";
     this.leg1EntrySource = "";
     this.leg1EntryTrendBias = "flat";
     this.leg1EntrySecondsLeft = 0;
@@ -1077,6 +1154,7 @@ export class Hedge15mEngine {
     this.lastSignalSkipKey = "";
     this.lastRepricingRejectKey = "";
     this.lastBsmRejectKey = "";
+    this.lastBsmRejectReason = "";
     this.lastDumpLogKey = "";
     this._volGateLoggedThisRound = false;
     this._earlyEntryLoggedThisRound = false;
@@ -1093,6 +1171,9 @@ export class Hedge15mEngine {
     this.preOrderLastRefresh = 0;
     this.leg1EntryInFlight = false;
     this.leg1AttemptedThisRound = false;
+    this.leg1FailedAttempts = 0;
+    this.emaVolAnnual = 0; // 每轮重置, 避免上轮极端波动率污染
+    this.emaVolWarmup = 0;
     this.resetRoundRejectStats();
   }
 
@@ -1219,6 +1300,10 @@ export class Hedge15mEngine {
               const directionalBias = this.getRoundDirectionalBias();
               this.currentTrendBias = directionalBias;
 
+              // 低价位动态降低dump阈值: ask已经便宜时不需等大跌幅
+              const lowestAsk = Math.min(this.upAsk, this.downAsk);
+              const effectiveDumpThreshold = lowestAsk <= DUMP_LOW_PRICE_CUTOFF ? DUMP_THRESHOLD_LOW_PRICE : DUMP_THRESHOLD;
+
               const mispricing = evaluateMispricingOpportunity({
                 upAsk: this.upAsk,
                 downAsk: this.downAsk,
@@ -1226,7 +1311,9 @@ export class Hedge15mEngine {
                 oldestDownAsk: dumpBaseline.oldest.downAsk,
                 upDrop: dumpBaseline.upDrop,
                 downDrop: dumpBaseline.downDrop,
-                dumpThreshold: DUMP_THRESHOLD,
+                upDropMs: dumpBaseline.upDropMs,
+                downDropMs: dumpBaseline.downDropMs,
+                dumpThreshold: effectiveDumpThreshold,
                 nearThresholdRatio: 0.75,
                 shortMomentum,
                 trendMomentum,
@@ -1238,28 +1325,40 @@ export class Hedge15mEngine {
               });
 
               if (mispricing.bothSidesDumping) {
-                // 双侧都在dump: 选BTC方向一致且ask更低的那侧入场
+                // 双侧都在dump: 现在candidates已经过过滤(momentum/dumpRatio/对侧)
+                // 从过滤后的candidates中选BTC方向一致的; 无候选则跳过
                 const btcDir = getBtcDirection();
-                // 优先选与BTC方向一致的侧 (BTC涨→买UP, BTC跌→买DOWN)
-                let cheaperDir: "up" | "down";
                 const btcAlignedDir: "up" | "down" = btcDir === "up" ? "up" : "down";
-                const btcAlignedAsk = btcAlignedDir === "up" ? this.upAsk : this.downAsk;
-                const maxAsk = this.getMaxEntryAsk();
-                if (btcAlignedAsk > 0 && btcAlignedAsk <= maxAsk && btcAlignedAsk >= MIN_ENTRY_ASK) {
-                  cheaperDir = btcAlignedDir;
-                } else {
-                  cheaperDir = this.upAsk <= this.downAsk ? "up" : "down";
-                }
-                const cheaperAsk = cheaperDir === "up" ? this.upAsk : this.downAsk;
-                if (cheaperAsk > 0 && cheaperAsk <= maxAsk && cheaperAsk >= MIN_ENTRY_ASK) {
-                    logger.info(`HEDGE15M BOTH DUMP → picking ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)} (BTC=${btcDir}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
-                    this.dumpDetected = `BOTH-DUMP → ${cheaperDir.toUpperCase()} @${cheaperAsk.toFixed(2)}`;
-                    this.currentDumpDrop = cheaperDir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                // 优先BTC方向一致的候选, 其次跌幅最大的(已按跌幅排序)
+                const aligned = mispricing.candidates.find(c => c.dir === btcAlignedDir);
+                const bestCandidate = aligned || mispricing.candidates[0];
+                if (bestCandidate) {
+                  const maxAsk = this.getMaxEntryAsk();
+                  if (bestCandidate.askPrice > 0 && bestCandidate.askPrice <= maxAsk && bestCandidate.askPrice >= MIN_ENTRY_ASK) {
+                    logger.info(`HEDGE15M BOTH DUMP → picking ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)} (BTC=${btcDir}${aligned ? " aligned" : " best-drop"}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
+                    this.dumpDetected = `BOTH-DUMP → ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)}`;
+                    this.currentDumpDrop = bestCandidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                    this.currentDumpVelocity = bestCandidate.dumpVelocity;
                     this.activeStrategyMode = "mispricing";
-                    const buyToken = cheaperDir === "up" ? rnd.upToken : rnd.downToken;
-                    await this.buyLeg1(trader, rnd, cheaperDir, cheaperAsk, buyToken);
+                    const buyToken = rnd[bestCandidate.buyTokenKey];
+                    await this.buyLeg1(trader, rnd, bestCandidate.dir, bestCandidate.askPrice, buyToken);
+                  } else {
+                    logger.warn(`HEDGE15M SKIP: both dump candidate ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)} outside ask range`);
+                  }
                 } else {
-                  logger.warn(`HEDGE15M SKIP: both sides dumping (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%) cheapest=${cheaperAsk.toFixed(2)} > maxAsk=$${maxAsk.toFixed(2)}`);
+                  // 所有候选都被过滤掉了 (momentum/repricing reject)
+                  if (mispricing.momentumRejects.length > 0) {
+                    const rejectDirKey = mispricing.momentumRejects.map(r => r.replace(/[\d.]+%/g, "").slice(0, 20)).join("||");
+                    if (rejectDirKey !== this.lastRepricingRejectKey) {
+                      this.lastRepricingRejectKey = rejectDirKey;
+                      this.roundMomentumRejects += mispricing.momentumRejects.length;
+                      for (const rejectMessage of mispricing.momentumRejects) {
+                        logger.warn(`HEDGE15M BOTH-DUMP REJECT: ${rejectMessage}`);
+                      }
+                    }
+                  } else {
+                    logger.warn(`HEDGE15M SKIP: both sides dumping but no valid candidates (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
+                  }
                 }
               } else {
                 if (mispricing.cautionMessage) {
@@ -1312,23 +1411,30 @@ export class Hedge15mEngine {
                       this.dumpConfirmCount = 1;
                       this.lastDumpCandidateDir = candidate.dir;
                     }
-                    if (this.dumpConfirmCount < this.rtDumpConfirmCycles) {
-                      // 还未达到确认次数, 继续等
+                    // 信号强一致(≥4源aligned)时跳过确认等待 — dump更可信
+                    this.computeSignalAlignment(candidate.dir);
+                    const signalFastTrack = this.dirAlignedCount >= 4 && this.dirContraCount <= 1;
+                    if (!signalFastTrack && this.dumpConfirmCount < this.rtDumpConfirmCycles) {
+                      // 还未达到确认次数且信号不够强, 继续等
                     } else {
                       // ── #2 Sum分歧度过滤: 市场不确定时拒绝入场 ──
                       const currentSum = this.upAsk + this.downAsk;
-                      if (currentSum > SUM_DIVERGENCE_MAX) {
-                        this.trackRoundRejectReason(`sum_high: ${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX}`);
+                      const candDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                      // 大dump(≥12%)时放宽sum上限: 深度砸盘说明定价效率低, sum略高仍有edge
+                      const effectiveSumMax = candDrop >= 0.12 ? SUM_DIVERGENCE_RELAXED : SUM_DIVERGENCE_MAX;
+                      if (currentSum > effectiveSumMax) {
+                        this.trackRoundRejectReason(`sum_high: ${currentSum.toFixed(2)} > ${effectiveSumMax}`);
                         const sumKey = currentSum.toFixed(2);
                         if (sumKey !== this.lastDumpLogKey) {
                           this.lastDumpLogKey = sumKey;
-                          logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${SUM_DIVERGENCE_MAX} — no mispricing edge`);
+                          logger.warn(`HEDGE15M SKIP: sum=${currentSum.toFixed(2)} > ${effectiveSumMax}${candDrop >= 0.12 ? " (relaxed)" : ""} — no mispricing edge`);
                         }
                       } else {
                         // ── 入场: 价格达标 ──
                         const btcDir = getBtcDirection();
                         this.dumpDetected = candidate.dumpDetected;
                         this.currentDumpDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                        this.currentDumpVelocity = candidate.dumpVelocity;
                         this.activeStrategyMode = "mispricing";
                         const flow = getTakerFlowRatio();
                         const depth = getDepthImbalance();
@@ -1432,7 +1538,11 @@ export class Hedge15mEngine {
   ): Promise<void> {
     if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) {
-      logger.warn("Hedge15m Leg1 skipped: order already attempted this round, avoiding duplicate exposure");
+      logger.warn("Hedge15m Leg1 skipped: order already filled this round, avoiding duplicate exposure");
+      return;
+    }
+    if (this.leg1FailedAttempts >= 2) {
+      logger.warn(`Hedge15m Leg1 skipped: ${this.leg1FailedAttempts} failed attempts this round, giving up`);
       return;
     }
 
@@ -1489,7 +1599,7 @@ export class Hedge15mEngine {
     // 用BSM公允胜率替代固定KELLY_WIN_RATE, 更准确反映当前数学期望
     const kellyFull = (bsWinRate * odds - (1 - bsWinRate)) / odds;
     // ── EV+分层Kelly上限: 越便宜EV越高, 允许更大仓位 ──
-    const kellyCapForPrice = askPrice <= 0.20 ? 0.40 : askPrice <= 0.25 ? 0.35 : askPrice <= 0.30 ? 0.32 : askPrice <= 0.35 ? 0.30 : 0.27;
+    const kellyCapForPrice = askPrice <= 0.15 ? 0.45 : askPrice <= 0.20 ? 0.40 : askPrice <= 0.25 ? 0.35 : askPrice <= 0.30 ? 0.32 : askPrice <= 0.35 ? 0.30 : 0.27;
     // 连亏缩仓: 每连亏1次Kelly×0.85, 最低×0.4, 赢1次重置
     const lossScale = this.consecutiveLosses > 0 ? Math.max(0.4, Math.pow(0.85, this.consecutiveLosses)) : 1.0;
     const kellyBase = Math.max(0.08, Math.min(kellyCapForPrice, kellyFull * this.rtKellyFraction * lossScale));
@@ -1523,6 +1633,8 @@ export class Hedge15mEngine {
       budgetPct,
       "mispricing",
       Date.now(),
+      "reactive-mispricing",
+      bsEntry,
     );
   }
 
@@ -1740,9 +1852,10 @@ export class Hedge15mEngine {
     // ── 计算理想挂单价 ──
     // 目标: 如果一侧被吃到, sum = myFillPrice + oppositeAsk ≤ DUAL_SIDE_SUM_CEILING
     // → myLimit ≤ DUAL_SIDE_SUM_CEILING - oppositeCurrentAsk
-    // 动态offset: 按ask的6%计算, 至少DUAL_SIDE_OFFSET, ask越高offset越大→EV+更高
-    const dynamicUpOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(upAsk * 0.04 * 100) / 100);
-    const dynamicDnOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(downAsk * 0.04 * 100) / 100);
+    // 波动率自适应offset: 高波→大offset(更低价成交→更高EV); 低波→小offset(靠近市价→增加成交率)
+    const volOffsetScale = recentVol < 0.002 ? 0.03 : recentVol < 0.004 ? 0.04 : 0.06;
+    const dynamicUpOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(upAsk * volOffsetScale * 100) / 100);
+    const dynamicDnOffset = Math.max(DUAL_SIDE_OFFSET, Math.round(downAsk * volOffsetScale * 100) / 100);
     const idealUpLimit = Math.min(
       DUAL_SIDE_SUM_CEILING - downAsk,
       upAsk - dynamicUpOffset,
@@ -1812,7 +1925,7 @@ export class Hedge15mEngine {
     const calcPreBudgetPct = (price: number, fairKelly: number): number => {
       const preOdds = price > 0 ? (1 - price) / price : 2.0;
       const preKelly = (fairKelly * preOdds - (1 - fairKelly)) / preOdds;
-      const preKellyCap = price <= 0.25 ? 0.30 : 0.25;
+      const preKellyCap = price <= 0.15 ? 0.40 : price <= 0.20 ? 0.35 : price <= 0.25 ? 0.30 : 0.25;
       const preLossScale = this.consecutiveLosses > 0 ? Math.max(0.4, Math.pow(0.85, this.consecutiveLosses)) : 1.0;
       return Math.max(0.08, Math.min(preKellyCap, preKelly * this.rtKellyFraction * preLossScale));
     };
@@ -1827,7 +1940,7 @@ export class Hedge15mEngine {
     // ── UP 侧挂单管理 (趋势down/BTC强下时跳过, 低流动性时跳过) ──
     if (!lowLiquidity && trend !== "down" && !btcBlocksUp && upInRange && !!upBsEntry?.allowed) {
       const upBudgetPct = calcPreBudgetPct(upLimit, upBsEntry.fairKelly) * this.getNetEdgeTier(upBsEntry.effectiveEdge).multiplier;
-      const upShares = Math.min(MAX_SHARES, Math.floor((this.balance * upBudgetPct * 0.5) / upLimit));
+      const upShares = Math.min(MAX_SHARES, Math.floor((this.balance * upBudgetPct * 0.7) / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
         if (!this.preOrderUpId) {
@@ -1879,7 +1992,7 @@ export class Hedge15mEngine {
     // ── DOWN 侧挂单管理 (趋势up/BTC强上时跳过, 低流动性时跳过) ──
     if (!lowLiquidity && trend !== "up" && !btcBlocksDn && downInRange && !!downBsEntry?.allowed) {
       const dnBudgetPct = calcPreBudgetPct(downLimit, downBsEntry.fairKelly) * this.getNetEdgeTier(downBsEntry.effectiveEdge).multiplier;
-      const dnShares = Math.min(MAX_SHARES, Math.floor((this.balance * dnBudgetPct * 0.5) / downLimit));
+      const dnShares = Math.min(MAX_SHARES, Math.floor((this.balance * dnBudgetPct * 0.7) / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
         if (!this.preOrderDownId) {
@@ -1938,7 +2051,11 @@ export class Hedge15mEngine {
     observedSum = 0,
   ): Promise<void> {
     const bsEntry = this.evaluateBsEntry(dir, fillPrice, this.secondsLeft, "dual-side");
-    if (!bsEntry.allowed) {
+    // 低价maker成交不做post-fill BSM unwind:
+    // fillPrice ≤ $0.30 时 EV+ ≥ $0.20/share @50%胜率, unwind需付2% taker fee = 确定损失
+    // BSM在成交后数百ms内可能因BTC微幅反转而翻转判断, 此时unwind是EV-
+    // 仅在高价成交(>$0.30)时才允许unwind — 高价的EV margin小, 方向错误代价大
+    if (!bsEntry.allowed && fillPrice > 0.30) {
       this.logBsReject("dual-side-fill", dir, fillPrice, bsEntry);
       const unwind = await trader.placeFakSell(leg1Token, filledShares, this.negRisk).catch(() => null);
       if (unwind) {
@@ -1959,6 +2076,9 @@ export class Hedge15mEngine {
         return;
       }
       logger.error(`DUAL SIDE UNWIND FAILED: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 @${fillPrice.toFixed(2)} — keeping position to settlement`);
+    } else if (!bsEntry.allowed) {
+      // 低价成交: BSM reject但不unwind, 持有到结算仍EV+
+      logger.info(`DUAL SIDE KEEP: ${dir.toUpperCase()} @${fillPrice.toFixed(2)} BSM rejected (${bsEntry.reason}) but fillPrice ≤ $0.30 — holding to settlement (EV+ at low price)`);
     }
 
     this.hedgeState = "leg1_filled";
@@ -1973,6 +2093,10 @@ export class Hedge15mEngine {
     this.leg1MakerFill = true; // 预挂单永远是 maker
     this.leg1EntrySource = "dual-side-preorder";
     this.leg1WinRate = bsEntry.fairKelly;
+    this.leg1BsFair = bsEntry.fairRaw;
+    this.leg1EffectiveCost = bsEntry.effectiveCost;
+    this.leg1EffectiveEdge = bsEntry.effectiveEdge;
+    this.leg1EdgeTier = this.getNetEdgeTier(bsEntry.effectiveEdge).label;
     this.leg1EntryTrendBias = this.currentTrendBias;
     this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
     this.leg1AttemptedThisRound = true;
@@ -2111,6 +2235,12 @@ export class Hedge15mEngine {
     strategyMode: "mispricing",
     signalDetectedAt = Date.now(),
     entrySource = "reactive-mispricing",
+    bsEntry?: {
+      fairRaw: number;
+      fairKelly: number;
+      effectiveCost: number;
+      effectiveEdge: number;
+    },
   ): Promise<void> {
     const budget = this.balance * budgetPct;
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
@@ -2146,20 +2276,24 @@ export class Hedge15mEngine {
     const entryCost = entryShares * entryAsk;
 
     this.leg1EntryInFlight = true;
-    this.leg1AttemptedThisRound = true;
+    // leg1AttemptedThisRound 延迟到真正成交后再设置, 允许FAK失败后重试
     this.hedgeState = "leg1_pending";
     this.status = `Leg1下单中: ${dir.toUpperCase()} @${entryAsk.toFixed(2)} x${entryShares.toFixed(0)}`;
 
     try {
       const adjustedShares = entryShares;
 
-      // ── Limit race offset: dump快 → 更激进 ──
+      // ── Limit race offset + timeout: 按dump速度动态化 ──
+      // 慢dump(8-12%): 价格回弹慢→maker成交概率高→等久点+小offset
+      // 快dump(>15%): 价格恢复快→缩短等待+大offset抢成交
       let limitOffset = LIMIT_RACE_OFFSET;
-      if (this.currentDumpDrop >= LIMIT_RACE_FAST_DUMP_THRESHOLD) {
+      let raceTimeout = LIMIT_RACE_TIMEOUT_MS;
+      if (this.currentDumpDrop >= LIMIT_RACE_FAST_DUMP_THRESHOLD || this.currentDumpVelocity === "fast") {
         limitOffset = LIMIT_RACE_FAST_OFFSET;
+        raceTimeout = 600;  // 快dump/快速度: 缩到600ms, 尽快成交
+      } else if (this.currentDumpDrop < 0.12 && this.currentDumpVelocity === "slow") {
+        raceTimeout = 1200; // 慢dump+慢速度: 等久点, maker成交概率更高
       }
-      // 趋势入场: 方向明确价格上行中, 不等limit直接FAK; dump入场: 价格下跌中等maker
-      const raceTimeout = LIMIT_RACE_TIMEOUT_MS;
 
       const adjustedCost = adjustedShares * entryAsk;
       logger.info(`HEDGE15M LEG1 ${strategyMode.toUpperCase()}: ${dir.toUpperCase()} ${adjustedShares}份 @${entryAsk.toFixed(2)} cost=$${adjustedCost.toFixed(2)}${entryAsk !== askPrice ? ` (signal@${askPrice.toFixed(2)})` : ""} negRisk=${this.negRisk} limitRace=${LIMIT_RACE_ENABLED}`);
@@ -2177,8 +2311,9 @@ export class Hedge15mEngine {
       recordExecutionLatency("submitToAck", orderAckAt - orderSubmitStartedAt);
 
       if (!fillResult) {
-        this.status = "Leg1下单失败, 本轮不重试";
-        logger.warn("HEDGE15M Leg1 entry failed (limit race + FAK)");
+        this.leg1FailedAttempts++;
+        this.status = `Leg1下单失败 (${this.leg1FailedAttempts}/2), ${this.leg1FailedAttempts >= 2 ? "不重试" : "可重试"}`;
+        logger.warn(`HEDGE15M Leg1 entry failed (limit race + FAK), attempt ${this.leg1FailedAttempts}/2`);
         return;
       }
 
@@ -2198,6 +2333,7 @@ export class Hedge15mEngine {
       }
 
       this.hedgeState = "leg1_filled";
+      this.leg1AttemptedThisRound = true; // 真正成交后才锁定, FAK失败可重试
       this.activeStrategyMode = "mispricing";
       this.leg1Dir = dir;
       this.leg1Price = entryAsk;
@@ -2208,7 +2344,17 @@ export class Hedge15mEngine {
       this.leg1Token = buyToken;
       this.leg1MakerFill = isMaker;
       this.leg1EntrySource = entrySource;
-      this.leg1WinRate = KELLY_WIN_RATE;
+      const feeBuffer = isMaker ? 0 : realFillPrice * TAKER_FEE;
+      const slippageBuffer = isMaker ? 0 : 0.005;
+      const settledEffectiveCost = realFillPrice + feeBuffer + slippageBuffer;
+      const settledBsFair = bsEntry?.fairRaw ?? KELLY_WIN_RATE;
+      const settledKelly = bsEntry?.fairKelly ?? settledBsFair;
+      const settledEdge = settledBsFair - settledEffectiveCost;
+      this.leg1WinRate = Math.max(0.30, Math.min(0.70, settledKelly));
+      this.leg1BsFair = settledBsFair;
+      this.leg1EffectiveCost = settledEffectiveCost;
+      this.leg1EffectiveEdge = settledEdge;
+      this.leg1EdgeTier = this.getNetEdgeTier(settledEdge).label;
       this.leg1EntryTrendBias = this.currentTrendBias;
       this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
       this.totalCost = filledShares * realFillPrice * (1 + actualFee);
@@ -2239,13 +2385,21 @@ export class Hedge15mEngine {
     const preSettleBalance = this.balance; // 记录结算前余额用于校验
     await sleep(2000); // 等待价格源更新
 
-    // 结算方向判断: Binance BTC 价格对比回合开始价
-    const btcNow = getBtcPrice();
+    // 结算方向判断: 3次采样取中位数, 减少BTC瞬时反转导致误判
+    const samples: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const p = getBtcPrice();
+      if (p > 0) samples.push(p);
+      if (i < 2) await sleep(500);
+    }
+    samples.sort((a, b) => a - b);
+    const btcNow = samples.length > 0 ? samples[Math.floor(samples.length / 2)] : 0;
     let actualDir: "up" | "down";
     let dirSource = "BTC";
     if (this.roundStartBtcPrice > 0 && btcNow > 0) {
-      actualDir = btcNow >= this.roundStartBtcPrice ? "up" : "down";
-      logger.info(`HEDGE15M SETTLE: BTC start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} → ${actualDir}`);
+      // Polymarket "Up" = BTC strictly above open → equal = DOWN wins
+      actualDir = btcNow > this.roundStartBtcPrice ? "up" : "down";
+      logger.info(`HEDGE15M SETTLE: BTC start=$${this.roundStartBtcPrice.toFixed(0)} now=$${btcNow.toFixed(0)} (${samples.length} samples, median) → ${actualDir}${btcNow === this.roundStartBtcPrice ? " (flat=DOWN)" : ""}`);
     } else {
       dirSource = "BOOK";
       let leg1Score = 0;
@@ -2317,6 +2471,10 @@ export class Hedge15mEngine {
       entryTrendBias: this.leg1EntryTrendBias,
       entrySecondsLeft: this.leg1EntrySecondsLeft,
       entryWinRate: this.leg1WinRate,
+      entryBsFair: this.leg1BsFair,
+      entryEffectiveCost: this.leg1EffectiveCost,
+      entryEffectiveEdge: this.leg1EffectiveEdge,
+      entryEdgeTier: this.leg1EdgeTier,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();
