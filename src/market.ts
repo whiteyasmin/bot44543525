@@ -45,7 +45,13 @@ async function fetchEvent(slug: string): Promise<Record<string, any> | null> {
   return null;
 }
 
+const tokenParseCache = new Map<string, { up: string; down: string } | null>();
+
 function parseTokens(market: Record<string, any>): { up: string; down: string } | null {
+  // 用conditionId做缓存key (同一市场token不会变)
+  const cacheKey = market.conditionId || market.questionID || "";
+  if (cacheKey && tokenParseCache.has(cacheKey)) return tokenParseCache.get(cacheKey)!;
+
   let clobIds = market.clobTokenIds;
   let outcomes = market.outcomes;
   if (clobIds && outcomes) {
@@ -58,7 +64,11 @@ function parseTokens(market: Record<string, any>): { up: string; down: string } 
         if (key.includes("up")) result.up = clobIds[i];
         else if (key.includes("down")) result.down = clobIds[i];
       }
-      if (result.up && result.down) return { up: result.up, down: result.down };
+      if (result.up && result.down) {
+        const r = { up: result.up, down: result.down };
+        if (cacheKey) tokenParseCache.set(cacheKey, r);
+        return r;
+      }
     } catch {}
   }
   const tokens = market.tokens as any[] | undefined;
@@ -71,8 +81,13 @@ function parseTokens(market: Record<string, any>): { up: string; down: string } 
       if (outcome.includes("up")) result.up = tokenId;
       else if (outcome.includes("down")) result.down = tokenId;
     }
-    if (result.up && result.down) return { up: result.up, down: result.down };
+    if (result.up && result.down) {
+      const r = { up: result.up, down: result.down };
+      if (cacheKey) tokenParseCache.set(cacheKey, r);
+      return r;
+    }
   }
+  if (cacheKey) tokenParseCache.set(cacheKey, null);
   return null;
 }
 

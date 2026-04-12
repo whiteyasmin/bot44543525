@@ -508,13 +508,13 @@ function renderDirectionalAudit(history) {
     mid: settled.filter(h => { const p=h.leg1FillPrice||h.leg1Price||0; return p>0.25&&p<=0.30; }),
     high: settled.filter(h => { const p=h.leg1FillPrice||h.leg1Price||0; return p>0.30&&p<=0.35; }),
   };
+  const evBucket = (items) => { if(!items.length) return '--'; const avg=items.reduce((s,h)=>s+((h.result==='WIN'?1:0)-(h.leg1FillPrice||h.leg1Price||0)),0)/items.length; return (avg>=0?'+':'')+avg.toFixed(3); };
   document.getElementById('a-winrate').textContent = '≤.25 '+evBucket(byP.low)+' .26-.30 '+evBucket(byP.mid)+' .31-.35 '+evBucket(byP.high);
   const tG = {
     up: settled.filter(h => h.entryTrendBias === 'up'),
     down: settled.filter(h => h.entryTrendBias === 'down'),
     flat: settled.filter(h => !h.entryTrendBias || h.entryTrendBias === 'flat'),
   };
-  const evBucket = (items) => { if(!items.length) return '--'; const avg=items.reduce((s,h)=>s+((h.result==='WIN'?1:0)-(h.leg1FillPrice||h.leg1Price||0)),0)/items.length; return (avg>=0?'+':'')+avg.toFixed(3); };
   document.getElementById('a-pf').textContent = 'UP '+evBucket(tG.up)+' DN '+evBucket(tG.down)+' FLAT '+evBucket(tG.flat);
   const sG = {
     pre: settled.filter(h => h.entrySource === 'dual-side-preorder'),

@@ -8,31 +8,39 @@ const HTTP_FRESH_MS    = 10_000;
 
 type LatencyBucket = {
   samples: number[];
+  head: number;           // 循环写入位置
+  count: number;          // 当前样本数
   lastMs: number;
   lastAt: number;
 };
 
-const pingSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
-const httpSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
-const cacheSamples: LatencyBucket = { samples: [], lastMs: 0, lastAt: 0 };
+function makeBucket(): LatencyBucket {
+  return { samples: new Array(HISTORY_SIZE).fill(0), head: 0, count: 0, lastMs: 0, lastAt: 0 };
+}
+
+const pingSamples: LatencyBucket = makeBucket();
+const httpSamples: LatencyBucket = makeBucket();
+const cacheSamples: LatencyBucket = makeBucket();
 
 function addSample(bucket: LatencyBucket, ms: number): void {
   if (ms <= 0 || ms > 8_000) return; // 过滤异常值
-  bucket.samples.push(ms);
+  bucket.samples[bucket.head] = ms;
+  bucket.head = (bucket.head + 1) % HISTORY_SIZE;
+  if (bucket.count < HISTORY_SIZE) bucket.count++;
   bucket.lastMs = ms;
   bucket.lastAt = Date.now();
-  while (bucket.samples.length > HISTORY_SIZE) bucket.samples.shift();
 }
 
 function summarize(bucket: LatencyBucket, fallbackP50: number, fallbackP90: number): { p50: number; p90: number; count: number; lastMs: number; lastAt: number } {
-  if (bucket.samples.length === 0) {
+  if (bucket.count === 0) {
     return { p50: fallbackP50, p90: fallbackP90, count: 0, lastMs: 0, lastAt: 0 };
   }
-  const sorted = [...bucket.samples].sort((a, b) => a - b);
+  const active = bucket.samples.slice(0, bucket.count);
+  const sorted = active.sort((a, b) => a - b);
   return {
     p50: sorted[Math.floor((sorted.length - 1) * 0.5)],
     p90: sorted[Math.floor((sorted.length - 1) * 0.9)],
-    count: bucket.samples.length,
+    count: bucket.count,
     lastMs: bucket.lastMs,
     lastAt: bucket.lastAt,
   };

@@ -113,16 +113,35 @@ interface UserSocketMessage {
   maker_orders?: Array<{ order_id?: string }>;
 }
 
+// 自适应参数缓存 (避免每次调用 getP50Ms)
+let _adaptiveCacheTs = 0;
+let _adaptivePollMs = ORDERBOOK_POLL_MS;
+let _adaptiveCacheTtl = ORDERBOOK_CACHE_TTL_MS;
+let _adaptiveRetryMs = ORDER_SLOW_RETRY_MS;
+const ADAPTIVE_CACHE_DURATION = 2000; // 2s刷新一次
+
+function refreshAdaptiveParams(): void {
+  if (Date.now() - _adaptiveCacheTs < ADAPTIVE_CACHE_DURATION) return;
+  const p50 = getP50Ms();
+  _adaptivePollMs = p50 <= 25 ? ORDERBOOK_FAST_POLL_MS : ORDERBOOK_POLL_MS;
+  _adaptiveCacheTtl = p50 <= 25 ? ORDERBOOK_FAST_CACHE_TTL_MS : ORDERBOOK_CACHE_TTL_MS;
+  _adaptiveRetryMs = p50 <= 25 ? ORDER_FAST_RETRY_MS : ORDER_SLOW_RETRY_MS;
+  _adaptiveCacheTs = Date.now();
+}
+
 function getAdaptiveOrderbookPollMs(): number {
-  return getP50Ms() <= 25 ? ORDERBOOK_FAST_POLL_MS : ORDERBOOK_POLL_MS;
+  refreshAdaptiveParams();
+  return _adaptivePollMs;
 }
 
 function getAdaptiveCacheTtlMs(): number {
-  return getP50Ms() <= 25 ? ORDERBOOK_FAST_CACHE_TTL_MS : ORDERBOOK_CACHE_TTL_MS;
+  refreshAdaptiveParams();
+  return _adaptiveCacheTtl;
 }
 
 function getAdaptiveOrderRetryMs(): number {
-  return getP50Ms() <= 25 ? ORDER_FAST_RETRY_MS : ORDER_SLOW_RETRY_MS;
+  refreshAdaptiveParams();
+  return _adaptiveRetryMs;
 }
 
 function parseNum(value: unknown): number {
@@ -347,7 +366,7 @@ export class Trader {
       if (updated) {
         this.notifyOrderbookUpdate();
       }
-      const intervalMs = wsFresh ? Math.max(120, getAdaptiveOrderbookPollMs() * 4) : getAdaptiveOrderbookPollMs();
+      const intervalMs = wsFresh ? Math.max(200, getAdaptiveOrderbookPollMs() * 4) : Math.max(500, getAdaptiveOrderbookPollMs());
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
   }
@@ -848,16 +867,18 @@ export class Trader {
   private notifyOrderbookUpdate(): void {
     this.orderbookVersion += 1;
     const version = this.orderbookVersion;
-    const remaining: OrderbookWaiter[] = [];
-    for (const waiter of this.orderbookWaiters) {
+    if (this.orderbookWaiters.length === 0) return;
+    let writeIdx = 0;
+    for (let i = 0; i < this.orderbookWaiters.length; i++) {
+      const waiter = this.orderbookWaiters[i];
       if (version > waiter.minVersion) {
         clearTimeout(waiter.timer);
         waiter.resolve(version);
       } else {
-        remaining.push(waiter);
+        this.orderbookWaiters[writeIdx++] = waiter;
       }
     }
-    this.orderbookWaiters = remaining;
+    this.orderbookWaiters.length = writeIdx;
   }
 
   getOrderbookVersion(): number {
@@ -1362,7 +1383,7 @@ export class Trader {
     // Method 3: On-chain RPC query
     const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
     const USDC_NATIVE = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359";
-    const RPCS = [Config.CHAINLINK_RPC, "https://1rpc.io/matic", "https://polygon-bor-rpc.publicnode.com"].filter(Boolean);
+    const RPCS = [Config.POLYGON_RPC, "https://1rpc.io/matic", "https://polygon-bor-rpc.publicnode.com"].filter(Boolean);
     const wallet = new Wallet(Config.PRIVATE_KEY);
     const addresses = [Config.FUNDER_ADDRESS, wallet.address].filter(a => a.length > 0);
 

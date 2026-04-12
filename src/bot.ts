@@ -59,7 +59,7 @@ const DUAL_SIDE_MIN_SECS = 540;            // 仅在回合前9分钟内预挂
 const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
 const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
 
-const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
+const DUAL_SIDE_MIN_DRIFT = 0.02;          // 价格偏移>此值才重挂 (0.01太敏感导致频繁re-place)
 
 // ── 趋势追涨: 强趋势方向入场 (≤$0.50时60%胜率即EV+$0.10/份) ──
 const TREND_TRADE_ENABLED = true;           // 启用趋势追涨
@@ -485,12 +485,12 @@ export class Hedge15mEngine {
 
   private getRolling4hPnL(): number {
     const cutoff = Date.now() - 4 * 3600_000;
-    this.rollingPnL = this.rollingPnL.filter((item) => item.ts >= cutoff);
-    return this.rollingPnL.reduce((sum, item) => sum + item.profit, 0);
+    return this.rollingPnL.reduce((sum, item) => item.ts >= cutoff ? sum + item.profit : sum, 0);
   }
 
   private recordRollingPnL(profit: number): void {
     this.rollingPnL.push({ ts: Date.now(), profit });
+    // 只在添加时清理过期条目
     const cutoff = Date.now() - 4 * 3600_000;
     this.rollingPnL = this.rollingPnL.filter((item) => item.ts >= cutoff);
   }
@@ -694,7 +694,9 @@ export class Hedge15mEngine {
   private savePaperRuntimeSnapshot(): void {
     if (this.tradingMode !== "paper" || this.paperSessionMode !== "persistent") return;
     try {
-      this.getRolling4hPnL();
+      // 持久化前清理过期的滚动P/L条目
+      const cutoff = Date.now() - 4 * 3600_000;
+      this.rollingPnL = this.rollingPnL.filter((item) => item.ts >= cutoff);
       savePaperRuntimeState({
         balance: this.balance,
         initialBankroll: this.initialBankroll,
@@ -1030,22 +1032,24 @@ export class Hedge15mEngine {
           }
         }
 
-        // Sample ask prices from live orderbook
-        try {
-          const t0 = Date.now();
-          const [upRes, dnRes] = await Promise.all([
-            getHotBestPrices(trader, rnd.upToken),
-            getHotBestPrices(trader, rnd.downToken),
-          ]);
-          if (!this.isActiveRun(runId)) break;
-          const callMs = Date.now() - t0;
-          void callMs;
-          this.upAsk = upRes?.ask ?? 0;
-          this.downAsk = dnRes?.ask ?? 0;
-        } catch (e: any) {
-          logger.warn(`Price sample error: ${e.message}`);
-          await sleep(200);
-          continue;
+        // Sample ask prices from live orderbook (skip when round is done or settled)
+        if (this.hedgeState !== "done") {
+          try {
+            const t0 = Date.now();
+            const [upRes, dnRes] = await Promise.all([
+              getHotBestPrices(trader, rnd.upToken),
+              getHotBestPrices(trader, rnd.downToken),
+            ]);
+            if (!this.isActiveRun(runId)) break;
+            const callMs = Date.now() - t0;
+            void callMs;
+            this.upAsk = upRes?.ask ?? 0;
+            this.downAsk = dnRes?.ask ?? 0;
+          } catch (e: any) {
+            logger.warn(`Price sample error: ${e.message}`);
+            await sleep(200);
+            continue;
+          }
         }
 
         const elapsed = ROUND_DURATION - secs;
@@ -1125,8 +1129,8 @@ export class Hedge15mEngine {
                   logger.warn(`HEDGE15M CAUTION: ${mispricing.cautionMessage} — proceeding with low ask`);
                 }
                 if (mispricing.momentumRejects.length > 0) {
-                  // 去重: 只用方向做 key, 不含精确百分比 (避免每个cycle都日志)
-                  const rejectDirKey = mispricing.momentumRejects.map(r => r.slice(0, 30)).join("||");
+                  // 去重: 只用方向做 key (DN dump / UP dump), 不含数值
+                  const rejectDirKey = mispricing.momentumRejects.map(r => r.replace(/[\d.]+%/g, "").slice(0, 20)).join("||");
                   if (rejectDirKey !== this.lastRepricingRejectKey) {
                     this.lastRepricingRejectKey = rejectDirKey;
                     this.roundMomentumRejects += mispricing.momentumRejects.length;
@@ -1252,14 +1256,19 @@ export class Hedge15mEngine {
 
           // Window expired
           if (elapsed >= this.rtEntryWindowS && this.hedgeState === "watching") {
-            // 窗口到期, 取消预挂单
+            // 窗口到期, 取消预挂单 (检查是否在取消前被成交)
             if (this.preOrderUpId || this.preOrderDownId) {
-              await this.cancelDualSideOrders(trader);
+              const ghostFilled = await this.cancelDualSideOrders(trader);
+              if (ghostFilled) {
+                logger.info(`HEDGE15M window expiry: pre-order ghost fill detected, holding to settlement`);
+              }
             }
-            this.hedgeState = "done";
-            this.status = "窗口到期,无砸盘";
-            this.skips++;
-            this.logRoundRejectSummary("window expired without entry");
+            if (this.hedgeState === "watching") {
+              this.hedgeState = "done";
+              this.status = "窗口到期,无砸盘";
+              this.skips++;
+              this.logRoundRejectSummary("window expired without entry");
+            }
           }
         }
 
@@ -1329,7 +1338,11 @@ export class Hedge15mEngine {
 
     // 取消双侧预挂单, 释放资金给反应式下单
     if (this.preOrderUpId || this.preOrderDownId) {
-      await this.cancelDualSideOrders(trader);
+      const ghostFilled = await this.cancelDualSideOrders(trader);
+      if (ghostFilled) {
+        logger.info(`HEDGE15M buyLeg1 aborted: pre-order ghost fill detected, already transitioned to leg1`);
+        return;
+      }
     }
 
     // ── Leg1价格上限: 只接受足够低价的EV+入场, 强信号时动态提升 ──
@@ -1404,7 +1417,11 @@ export class Hedge15mEngine {
 
     // 取消双侧预挂单, 释放资金
     if (this.preOrderUpId || this.preOrderDownId) {
-      await this.cancelDualSideOrders(trader);
+      const ghostFilled = await this.cancelDualSideOrders(trader);
+      if (ghostFilled) {
+        logger.info(`HEDGE15M buyTrendLeg1 aborted: pre-order ghost fill detected, already transitioned to leg1`);
+        return;
+      }
     }
 
     if (askPrice > this.rtTrendMaxAsk || askPrice < MIN_ENTRY_ASK) return;
@@ -1473,13 +1490,71 @@ export class Hedge15mEngine {
     );
   }
 
-  private async cancelDualSideOrders(trader: Trader): Promise<void> {
+  private async cancelDualSideOrders(trader: Trader): Promise<boolean> {
+    let ghostFillHandled = false;
+
+    // 取消前先检查是否已被成交 (防止幽灵成交导致双重曝险)
     if (this.preOrderUpId) {
+      const upCheck = await trader.getOrderFillDetails(this.preOrderUpId);
+      if (upCheck.filled > 0) {
+        logger.warn(`CANCEL CHECK: UP pre-order ghost filled ${upCheck.filled.toFixed(0)}份 @${upCheck.avgPrice.toFixed(2)} BEFORE cancel!`);
+        // 取消另一侧
+        if (this.preOrderDownId) {
+          await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+          const dnGhost = await trader.getOrderFillDetails(this.preOrderDownId);
+          if (dnGhost.filled > 0) {
+            logger.warn(`CANCEL CHECK: DOWN also ghost filled ${dnGhost.filled.toFixed(0)}份, selling immediately`);
+            await trader.placeFakSell(this.preOrderDownToken, dnGhost.filled, this.negRisk).catch((e: any) => {
+              logger.error(`CANCEL CHECK ghost sell failed: ${e.message}`);
+            });
+          }
+          this.preOrderDownId = "";
+          this.preOrderDownPrice = 0;
+          this.preOrderDownShares = 0;
+        }
+        // 取消UP余量
+        await trader.cancelOrder(this.preOrderUpId).catch(() => {});
+        const finalUp = await trader.getOrderFillDetails(this.preOrderUpId);
+        const realFilled = finalUp.filled > upCheck.filled ? finalUp.filled : upCheck.filled;
+        const realAvg = finalUp.filled > upCheck.filled ? finalUp.avgPrice : upCheck.avgPrice;
+        this.transitionPreOrderToLeg1(
+          "up", this.preOrderUpToken,
+          realFilled, realAvg > 0 ? realAvg : this.preOrderUpPrice,
+          this.preOrderUpId,
+          (realAvg > 0 ? realAvg : this.preOrderUpPrice) + this.downAsk,
+        );
+        this.preOrderUpId = "";
+        this.preOrderUpPrice = 0;
+        this.preOrderUpShares = 0;
+        this.preOrderLastRefresh = 0;
+        await this.refreshBalance();
+        return true;
+      }
       await trader.cancelOrder(this.preOrderUpId).catch(() => {});
       logger.info(`DUAL SIDE: cancelled UP pre-order ${this.preOrderUpId.slice(0, 12)}`);
       this.preOrderUpId = "";
     }
     if (this.preOrderDownId) {
+      const dnCheck = await trader.getOrderFillDetails(this.preOrderDownId);
+      if (dnCheck.filled > 0) {
+        logger.warn(`CANCEL CHECK: DOWN pre-order ghost filled ${dnCheck.filled.toFixed(0)}份 @${dnCheck.avgPrice.toFixed(2)} BEFORE cancel!`);
+        await trader.cancelOrder(this.preOrderDownId).catch(() => {});
+        const finalDn = await trader.getOrderFillDetails(this.preOrderDownId);
+        const realFilled = finalDn.filled > dnCheck.filled ? finalDn.filled : dnCheck.filled;
+        const realAvg = finalDn.filled > dnCheck.filled ? finalDn.avgPrice : dnCheck.avgPrice;
+        this.transitionPreOrderToLeg1(
+          "down", this.preOrderDownToken,
+          realFilled, realAvg > 0 ? realAvg : this.preOrderDownPrice,
+          this.preOrderDownId,
+          (realAvg > 0 ? realAvg : this.preOrderDownPrice) + this.upAsk,
+        );
+        this.preOrderDownId = "";
+        this.preOrderDownPrice = 0;
+        this.preOrderDownShares = 0;
+        this.preOrderLastRefresh = 0;
+        await this.refreshBalance();
+        return true;
+      }
       await trader.cancelOrder(this.preOrderDownId).catch(() => {});
       logger.info(`DUAL SIDE: cancelled DOWN pre-order ${this.preOrderDownId.slice(0, 12)}`);
       this.preOrderDownId = "";
@@ -1491,6 +1566,7 @@ export class Hedge15mEngine {
     this.preOrderLastRefresh = 0;
     // 同步余额: paper 模式下 cancelOrder 已退款到 paperBalance
     await this.refreshBalance();
+    return false;
   }
 
   /**
@@ -2022,6 +2098,13 @@ export class Hedge15mEngine {
       const isMaker = fillResult.maker;
       const actualFee = isMaker ? 0 : TAKER_FEE;
 
+      // NaN防护: 成交数据异常时拒绝入场, 防止P/L追踪损坏
+      if (!Number.isFinite(filledShares) || filledShares <= 0 || !Number.isFinite(realFillPrice) || realFillPrice <= 0) {
+        logger.error(`HEDGE15M LEG1 ABORT: invalid fill data shares=${filledShares} price=${realFillPrice} — refusing to track position`);
+        this.status = "Leg1成交数据异常, 本轮跳过";
+        return;
+      }
+
       this.hedgeState = "leg1_filled";
       this.activeStrategyMode = "mispricing";
       this.leg1Dir = dir;
@@ -2099,6 +2182,18 @@ export class Hedge15mEngine {
     }
 
     const profit = returnVal - this.totalCost;
+
+    // NaN防护: totalCost或returnVal异常时中止, 防止P/L追踪损坏
+    if (!Number.isFinite(profit) || !Number.isFinite(this.totalCost)) {
+      logger.error(`SETTLE NaN GUARD: profit=${profit} totalCost=${this.totalCost} returnVal=${returnVal} — skipping P/L update`);
+      this.writeRoundAudit("settle-nan-guard", { profit, totalCost: this.totalCost, returnVal, leg1Shares: this.leg1Shares });
+      this.totalCost = 0;
+      this.leg1Shares = 0;
+      this.hedgeState = "done";
+      await this.refreshBalance();
+      return;
+    }
+
     const result = profit >= 0 ? "WIN" : "LOSS";
 
     if (result === "WIN") { this.wins++; this.consecutiveLosses = 0; }
