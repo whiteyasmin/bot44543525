@@ -12,7 +12,7 @@ import {
   getVolumeSpikeInfo, getLargeOrderInfo,
   getDepthImbalance, getLiquidationInfo, getFundingRateInfo,
   setRoundSecsLeft, setRoundStartPrice, stopPriceFeed,
-  getRecentMomentum,
+  getRecentMomentum, getRecentVolatility,
 } from "./btcPrice";
 import { HISTORY_FILE, PAPER_HISTORY_FILE } from "./audit";
 import { clearPaperRuntimeState, loadPaperRuntimeState, savePaperRuntimeState } from "./paperRuntimeState";
@@ -60,6 +60,7 @@ const DUAL_SIDE_MIN_ASK = 0.20;            // 挂单价下限
 const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$0.15/share@50%胜率)
 
 const DUAL_SIDE_MIN_DRIFT = 0.02;          // 价格偏移>此值才重挂 (0.01太敏感导致频繁re-place)
+const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%), 低于此视为微行情不挂单
 
 // ── 趋势追涨: 强趋势方向入场 (≤$0.50时60%胜率即EV+$0.10/份) ──
 const TREND_TRADE_ENABLED = true;           // 启用趋势追涨
@@ -189,6 +190,7 @@ export interface Hedge15mState {
   latencyCacheCount: number;
   latencyCacheLastMs: number;
   latencyCacheLastAt: number;
+  btcVolatility5m: number;
   diagnostics: {
     marketWsConnected: boolean;
     userWsConnected: boolean;
@@ -580,6 +582,7 @@ export class Hedge15mEngine {
       rolling4hPnL: this.getRolling4hPnL(),
       effectiveMaxAsk: this.getEffectiveMaxAsk(),
       askSum: this.upAsk > 0 && this.downAsk > 0 ? this.upAsk + this.downAsk : 0,
+      btcVolatility5m: getRecentVolatility(300),
       dumpConfirmCount: this.dumpConfirmCount,
       dirAlignedCount: this.dirAlignedCount,
       dirContraCount: this.dirContraCount,
@@ -1599,6 +1602,17 @@ export class Hedge15mEngine {
     const upAsk = this.upAsk;
     const downAsk = this.downAsk;
     if (upAsk <= 0 || downAsk <= 0) return;
+
+    // ── 微行情过滤: BTC近5分钟波动率过低时不挂预挂单 (避免横盘抛硬币) ──
+    const recentVol = getRecentVolatility(300);
+    if (recentVol < DUAL_SIDE_MIN_VOL) {
+      // 波动率不足 → 取消已有预挂单, 不挂新单
+      if (this.preOrderUpId || this.preOrderDownId) {
+        await this.cancelDualSideOrders(trader);
+        logger.info(`DUAL SIDE: vol=${(recentVol*100).toFixed(3)}% < ${(DUAL_SIDE_MIN_VOL*100).toFixed(2)}% — 微行情, 撤销预挂单等待波动`);
+      }
+      return;
+    }
 
     // ── 低流动性过滤: 仅用LIQUIDITY_FILTER_SUM, SUM_DIVERGENCE_MAX是给dump入场的不影响预挂单 ──
     const askSum = upAsk + downAsk;

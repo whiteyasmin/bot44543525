@@ -434,6 +434,22 @@ export function getRecentMomentum(windowSec = 30): number {
   return (latest.p - old.p) / old.p;
 }
 
+/** 最近N秒内BTC价格波动率 (最高-最低)/均价, 用于过滤微行情 */
+export function getRecentVolatility(windowSec = 300): number {
+  if (recentPrices.length < 5) return 0;
+  const cutoff = Date.now() - windowSec * 1000;
+  let hi = 0, lo = Infinity, count = 0;
+  for (let i = recentPrices.length - 1; i >= 0; i--) {
+    if (recentPrices[i].t < cutoff) break;
+    const p = recentPrices[i].p;
+    if (p > hi) hi = p;
+    if (p < lo) lo = p;
+    count++;
+  }
+  if (count < 5 || lo <= 0) return 0;
+  return (hi - lo) / ((hi + lo) / 2);
+}
+
 // ===================== L: Taker Flow (买卖比) =====================
 
 // ── 信号缓存 (避免 getState() 每250ms重算所有信号) ──
