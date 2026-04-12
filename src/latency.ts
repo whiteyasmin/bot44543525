@@ -51,8 +51,7 @@ async function doPing(): Promise<void> {
     void r;
     const ms = Date.now() - t0;
     addSample(pingSamples, ms);
-    // 只输出到 console, 不写日志文件 (避免每3s一条挤掉交易日志)
-    console.log(`CLOB ping: ${ms}ms (netP50=${getP50Ms()}ms netP90=${getP90Ms()}ms)`);
+    logger.info(`CLOB ping: ${ms}ms (netP50=${getP50Ms()}ms netP90=${getP90Ms()}ms)`);
   } catch {
     // 超时或网络中断 — 不记样本, 下次再测
   }

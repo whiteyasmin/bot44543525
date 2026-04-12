@@ -8,19 +8,6 @@ export interface PaperRuntimeState {
   sessionProfit: number;
   rollingPnL: Array<{ ts: number; profit: number }>;
   updatedAt: string;
-  // 持仓崩溃恢复
-  openPosition?: {
-    conditionId: string;
-    leg1Dir: string;
-    leg1Token: string;
-    leg1Shares: number;
-    leg1FillPrice: number;
-    leg1OrderId: string;
-    totalCost: number;
-    roundStartBtcPrice: number;
-    entrySource: string;
-    filledAt: number;
-  } | null;
 }
 
 const PAPER_RUNTIME_STATE_FILE = getPaperRuntimeStateFilePath();
@@ -43,18 +30,6 @@ export function loadPaperRuntimeState(): PaperRuntimeState | null {
             .filter((item: { ts: number; profit: number }) => item.ts > 0)
         : [],
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
-      openPosition: raw.openPosition && typeof raw.openPosition === "object" ? {
-        conditionId: String(raw.openPosition.conditionId || ""),
-        leg1Dir: String(raw.openPosition.leg1Dir || ""),
-        leg1Token: String(raw.openPosition.leg1Token || ""),
-        leg1Shares: Number(raw.openPosition.leg1Shares) || 0,
-        leg1FillPrice: Number(raw.openPosition.leg1FillPrice) || 0,
-        leg1OrderId: String(raw.openPosition.leg1OrderId || ""),
-        totalCost: Number(raw.openPosition.totalCost) || 0,
-        roundStartBtcPrice: Number(raw.openPosition.roundStartBtcPrice) || 0,
-        entrySource: String(raw.openPosition.entrySource || ""),
-        filledAt: Number(raw.openPosition.filledAt) || 0,
-      } : null,
     };
   } catch {
     return null;

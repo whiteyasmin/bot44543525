@@ -153,9 +153,7 @@ app.post("/api/start", auth, async (req, res) => {
     res.status(400).json({ error: "机器人已在运行" });
     return;
   }
-  const { privateKey, funderAddress, mode, paperBalance, paperSessionMode,
-    dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction,
-    trendEnabled, trendMaxAsk } = req.body;
+  const { privateKey, funderAddress, mode, paperBalance, paperSessionMode } = req.body;
   const tradingMode = mode === "paper" ? "paper" : "live";
   if (privateKey) updateConfig({ PRIVATE_KEY: privateKey });
   if (funderAddress) updateConfig({ FUNDER_ADDRESS: funderAddress });
@@ -169,13 +167,6 @@ app.post("/api/start", auth, async (req, res) => {
       mode: tradingMode,
       paperBalance: Number(paperBalance) > 0 ? Number(paperBalance) : undefined,
       paperSessionMode: paperSessionMode === "persistent" ? "persistent" : "session",
-      dumpConfirmCycles: dumpConfirmCycles != null ? Number(dumpConfirmCycles) : undefined,
-      entryWindowPreset: entryWindowPreset || undefined,
-      maxEntryAsk: maxEntryAsk != null ? Number(maxEntryAsk) : undefined,
-      dualSideMaxAsk: dualSideMaxAsk != null ? Number(dualSideMaxAsk) : undefined,
-      kellyFraction: kellyFraction != null ? Number(kellyFraction) : undefined,
-      trendEnabled: trendEnabled != null ? trendEnabled === true || trendEnabled === "1" || trendEnabled === 1 : undefined,
-      trendMaxAsk: trendMaxAsk != null ? Number(trendMaxAsk) : undefined,
     });
     res.json({
       ok: true,
@@ -191,87 +182,6 @@ app.post("/api/start", auth, async (req, res) => {
 app.post("/api/stop", auth, (_req, res) => {
   bot.stop();
   res.json({ ok: true });
-});
-
-app.get("/api/download-all", auth, (_req, res) => {
-  const logPath = getLogFilePath();
-  const historyPath = bot.getHistoryFilePath();
-  const auditPath = getDecisionAuditFilePath();
-
-  // ── History table ──
-  let historyRows: Array<Record<string, unknown>> = [];
-  try {
-    const raw = fs.existsSync(historyPath) ? JSON.parse(fs.readFileSync(historyPath, "utf8")) : {};
-    historyRows = Array.isArray(raw) ? raw : Array.isArray(raw.history) ? raw.history : [];
-  } catch { /* empty */ }
-
-  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
-  const hSep    = "|---|------|------|------|--------|------|------|------|------|------|------|--------|----------|";
-  const hRows = historyRows.map((h: any, i: number) => {
-    const price = h.leg1FillPrice > 0 ? h.leg1FillPrice : h.leg1Price || 0;
-    const pf = h.profit >= 0 ? `+$${h.profit.toFixed(2)}` : `-$${Math.abs(h.profit).toFixed(2)}`;
-    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${h.entrySource || "-"} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
-  });
-
-  // ── Decision audit table ──
-  let decisions: Array<Record<string, unknown>> = [];
-  try {
-    const raw = fs.existsSync(auditPath) ? fs.readFileSync(auditPath, "utf8") : "";
-    decisions = raw.split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) as Array<Record<string, unknown>>;
-  } catch { /* empty */ }
-
-  const dHeader = "| # | 时间 | 事件 | 详情 |";
-  const dSep    = "|---|------|------|------|";
-  const dRows = decisions.map((d: any, i: number) => {
-    const { ts, event, ...rest } = d;
-    const detail = Object.entries(rest).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ").replace(/\|/g, "/");
-    return `| ${i + 1} | ${ts || ""} | ${event || ""} | ${detail.slice(0, 200)} |`;
-  });
-
-  // ── Logs (last 500 lines) ──
-  let logLines = "";
-  try {
-    logLines = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8").split("\n").slice(-500).join("\n") : "";
-  } catch { /* empty */ }
-
-  // ── Assemble Markdown ──
-  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const state = bot.getState();
-  const summary = [
-    `- 余额: $${state.balance.toFixed(2)}`,
-    `- 总盈亏: $${state.totalProfit.toFixed(2)}`,
-    `- 战绩: ${state.wins}W / ${state.losses}L / ${state.skips}S`,
-    `- ROI: ${(state.sessionROI || 0).toFixed(1)}%`,
-    `- 模式: ${state.tradingMode}`,
-  ].join("\n");
-
-  const md = [
-    `# 15m Bot 导出报告`,
-    `> ${new Date().toISOString()}`,
-    ``,
-    `## 概要`,
-    summary,
-    ``,
-    `## 交易历史 (${historyRows.length}条)`,
-    hHeader,
-    hSep,
-    ...hRows,
-    ``,
-    `## 决策审计 (${decisions.length}条)`,
-    dHeader,
-    dSep,
-    ...dRows,
-    ``,
-    `## 日志 (最近500行)`,
-    "```",
-    logLines,
-    "```",
-    ``,
-  ].join("\n");
-
-  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="hedge15m-report-${ts}.md"`);
-  res.send(md);
 });
 
 app.get("/api/download-logs", auth, (_req, res) => {
