@@ -246,7 +246,7 @@ app.get("/api/download-all", auth, (_req, res) => {
   ].join("\n");
 
   const md = [
-    `# 15m Bot 导出报告`,
+    `# Vortex-15m 导出报告`,
     `> ${new Date().toISOString()}`,
     ``,
     `## 概要`,
@@ -270,7 +270,7 @@ app.get("/api/download-all", auth, (_req, res) => {
   ].join("\n");
 
   res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="hedge15m-report-${ts}.md"`);
+  res.setHeader("Content-Disposition", `attachment; filename="vortex-15m-report-${ts}.md"`);
   res.send(md);
 });
 

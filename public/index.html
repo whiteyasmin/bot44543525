@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DumpCatcher-15m</title>
+<title>Vortex-15m</title>
 <style>
 :root{
   --bg:#09111b;
@@ -154,8 +154,8 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="login-overlay">
   <div class="login-box">
-    <h2>DumpCatcher-15m</h2>
-    <p class="login-sub">BTC 15分钟二元期权 · EV+正期望值交易系统</p>
+    <h2>Vortex-15m</h2>
+    <p class="login-sub">BTC 15分钟二元期权 · EV+正期望值引擎</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
     <div style="margin-top:14px"><button class="btn-g" onclick="doLogin()" style="width:100%">登录</button></div>
@@ -165,7 +165,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="app" style="display:none">
   <header>
-    <h1>DumpCatcher-15m</h1>
+    <h1>Vortex-15m</h1>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
       <button class="btn-b" onclick="downloadAll()">导出</button>
@@ -222,6 +222,7 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">量能/大单</span><span class="v" id="h-vol-large">--</span></div>
           <div class="r"><span class="k">深度/强平</span><span class="v" id="h-depth-liq">--</span></div>
           <div class="r"><span class="k">资金费率</span><span class="v" id="h-funding">--</span></div>
+          <div class="r"><span class="k">信号强度</span><span class="v" id="h-signal-strength">--</span></div>
           <div class="r"><span class="k">持仓策略</span><span class="v" id="h-mid-exit">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
         </div>
@@ -293,8 +294,8 @@ tr:hover{background:rgba(118,183,255,.03)}
             <label>入场窗口</label>
             <select id="cfg-entry-window">
               <option value="short">短 6min</option>
-              <option value="medium" selected>中 9min / 截止4min</option>
-              <option value="long">长 11min / 截止3min</option>
+              <option value="medium" selected>中 11min / 截止4min</option>
+              <option value="long">长 13min / 截止2min</option>
             </select>
           </div>
 
@@ -372,7 +373,6 @@ tr:hover{background:rgba(118,183,255,.03)}
                 <th>方向</th>
                 <th>入场</th>
                 <th>EV/份</th>
-                <th>份数</th>
                 <th>成本</th>
                 <th>盈亏</th>
                 <th>累计</th>
@@ -637,34 +637,44 @@ function render(s) {
     dumpSt.textContent = '未触发'; dumpSt.style.color = '#7a8ea6';
   }
   document.getElementById('dump-confirm').textContent = s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles;
-  // 持仓EV per share: invested at leg1Price, win pays $1
+  // 持仓EV per share: invested at leg1Price, win pays $1 (动态胜率)
   const evEl = document.getElementById('dump-signals');
   if (s.hedgeLeg1Price > 0) {
     const evPerShare = 1.00 - s.hedgeLeg1Price;
-    const winRate = s.activeStrategyMode==='trend'?0.58:0.50;
-    const ev = winRate * 1.00 - s.hedgeLeg1Price;
-    evEl.textContent = 'EV+$'+ev.toFixed(2)+'/\u4efd (\u80dc$'+evPerShare.toFixed(2)+')';
+    const wr = s.leg1WinRate || 0.50;
+    const ev = wr * 1.00 - s.hedgeLeg1Price;
+    evEl.textContent = 'EV+$'+ev.toFixed(2)+'/\u4efd \u80dc\u7387'+(wr*100).toFixed(0)+'%';
     evEl.style.color = ev >= 0.10 ? '#42d392' : ev >= 0.05 ? '#76b7ff' : '#f4c96b';
   } else {
     evEl.textContent = '--'; evEl.style.color = '';
   }
   document.getElementById('dump-mom-rej').textContent = s.roundMomentumRejects||0;
   document.getElementById('dump-ask-rej').textContent = s.roundEntryAskRejects||0;
-  // 持仓策略: EV-centric显示
+  // 信号强度: dirAligned / dirContra
+  const sigEl = document.getElementById('h-signal-strength');
+  if (sigEl) {
+    const al = s.dirAlignedCount||0, co = s.dirContraCount||0;
+    const net = al - co;
+    const label = net >= 3 ? '强一致' : net >= 1 ? '偏一致' : net <= -2 ? '有矛盾' : '中性';
+    sigEl.textContent = '\u2191'+al+' \u2193'+co+' '+label;
+    sigEl.style.color = net >= 3 ? '#42d392' : net >= 1 ? '#76b7ff' : net <= -2 ? '#ff6b6b' : '#7a8ea6';
+  }
+  // 持仓策略: EV-centric显示 (动态胜率)
   const meEl = document.getElementById('h-mid-exit');
   if (s.hedgeState === 'leg1_filled') {
     const ep = s.hedgeLeg1Price||0;
-    const wr = s.activeStrategyMode==='trend'?0.58:0.50;
+    const wr = s.leg1WinRate || 0.50;
     const ev = wr - ep;
     const srcLabel = s.activeStrategyMode==='trend'?'趋势持有':'砸盘持有';
-    meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' EV+$'+ev.toFixed(2)+'/份</span>';
+    meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' EV+$'+ev.toFixed(2)+'/份 '+(wr*100).toFixed(0)+'%</span>';
   } else if (s.trendTradeEnabled && s.trendConfirmCount>0) {
     meEl.innerHTML = '<span class=\"tag tag-b\">趋势确认中 '+s.trendConfirmCount+'/3</span>';
   } else {
     meEl.textContent = '--'; meEl.style.color = '';
   }
   if (s.hedgeLeg1Price>0) {
-    const posEv = (s.activeStrategyMode==='trend'?0.58:0.50) - s.hedgeLeg1Price;
+    const posWr = s.leg1WinRate || 0.50;
+    const posEv = posWr - s.hedgeLeg1Price;
     document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' EV+$'+posEv.toFixed(2)+'</span>';
   } else {
     document.getElementById('h-leg1').textContent='--';
@@ -743,8 +753,7 @@ function render(s) {
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
     const tEl = document.getElementById('p-trend');
     if (s.rtTrendEnabled) {
-      const trendEv = (0.58-s.rtTrendMaxAsk).toFixed(2);
-      tEl.textContent = '开 EV+$'+trendEv+' (≤$'+s.rtTrendMaxAsk.toFixed(2)+')'+(s.trendConfirmCount>0?' '+s.trendConfirmCount+'/3':'');
+      tEl.textContent = '开 52-72% (≤$'+s.rtTrendMaxAsk.toFixed(2)+')'+(s.trendConfirmCount>0?' '+s.trendConfirmCount+'/3':'');
       tEl.style.color = s.trendConfirmCount>=2?'#42d392':'#76b7ff';
     } else { tEl.textContent = '关'; tEl.style.color = '#7a8ea6'; }
   }
@@ -779,15 +788,14 @@ function render(s) {
     const l1 = h.leg1FillPrice>0?'\$'+h.leg1FillPrice.toFixed(2):'\$'+(h.leg1Price||0).toFixed(2);
     const est = h.estimated?'<span style="color:#f4c96b" title="估算"> ⚠</span>':'';
     const bd = h.profitBreakdown?' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"':'';
-    const hwr = (h.entrySource==='trend-follow')?0.58:0.50;
+    const hwr = h.entryWinRate || ((h.entrySource==='trend-follow')?0.58:0.50);
     const hep = h.leg1FillPrice>0?h.leg1FillPrice:(h.leg1Price||0);
     const hev = hep>0?(hwr-hep):0;
     return '<tr><td>'+h.time+'</td>'
       +'<td><span class="tag '+cls+'">'+h.result+'</span>'+est+'</td>'
       +'<td>'+h.leg1Dir+'</td>'
       +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+(h.leg1Shares||0).toFixed(0)+'</small></td>'
-      +'<td style="color:'+(hev>=0.10?'#42d392':hev>=0.05?'#76b7ff':hev>=0?'#f4c96b':'#ff6b6b')+'">'+((hev>=0?'+':'')+hev.toFixed(2))+'</td>'
-      +'<td>'+(h.leg1Shares>0?h.leg1Shares.toFixed(0):'-')+'</td>'
+      +'<td style="color:'+(hev>=0.10?'#42d392':hev>=0.05?'#76b7ff':hev>=0?'#f4c96b':'#ff6b6b')+'">'+((hev>=0?'+':'')+hev.toFixed(2))+' '+(hwr*100).toFixed(0)+'%</td>'
       +'<td>\$'+(h.totalCost||0).toFixed(2)+'</td>'
       +'<td style="color:'+(h.profit>=0?'#42d392':'#ff6b6b')+'"'+bd+'>'+pf+'</td>'
       +'<td style="color:'+(h.cumProfit>=0?'#42d392':'#ff6b6b')+'">\$'+(h.cumProfit||0).toFixed(2)+'</td>'

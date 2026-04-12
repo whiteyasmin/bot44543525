@@ -64,7 +64,8 @@ const DUAL_SIDE_MIN_DRIFT = 0.01;          // 价格偏移>此值才重挂
 // ── 趋势追涨: 强趋势方向入场 (≤$0.50时60%胜率即EV+$0.10/份) ──
 const TREND_TRADE_ENABLED = true;           // 启用趋势追涨
 const TREND_MAX_ASK = 0.50;                 // 趋势入场上限 ($0.50: 60%胜率即breakeven, >60%即EV+)
-const TREND_KELLY_WIN_RATE = 0.58;          // 趋势Kelly胜率 (强趋势假设58%)
+const TREND_KELLY_WIN_RATE_BASE = 0.52;     // 趋势基础胜率 (刚过门槛, 接近随机)
+const TREND_KELLY_WIN_RATE_MAX = 0.72;      // 趋势最高胜率 (极端行情+全信号一致)
 const TREND_MIN_ELAPSED = 120;              // 趋势确认最少120s (比dump的90s更长, 趋势需要更多数据)
 const TREND_CONFIRM_CYCLES = 3;             // 连续3个cycle确认趋势才入场
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
@@ -131,6 +132,7 @@ export interface Hedge15mState {
   preOrderUpPrice: number;
   preOrderDownPrice: number;
   leg1Maker: boolean;
+  leg1WinRate: number;
   // L: Taker Flow
   takerFlowRatio: number;
   takerFlowDirection: string;
@@ -247,6 +249,7 @@ export interface HedgeHistoryEntry {
   entrySource?: string;     // dual-side-preorder | reactive-mispricing
   entryTrendBias?: string;  // up | down | flat
   entrySecondsLeft?: number; // 入场时回合剩余秒数
+  entryWinRate?: number;    // 入场时动态胜率
 }
 
 function sleep(ms: number): Promise<void> {
@@ -347,6 +350,7 @@ export class Hedge15mEngine {
   private currentTrendBias: "up" | "down" | "flat" = "flat";
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
   private leg1MakerFill = false;             // Leg1是否maker成交
+  private leg1WinRate = 0.50;                // Leg1入场时动态胜率
   private preOrderUpId = "";                 // 双侧预挂单: UP token GTC orderId
   private preOrderDownId = "";               // 双侧预挂单: DOWN token GTC orderId
   private preOrderUpPrice = 0;
@@ -584,6 +588,7 @@ export class Hedge15mEngine {
       preOrderUpPrice: this.preOrderUpPrice,
       preOrderDownPrice: this.preOrderDownPrice,
       leg1Maker: this.leg1MakerFill,
+      leg1WinRate: this.leg1WinRate,
       // L: Taker Flow
       ...(() => { const tf = getTakerFlowRatio(); return {
         takerFlowRatio: tf.ratio,
@@ -918,6 +923,7 @@ export class Hedge15mEngine {
     this.leg1Estimated = false;
     this.currentDumpDrop = 0;
     this.leg1MakerFill = false;
+    this.leg1WinRate = 0.50;
     this.leg1EntrySource = "";
     this.leg1EntryTrendBias = "flat";
     this.leg1EntrySecondsLeft = 0;
@@ -1403,28 +1409,57 @@ export class Hedge15mEngine {
 
     if (askPrice > this.rtTrendMaxAsk || askPrice < MIN_ENTRY_ASK) return;
 
-    // ── 趋势专用 Kelly: 假设比随机更高的胜率(58%) ──
+    // ── 动态胜率: 根据趋势强度 + 信号一致性计算, 替代固定58% ──
+    const btcMove = getBtcMovePct();                       // 回合内BTC变动幅度
+    const flow = getTakerFlowRatio();
+    const depth = getDepthImbalance();
+    const liq = getLiquidationInfo();
+    const trendMom = Math.abs(getRecentMomentum(TREND_WINDOW_SEC));  // 180s动量绝对值
+
+    // (1) 趋势强度分: btcMove越大越可信, 0.24%→0分, 1%→满分
+    const moveScore = Math.min(1.0, Math.max(0, (btcMove - 0.0024) / (0.01 - 0.0024)));
+    // (2) 动量分: 180s动量越强越可信
+    const momScore = Math.min(1.0, Math.max(0, (trendMom - 0.0024) / (0.008 - 0.0024)));
+    // (3) 信号一致分: aligned多加分, contra多减分
+    const signalScore = Math.min(1.0, Math.max(-0.5,
+      (this.dirAlignedCount - this.dirContraCount) / 5));
+    // (4) Taker flow 分: 方向一致的极端flow加分
+    const flowAligned = (dir === "down" && flow.direction === "sell") || (dir === "up" && flow.direction === "buy");
+    const flowContra = (dir === "down" && flow.direction === "buy") || (dir === "up" && flow.direction === "sell");
+    const flowScore = flowAligned ? Math.min(0.5, Math.abs(flow.ratio - 1) * 0.5) : flowContra ? -0.2 : 0;
+    // (5) 强平级联分: 方向一致的强平加分
+    const liqAligned = (dir === "down" && liq.direction === "sell") || (dir === "up" && liq.direction === "buy");
+    const liqScore = liqAligned && liq.intensity !== "low" ? 0.15 : 0;
+
+    // 综合分 0~1 → 映射到胜率
+    const rawScore = moveScore * 0.30 + momScore * 0.25 + signalScore * 0.20 + flowScore * 0.15 + liqScore * 0.10;
+    const clampedScore = Math.min(1.0, Math.max(0, rawScore));
+    const dynamicWinRate = TREND_KELLY_WIN_RATE_BASE + clampedScore * (TREND_KELLY_WIN_RATE_MAX - TREND_KELLY_WIN_RATE_BASE);
+    // 弱趋势保护: winRate < 54% 时不入场 (EV太低不值得冒险)
+    if (dynamicWinRate < 0.54) {
+      const skipKey = `trend-weak:${dir}:${dynamicWinRate.toFixed(2)}`;
+      if (skipKey !== this.lastEntrySkipKey) {
+        this.lastEntrySkipKey = skipKey;
+        logger.info(`TREND SKIP weak signal: winRate=${(dynamicWinRate*100).toFixed(1)}%<54% move=${(btcMove*100).toFixed(2)}% flow=${flow.ratio.toFixed(2)}/${flow.direction} aligned=${this.dirAlignedCount} contra=${this.dirContraCount}`);
+      }
+      return;
+    }
+
+    // ── 趋势专用 Kelly: 动态胜率驱动仓位 ──
     const odds = (1 - askPrice) / askPrice;
-    const kellyFull = (TREND_KELLY_WIN_RATE * odds - (1 - TREND_KELLY_WIN_RATE)) / odds;
+    const kellyFull = (dynamicWinRate * odds - (1 - dynamicWinRate)) / odds;
     // 趋势Kelly: 低价趋势EV+大→放开上限
     const trendKellyCap = askPrice <= 0.40 ? 0.22 : 0.18;
     // 连亏缩仓: 趋势入场同样适用
     const trendLossScale = this.consecutiveLosses > 0 ? Math.max(0.4, Math.pow(0.85, this.consecutiveLosses)) : 1.0;
     let budgetPct = Math.max(0.06, Math.min(trendKellyCap, kellyFull * this.rtKellyFraction * trendLossScale));
-    // 信号加权 (趋势trade也受信号影响, 但Kelly更保守)
-    if (this.dirAlignedCount >= 3) {
-      budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.04;
-    } else if (this.dirContraCount >= 3) {
-      budgetPct *= 1.0 - (this.dirContraCount - 2) * 0.08;
-    }
-    budgetPct = Math.max(0.06, Math.min(trendKellyCap, budgetPct)); // 趋势trade: 6%-18/22%
+    budgetPct = Math.max(0.06, Math.min(trendKellyCap, budgetPct));
 
     this.dumpDetected = `TREND ${dir.toUpperCase()} @${askPrice.toFixed(2)} (${this.trendConfirmCount}cycle)`;
     this.activeStrategyMode = "trend";
     this.currentTrendBias = dir as "up" | "down";
-    const flow = getTakerFlowRatio();
-    const depth = getDepthImbalance();
-    logger.info(`HEDGE15M TREND ENTRY: ${dir.toUpperCase()} @${askPrice.toFixed(2)} budget=${(budgetPct*100).toFixed(1)}% confirmed=${this.trendConfirmCount} flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction}`);
+    this.leg1WinRate = dynamicWinRate;
+    logger.info(`HEDGE15M TREND ENTRY: ${dir.toUpperCase()} @${askPrice.toFixed(2)} budget=${(budgetPct*100).toFixed(1)}% winRate=${(dynamicWinRate*100).toFixed(1)}% score=${clampedScore.toFixed(2)} move=${(btcMove*100).toFixed(2)}% mom=${(trendMom*100).toFixed(2)}% flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} aligned=${this.dirAlignedCount} contra=${this.dirContraCount} confirmed=${this.trendConfirmCount}`);
 
     await this.openLeg1Position(
       trader,
@@ -1657,8 +1692,12 @@ export class Hedge15mEngine {
     const now = Date.now();
     const needRefresh = now - this.preOrderLastRefresh >= DUAL_SIDE_REFRESH_MS;
 
-    // ── UP 侧挂单管理 (趋势down/CL=down时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "down" && btcDirPre !== "down" && upInRange) {
+    // ── BTC方向是否足以阻止单侧挂单: 必须变动≥0.25%才视为有方向 ──
+    const btcBlocksUp = btcMovePre >= 0.0025 && btcDirPre === "down";
+    const btcBlocksDn = btcMovePre >= 0.0025 && btcDirPre === "up";
+
+    // ── UP 侧挂单管理 (趋势down/BTC强下时跳过, 低流动性时跳过) ──
+    if (!lowLiquidity && trend !== "down" && !btcBlocksUp && upInRange) {
       const upShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1703,8 +1742,8 @@ export class Hedge15mEngine {
       logger.info(`DUAL SIDE: UP cancelled (limit=${upLimit.toFixed(2)} out of range)`);
     }
 
-    // ── DOWN 侧挂单管理 (趋势up/CL=up时跳过, 低流动性时跳过) ──
-    if (!lowLiquidity && trend !== "up" && btcDirPre !== "up" && downInRange) {
+    // ── DOWN 侧挂单管理 (趋势up/BTC强上时跳过, 低流动性时跳过) ──
+    if (!lowLiquidity && trend !== "up" && !btcBlocksDn && downInRange) {
       const dnShares = Math.min(MAX_SHARES, Math.floor(singleSideBudget / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
@@ -1768,6 +1807,7 @@ export class Hedge15mEngine {
     this.leg1Token = leg1Token;
     this.leg1MakerFill = true; // 预挂单永远是 maker
     this.leg1EntrySource = "dual-side-preorder";
+    this.leg1WinRate = KELLY_WIN_RATE; // 预挂单用基础胜率
     this.leg1EntryTrendBias = this.currentTrendBias;
     this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
     this.leg1AttemptedThisRound = true;
@@ -1993,6 +2033,7 @@ export class Hedge15mEngine {
       this.leg1Token = buyToken;
       this.leg1MakerFill = isMaker;
       this.leg1EntrySource = entrySource;
+      this.leg1WinRate = entrySource === "trend-follow" ? this.leg1WinRate : KELLY_WIN_RATE;
       this.leg1EntryTrendBias = this.currentTrendBias;
       this.leg1EntrySecondsLeft = Math.floor(this.secondsLeft);
       this.totalCost = filledShares * realFillPrice * (1 + actualFee);
@@ -2088,6 +2129,7 @@ export class Hedge15mEngine {
       entrySource: this.leg1EntrySource,
       entryTrendBias: this.leg1EntryTrendBias,
       entrySecondsLeft: this.leg1EntrySecondsLeft,
+      entryWinRate: this.leg1WinRate,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();
