@@ -1208,6 +1208,14 @@ export class Trader {
       logger.info("已取消所有挂单");
     } catch (e: any) {
       logger.error(`取消失败: ${e.message}`);
+      // 重试一次
+      try {
+        await new Promise(r => setTimeout(r, 1000));
+        await this.client.cancelAll();
+        logger.info("已取消所有挂单 (重试)");
+      } catch (e2: any) {
+        logger.error(`取消重试也失败: ${e2.message}`);
+      }
     }
   }
 
@@ -1289,7 +1297,13 @@ export class Trader {
     try {
       await this.client.cancelOrder({ orderID: orderId });
     } catch (e: any) {
-      logger.warn(`cancelOrder失败 (${orderId.slice(0, 12)}): ${e.message}`);
+      // 重试1次 (网络抖动)
+      try {
+        await new Promise(r => setTimeout(r, 500));
+        await this.client.cancelOrder({ orderID: orderId });
+      } catch (e2: any) {
+        logger.warn(`cancelOrder失败 (${orderId.slice(0, 12)}): ${e2.message}`);
+      }
     }
   }
 
