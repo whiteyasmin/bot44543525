@@ -1402,9 +1402,8 @@ export class Hedge15mEngine {
     const bsWinRate = this.bsFairWinRate(dir, rnd.secondsLeft);
     const bsEdge = bsWinRate - askPrice;
 
-    // ── Doji过滤: BTC几乎未偏离开盘价 → 方向信号极弱, 砸盘是随机噪声 ──
-    // ML研究验证: 涨跌<0.03%的回合模型无法预测, 屏蔽可显著提升精度
-    // d = ln(S/K) / σ√T; |d| < 0.10 意味着BSM胜率在 N(-0.1)~N(0.1) = 46%~54%区间
+    // ── Doji / BSM截断 过滤 ──
+    // d = ln(S/K) / σ√T 描述BTC当前对开盘价的标准化偏离
     const K = this.roundStartBtcPrice;
     const S = getBtcPrice();
     const vol5m = getRecentVolatility(300);
@@ -1412,13 +1411,24 @@ export class Hedge15mEngine {
     const tYears = rnd.secondsLeft / (365.25 * 24 * 3600);
     const sigSqrtT = sigAnnual * Math.sqrt(tYears);
     const dAbs = (K > 0 && S > 0 && sigSqrtT > 0) ? Math.abs(Math.log(S / K) / sigSqrtT) : 0;
-    // doji阈值: |d| < 0.10 → edge门槛提高到10%; |d| < 0.05 → 完全拒绝
+    // [规则A] BSM截断在0.30底部时edge为负 → 真实fair可能远低于0.30, 真实edge可能远远更负
+    //   例: d=-2.0 → 真实fair≈0.023, ask=0.32 → 真实edge=-29.7%, 但截断后显示-2%
+    const bsFloorClamped = bsWinRate <= 0.301;
+    if (bsFloorClamped && bsEdge < 0) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)}(clamped) ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=floor-clamped-neg-edge`);
+      return;
+    }
+    // [规则B] 真正Doji (|d|<0.05, BTC几乎未动): BSM fair≈0.50, 无方向信号
+    //   此时依然可以入场, 但需要AMM有明显折扣 (edge≥2%)
+    //   注: 不能用Infinity拒绝, 否则会屏蔽高折扣大边际的优质入场机会
     const isDoji = dAbs < 0.05;
-    const isNearDoji = dAbs < 0.10;
-    const edgeThreshold = isDoji ? Infinity : (isNearDoji ? 0.10 : -0.05);
-    if (bsEdge < edgeThreshold) {
-      const reason = isDoji ? "doji(|d|<0.05)" : isNearDoji ? "near-doji(|d|<0.10,need edge≥10%)" : "edge<-5%";
-      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=${reason}`);
+    if (isDoji && bsEdge < 0.02) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=doji-small-edge`);
+      return;
+    }
+    // [规则C] 普通情况: edge < -5% → ask远高于BSM公允, 无入场价值
+    if (bsEdge < -0.05) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% |d|=${dAbs.toFixed(3)} reason=edge<-5%`);
       return;
     }
 
