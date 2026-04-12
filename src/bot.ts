@@ -360,6 +360,7 @@ export class Hedge15mEngine {
   private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
   private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
   private _volGateLoggedThisRound = false;  // 去重: 波动率门控日志每轮只打一次
+  private _earlyEntryLoggedThisRound = false; // 去重: EARLY日志每轮只打一次
   private dirAlignedCount = 0;              // 入场时方向一致信号数 (7源)
   private dirContraCount = 0;               // 入场时方向反向信号数 (7源)
   private consecutiveLosses = 0;            // 连续亏损计数 (资金安全守护)
@@ -565,7 +566,7 @@ export class Hedge15mEngine {
     const tYears = secsLeft / (365.25 * 24 * 3600);
     const sigSqrtT = sigAnnual * Math.sqrt(tYears);
     const d = Math.log(S / K) / sigSqrtT;  // ln(S/K) / σ√T
-    const pUp = this.normalCdf(-d);        // P(S_T > K)
+    const pUp = this.normalCdf(d);          // P(S_T > K): S>K时d>0→N(d)>0.5, UP更可能
     const fair = dir === "up" ? pUp : (1 - pUp);
     return Math.max(0.30, Math.min(0.70, fair));
   }
@@ -1005,6 +1006,7 @@ export class Hedge15mEngine {
     this.lastRepricingRejectKey = "";
     this.lastDumpLogKey = "";
     this._volGateLoggedThisRound = false;
+    this._earlyEntryLoggedThisRound = false;
     this.dirAlignedCount = 0;
     this.dirContraCount = 0;
     this.preOrderUpId = "";
@@ -1222,10 +1224,11 @@ export class Hedge15mEngine {
                     }
                     this.roundEntryAskRejects += 1;
                   }
-                  // ── #5 早期入场保护: 回合开始<90s内不允许反应式入场 ──
+                  // ── #5 早期入场保护: 回合开始<30s内不允许反应式入场 ──
                   else if (elapsed < MIN_ENTRY_ELAPSED) {
                     this.trackRoundRejectReason(`early_entry: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s`);
-                    if (this.dumpConfirmCount <= 1) { // 只在首次打日志避免刷屏
+                    if (!this._earlyEntryLoggedThisRound) {
+                      this._earlyEntryLoggedThisRound = true;
                       logger.info(`HEDGE15M EARLY: elapsed=${Math.floor(elapsed)}s < ${MIN_ENTRY_ELAPSED}s — waiting for stable data`);
                     }
                   } else {
