@@ -536,6 +536,40 @@ export class Hedge15mEngine {
     this.rollingPnL = this.rollingPnL.filter((item) => item.ts >= cutoff);
   }
 
+  // ── Black-Scholes 数字期权公式 ──
+  // Abramowitz & Stegun 26.2.17 近似, 误差 < 7.5e-8
+  private normalCdf(x: number): number {
+    if (x < -6) return 0;
+    if (x > 6) return 1;
+    const t = 1 / (1 + 0.2316419 * Math.abs(x));
+    const pd = 0.3989422803 * Math.exp(-0.5 * x * x);
+    const poly = t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    const cdf = 1 - pd * poly;
+    return x >= 0 ? cdf : 1 - cdf;
+  }
+
+  /**
+   * BSM数字期权: P(BTC结算时 > 开盘价) = N(-d), d = ln(S/K) / (σ√T)
+   * - S = 当前BTC, K = 本回合开盘BTC, T = 剩余时间(年), σ = 年化波动率
+   * - σ由 getRecentVolatility(300) 的Parkinson估计量换算
+   * - 返回 [0.30, 0.70] 限幅, 避免极端值破坏Kelly
+   */
+  private bsFairWinRate(dir: string, secsLeft: number): number {
+    const K = this.roundStartBtcPrice;
+    const S = getBtcPrice();
+    if (K <= 0 || S <= 0 || secsLeft < 30) return KELLY_WIN_RATE;
+    // Parkinson estimator: σ_5min = range / (2*sqrt(2*ln2)) ≈ range / 2.355
+    // σ_annual = σ_5min * sqrt(31557600/300) = σ_5min * 324.5
+    const vol5m = getRecentVolatility(300);
+    const sigAnnual = Math.max(0.25, Math.min(1.50, vol5m * 324.5 / 2.355));
+    const tYears = secsLeft / (365.25 * 24 * 3600);
+    const sigSqrtT = sigAnnual * Math.sqrt(tYears);
+    const d = Math.log(S / K) / sigSqrtT;  // ln(S/K) / σ√T
+    const pUp = this.normalCdf(-d);        // P(S_T > K)
+    const fair = dir === "up" ? pUp : (1 - pUp);
+    return Math.max(0.30, Math.min(0.70, fair));
+  }
+
   private getMaxEntryAsk(): number {
     return this.getEffectiveMaxAsk();
   }
@@ -1361,10 +1395,20 @@ export class Hedge15mEngine {
     // ── 统计7源信号对齐度 ──
     this.computeSignalAlignment(dir);
 
+    // ── BSM数字期权动态胜率 ──
+    const bsWinRate = this.bsFairWinRate(dir, rnd.secondsLeft);
+    const bsEdge = bsWinRate - askPrice;
+    // 数学边际 < -5%: ask定价高于BSM公允值 → 不入场
+    if (bsEdge < -0.05) {
+      logger.warn(`Leg1 BSM REJECT: ${dir} fair=${bsWinRate.toFixed(3)} ask=${askPrice.toFixed(2)} edge=${(bsEdge*100).toFixed(1)}% secsLeft=${Math.floor(rnd.secondsLeft)}`);
+      return;
+    }
+
     // ── Half-Kelly分层仓位: 越便宜买越多, 再叠加趋势加权 ──
     // Kelly: f* = (p*b - q) / b, b = (1-ask)/ask, Half-Kelly = f*/2
     const odds = (1 - askPrice) / askPrice;  // 赔率
-    const kellyFull = (KELLY_WIN_RATE * odds - (1 - KELLY_WIN_RATE)) / odds;
+    // 用BSM公允胜率替代固定KELLY_WIN_RATE, 更准确反映当前数学期望
+    const kellyFull = (bsWinRate * odds - (1 - bsWinRate)) / odds;
     // ── EV+分层Kelly上限: 越便宜EV越高, 允许更大仓位 ──
     const kellyCapForPrice = askPrice <= 0.20 ? 0.40 : askPrice <= 0.25 ? 0.35 : askPrice <= 0.30 ? 0.32 : askPrice <= 0.35 ? 0.30 : 0.27;
     // 连亏缩仓: 每连亏1次Kelly×0.85, 最低×0.4, 赢1次重置
@@ -1388,7 +1432,7 @@ export class Hedge15mEngine {
       budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.05; // 3→+5%, 4→+10%, 5→+15%...
       logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
     } else {
-      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}%`);
+      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsWinRate.toFixed(3)} edge=${(bsEdge*100).toFixed(1)}%`);
     }
     budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
