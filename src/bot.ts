@@ -387,7 +387,7 @@ export class Hedge15mEngine {
   private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
   private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
   private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
-  private lastBsmRejectKey = "";            // 去重: 上次BSM拒绝日志key
+  private bsmRejectThrottle = new Map<string, number>(); // 去重: BSM拒绝日志按key节流(30s/key)
   private lastBsmRejectReason = "";
   private _volGateLoggedThisRound = false;  // 去重: 波动率门控日志每轮只打一次
   private _earlyEntryLoggedThisRound = false; // 去重: EARLY日志每轮只打一次
@@ -690,9 +690,11 @@ export class Hedge15mEngine {
     },
   ): void {
     const rejectKey = `${source}:${dir}:${quotedPrice.toFixed(2)}:${result.reason}`;
-    if (rejectKey === this.lastBsmRejectKey) return;
-    this.lastBsmRejectKey = rejectKey;
+    const now = Date.now();
+    const lastLogged = this.bsmRejectThrottle.get(rejectKey) ?? 0;
     this.lastBsmRejectReason = `${source}:${dir} ${result.reason} edge=${(result.effectiveEdge * 100).toFixed(1)}%`;
+    if (now - lastLogged < 30_000) return; // 同一key每30s只打一条
+    this.bsmRejectThrottle.set(rejectKey, now);
     logger.warn(
       `Leg1 BSM REJECT: ${dir} fair=${result.fairRaw.toFixed(3)} price=${quotedPrice.toFixed(2)} effCost=${result.effectiveCost.toFixed(3)} edge=${(result.effectiveEdge * 100).toFixed(1)}% |d|=${result.dAbs.toFixed(3)} reason=${result.reason}`,
     );
@@ -1153,7 +1155,7 @@ export class Hedge15mEngine {
     this.lastEntrySkipKey = "";
     this.lastSignalSkipKey = "";
     this.lastRepricingRejectKey = "";
-    this.lastBsmRejectKey = "";
+    this.bsmRejectThrottle.clear();
     this.lastBsmRejectReason = "";
     this.lastDumpLogKey = "";
     this._volGateLoggedThisRound = false;
@@ -1939,7 +1941,8 @@ export class Hedge15mEngine {
 
     // ── UP 侧挂单管理 (趋势down/BTC强下时跳过, 低流动性时跳过) ──
     if (!lowLiquidity && trend !== "down" && !btcBlocksUp && upInRange && !!upBsEntry?.allowed) {
-      const upBudgetPct = calcPreBudgetPct(upLimit, upBsEntry.fairKelly) * this.getNetEdgeTier(upBsEntry.effectiveEdge).multiplier;
+      const upPreKellyCap = upLimit <= 0.15 ? 0.40 : upLimit <= 0.20 ? 0.35 : upLimit <= 0.25 ? 0.30 : 0.25;
+      const upBudgetPct = Math.min(upPreKellyCap, calcPreBudgetPct(upLimit, upBsEntry.fairKelly) * this.getNetEdgeTier(upBsEntry.effectiveEdge).multiplier);
       const upShares = Math.min(MAX_SHARES, Math.floor((this.balance * upBudgetPct * 0.7) / upLimit));
       if (upShares >= MIN_SHARES) {
         const drift = Math.abs(upLimit - this.preOrderUpPrice);
@@ -1991,7 +1994,8 @@ export class Hedge15mEngine {
 
     // ── DOWN 侧挂单管理 (趋势up/BTC强上时跳过, 低流动性时跳过) ──
     if (!lowLiquidity && trend !== "up" && !btcBlocksDn && downInRange && !!downBsEntry?.allowed) {
-      const dnBudgetPct = calcPreBudgetPct(downLimit, downBsEntry.fairKelly) * this.getNetEdgeTier(downBsEntry.effectiveEdge).multiplier;
+      const dnPreKellyCap = downLimit <= 0.15 ? 0.40 : downLimit <= 0.20 ? 0.35 : downLimit <= 0.25 ? 0.30 : 0.25;
+      const dnBudgetPct = Math.min(dnPreKellyCap, calcPreBudgetPct(downLimit, downBsEntry.fairKelly) * this.getNetEdgeTier(downBsEntry.effectiveEdge).multiplier);
       const dnShares = Math.min(MAX_SHARES, Math.floor((this.balance * dnBudgetPct * 0.7) / downLimit));
       if (dnShares >= MIN_SHARES) {
         const drift = Math.abs(downLimit - this.preOrderDownPrice);
