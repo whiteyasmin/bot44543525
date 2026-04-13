@@ -63,6 +63,7 @@ const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$
 
 const DUAL_SIDE_MIN_DRIFT = 0.02;          // 价格偏移>此值才重挂 (0.01太敏感导致频繁re-place)
 const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%), 低于此视为微行情不挂单
+const REACTIVE_MIN_VOL = 0.0012;           // reactive路径波动率门槛: 低于0.12%视为噪声, 不追dump
 
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const SUM_DIVERGENCE_MAX = 1.03;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (sum≥1.03=市场公平定价, 无dump错定价edge)
@@ -73,6 +74,7 @@ const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const MIN_NET_EDGE = 0.08;                  // net edge <8% 不做
+const FLAT_MIN_NET_EDGE = 0.12;             // flat行情抬高到12%, 降低噪声入场
 const MID_NET_EDGE = 0.15;                  // 8%~15% 小仓
 const HIGH_NET_EDGE = 0.25;                 // 15%~25% 正常仓, >25% 强信号仓
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -1583,6 +1585,18 @@ export class Hedge15mEngine {
     // ── 统计7源信号对齐度 ──
     this.computeSignalAlignment(dir);
 
+    // ── 低波过滤: reactive在微行情中噪声极高, 直接跳过 ──
+    const reactiveVol = getRecentVolatility(300);
+    if (reactiveVol < REACTIVE_MIN_VOL) {
+      this.trackRoundRejectReason(`reactive-low-vol: ${(reactiveVol * 100).toFixed(3)}% < ${(REACTIVE_MIN_VOL * 100).toFixed(2)}%`);
+      const skipKey = `reactive-vol:${dir}:${Math.floor(reactiveVol * 100000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M REACTIVE SKIP: vol=${(reactiveVol * 100).toFixed(3)}% < ${(REACTIVE_MIN_VOL * 100).toFixed(2)}%`);
+      }
+      return;
+    }
+
     // ── BSM数字期权动态胜率 ──
     const bsEntry = this.evaluateBsEntry(dir, askPrice, rnd.secondsLeft, "reactive");
     if (!bsEntry.allowed) {
@@ -1593,6 +1607,15 @@ export class Hedge15mEngine {
     const bsFairRaw = bsEntry.fairRaw;
     const bsWinRate = bsEntry.fairKelly;
     const bsEdgeNet = bsEntry.effectiveEdge;
+    if (directionalBias === "flat" && bsEdgeNet < FLAT_MIN_NET_EDGE) {
+      this.trackRoundRejectReason(`flat-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(FLAT_MIN_NET_EDGE * 100).toFixed(0)}%`);
+      const skipKey = `flat-edge:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEdgeNet * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M REACTIVE SKIP: flat edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(FLAT_MIN_NET_EDGE * 100).toFixed(0)}%`);
+      }
+      return;
+    }
     const netEdgeTier = this.getNetEdgeTier(bsEdgeNet);
 
     // ── Half-Kelly分层仓位: 越便宜买越多, 再叠加趋势加权 ──
