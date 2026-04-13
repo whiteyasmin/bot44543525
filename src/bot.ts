@@ -74,9 +74,9 @@ const DUMP_CONFIRM_CYCLES = 1;              // 连续 N 个循环看到 dump 才
 const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许反应式入场 (30s数据已足够稳定)
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
-const MIN_NET_EDGE = 0.08;                  // net edge <8% 不做
-const NON_FLAT_MIN_NET_EDGE = 0.10;         // 非flat也提高到10%, 过滤边际噪声单
-const FLAT_MIN_NET_EDGE = 0.12;             // flat行情抬高到12%, 降低噪声入场
+const MIN_NET_EDGE = 0.05;                  // net edge <8% 不做
+const NON_FLAT_MIN_NET_EDGE = 0.08;         // 非flat也提高到10%, 过滤边际噪声单
+const FLAT_MIN_NET_EDGE = 0.10;             // flat行情抬高到12%, 降低噪声入场
 const REACTIVE_MIN_ALIGNMENT_SCORE = 1;     // 盘口信号质量门槛: aligned-contra >= 1
 const REACTIVE_ALIGNMENT_EDGE_OVERRIDE = 0.20; // edge≥20%时允许越过信号门槛
 const MID_NET_EDGE = 0.15;                  // 8%~15% 小仓
@@ -662,18 +662,18 @@ export class Hedge15mEngine {
     const effectiveEdge = fairRaw - effectiveCost;
 
     if (effectiveEdge < MIN_NET_EDGE) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "net-edge<8%" };
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "net-edge<5%" };
     }
     // Doji检测: 用 |ln(S/K)| (BTC偏离幅度) 而非 |d| (σ√T归一化后的值)
     // 15分钟期权σ√T≈0.003, BTC偏$15→|d|=0.06但|ln(S/K)|=0.00015
     // 旧阈值|d|<0.05误杀: BTC偏$10就触发doji (砸盘场景BTC可能确实没大动)
     // 新阈值: |ln(S/K)|<0.0001 (BTC偏<0.01%≈$10) 才是真doji
-    if (lnMoneyness < 0.0001 && effectiveEdge < 0.18) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<18%" };
+    if (lnMoneyness < 0.0001 && effectiveEdge < 0.15) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<15%" };
     }
     // near-doji: BTC偏<0.03% (≈$30) — 方向不明确, 要求更高edge
-    if (lnMoneyness < 0.0003 && effectiveEdge < 0.12) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<12%" };
+    if (lnMoneyness < 0.0003 && effectiveEdge < 0.08) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<8%" };
     }
 
     return { allowed: true, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "ok" };
@@ -2584,6 +2584,8 @@ export class Hedge15mEngine {
     this.hedgeState = "done";
   }
 }
+
+
 
 
 
