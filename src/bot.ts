@@ -63,7 +63,8 @@ const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$
 
 const DUAL_SIDE_MIN_DRIFT = 0.02;          // 价格偏移>此值才重挂 (0.01太敏感导致频繁re-place)
 const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%), 低于此视为微行情不挂单
-const REACTIVE_MIN_VOL = 0.0012;           // reactive路径波动率门槛: 低于0.12%视为噪声, 不追dump
+const REACTIVE_MIN_VOL = 0.0010;           // reactive路径波动率门槛: 低于0.10%视为噪声, 不追dump
+const DUMP_LOG_THROTTLE_MS = 2000;         // 重复dump日志节流: 同key至少间隔2s
 
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
 const SUM_DIVERGENCE_MAX = 1.03;            // 入场时 upAsk+downAsk > 此值 → 拒绝入场 (sum≥1.03=市场公平定价, 无dump错定价edge)
@@ -391,6 +392,8 @@ export class Hedge15mEngine {
   private lastDumpCandidateDir = "";        // 上个cycle的dump方向
   private lastEntrySkipKey = "";            // 去重: 上次入场跳过的key (dir:price)
   private lastDumpLogKey = "";              // 去重: 上次SUM过高跳过日志的key
+  private lastDumpInfoKey = "";             // 去重: 上次DUMP信息日志key
+  private lastDumpInfoTs = 0;               // 节流: 上次DUMP信息日志时间戳
   private lastSignalSkipKey = "";           // 去重: 上次信号门控跳过的key
   private lastRepricingRejectKey = "";      // 去重: 上次重定价拒绝的key
   private bsmRejectThrottle = new Map<string, number>(); // 去重: BSM拒绝日志按key节流(30s/key)
@@ -1164,6 +1167,8 @@ export class Hedge15mEngine {
     this.bsmRejectThrottle.clear();
     this.lastBsmRejectReason = "";
     this.lastDumpLogKey = "";
+    this.lastDumpInfoKey = "";
+    this.lastDumpInfoTs = 0;
     this._volGateLoggedThisRound = false;
     this._earlyEntryLoggedThisRound = false;
     this.dirAlignedCount = 0;
@@ -1447,7 +1452,13 @@ export class Hedge15mEngine {
                         const flow = getTakerFlowRatio();
                         const depth = getDepthImbalance();
                         const liq = getLiquidationInfo();
-                        logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} BTC=${btcDir} flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);
+                        const dumpInfoKey = `${candidate.dir}:${candidate.askPrice.toFixed(2)}:${Math.round(this.currentDumpDrop * 1000)}:${btcDir}:${flow.direction}:${depth.direction}:${liq.direction}:${liq.intensity}`;
+                        const now = Date.now();
+                        if (dumpInfoKey !== this.lastDumpInfoKey || now - this.lastDumpInfoTs >= DUMP_LOG_THROTTLE_MS) {
+                          this.lastDumpInfoKey = dumpInfoKey;
+                          this.lastDumpInfoTs = now;
+                          logger.info(`HEDGE15M DUMP${mispricing.candidates.length > 1 ? ` (选${candidate.dir.toUpperCase()})` : ""}${currentSum <= SUM_DIVERGENCE_MIN ? " [强方向]" : ""}: ${this.dumpDetected} (sum=${currentSum.toFixed(2)} BTC=${btcDir} flow=${flow.ratio.toFixed(2)}/${flow.direction} depth=${depth.ratio.toFixed(2)}/${depth.direction} liq=${liq.direction}/${liq.intensity})`);
+                        }
                         await this.buyLeg1(
                           trader,
                           rnd,
