@@ -1,4 +1,4 @@
-import * as fs from "fs";
+﻿import * as fs from "fs";
 import * as path from "path";
 import { writeDecisionAudit } from "./decisionAudit";
 import { logger } from "./logger";
@@ -31,10 +31,10 @@ const MAX_SHARES      = 150;      // 单腿上限150份 (低价入场EV+大, 允
 const DUMP_THRESHOLD  = 0.08;     // ask 跌幅 ≥8% 触发Leg1 (基准值, 低价位会动态降低)
 const DUMP_THRESHOLD_LOW_PRICE = 0.06;  // ask≤$0.22时降到6% (低价位EV已高, 不需等大跌)
 const DUMP_LOW_PRICE_CUTOFF = 0.22;     // 低价位分界线
-const ENTRY_WINDOW_S  = 660;      // 开局11分钟内监控砸盘, 窗口关闭=ROUND-660=240s=MIN_ENTRY_SECS
+const ENTRY_WINDOW_S  = 780;      // 开局13分钟内监控砸盘, 窗口关闭=ROUND-780=120s=MIN_ENTRY_SECS
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
-const MIN_ENTRY_SECS  = 240;      // 剩余 <4分钟不开新仓 (放宽: 低价入场EV+即使时间短, 4min足够结算)
+const MIN_ENTRY_SECS  = 120; // 剩余 <2分钟不开新仓 (放开到最后120s)
 const MAX_ENTRY_ASK   = 0.35;     // Leg1 入场价上限 (实盘: ≤$0.35时EV≥$0.15/份@50%胜率)
 const MIN_ENTRY_ASK   = 0.18;     // Leg1 入场价下限, 深度砸盘时低价=高EV (dumpThreshold已过滤噪声)
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
@@ -978,8 +978,8 @@ export class Hedge15mEngine {
     // ── 应用运行时参数 ──
     this.rtDumpConfirmCycles = options.dumpConfirmCycles ?? DUMP_CONFIRM_CYCLES;
     const ewPreset = options.entryWindowPreset ?? "medium";
-    if (ewPreset === "short") { this.rtEntryWindowS = 360; this.rtMinEntrySecs = 360; }
-    else if (ewPreset === "long") { this.rtEntryWindowS = 660; this.rtMinEntrySecs = 180; }
+    if (ewPreset === "short") { this.rtEntryWindowS = 600; this.rtMinEntrySecs = 300; }
+    else if (ewPreset === "long") { this.rtEntryWindowS = 810; this.rtMinEntrySecs = 90; }
     else { this.rtEntryWindowS = ENTRY_WINDOW_S; this.rtMinEntrySecs = MIN_ENTRY_SECS; }
     this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
     this.rtDualSideMaxAsk = options.dualSideMaxAsk ?? DUAL_SIDE_MAX_ASK;
@@ -2584,3 +2584,5 @@ export class Hedge15mEngine {
     this.hedgeState = "done";
   }
 }
+
+
