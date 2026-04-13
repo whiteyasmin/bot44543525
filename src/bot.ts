@@ -1577,7 +1577,7 @@ export class Hedge15mEngine {
       dir: dir as "up" | "down",
       askPrice,
       maxEntryAsk,
-      minEntryAsk: (typeof dynamicMinAsk !== 'undefined' ? dynamicMinAsk : MIN_ENTRY_ASK),
+      minEntryAsk: rnd.secondsLeft > 660 ? 0.20 : rnd.secondsLeft > 480 ? 0.15 : MIN_ENTRY_ASK,
       directionalBias,
     });
     if (!plan.allowed) {
