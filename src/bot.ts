@@ -1114,13 +1114,19 @@ export class Hedge15mEngine {
     logger.info(`Hedge15m stopped. P/L: $${this.totalProfit.toFixed(2)}`);  
   }
 
-  private async refreshBalance(): Promise<void> {
+  private async refreshBalance(expectedMin?: number): Promise<void> {
     if (!this.trader) return;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const fresh = await this.trader.getBalance();
         if (fresh > 0) {
-          this.balance = fresh;
+          // 如果提供了预期底线 (比如刚结算完但链上延迟没到账), 则取这两者的大值
+          if (expectedMin && fresh < expectedMin - 0.5) {
+            logger.info(`Chain balance $${fresh.toFixed(2)} lags expected $${expectedMin.toFixed(2)}, keeping optimistic balance`);
+            this.balance = expectedMin;
+          } else {
+            this.balance = fresh;
+          }
           this.savePaperRuntimeSnapshot();
           return;
         }
@@ -1918,8 +1924,8 @@ export class Hedge15mEngine {
     // 价格精度 0.01
     // ── 预检查: 将limit价钳制到effectiveMaxAsk, 避免边界震荡导致挂→取消循环 ──
     const effectiveMaxAsk = this.getEffectiveMaxAsk();
-    const upLimit = Math.min(Math.round(idealUpLimit * 100) / 100, effectiveMaxAsk);
-    const downLimit = Math.min(Math.round(idealDownLimit * 100) / 100, effectiveMaxAsk);
+    let upLimit = Math.min(Math.round(idealUpLimit * 100) / 100, effectiveMaxAsk);
+    let downLimit = Math.min(Math.round(idealDownLimit * 100) / 100, effectiveMaxAsk);
 
     const upInRange = upLimit >= DUAL_SIDE_MIN_ASK;
     const downInRange = downLimit >= DUAL_SIDE_MIN_ASK;
@@ -1967,8 +1973,24 @@ export class Hedge15mEngine {
       return;
     }
 
-    const upBsEntry = upInRange ? this.evaluateBsEntry("up", upLimit, this.secondsLeft, "dual-side") : null;
-    const downBsEntry = downInRange ? this.evaluateBsEntry("down", downLimit, this.secondsLeft, "dual-side") : null;
+    let validUpLimit = upLimit;
+    let upBsEntry = upInRange ? this.evaluateBsEntry("up", validUpLimit, this.secondsLeft, "dual-side") : null;
+    while (upBsEntry && !upBsEntry.allowed && validUpLimit >= DUAL_SIDE_MIN_ASK) {
+      validUpLimit = Math.round((validUpLimit - 0.01) * 100) / 100;
+      upBsEntry = this.evaluateBsEntry("up", validUpLimit, this.secondsLeft, "dual-side");
+    }
+    if (upBsEntry && !upBsEntry.allowed) upBsEntry = null;
+    upLimit = validUpLimit;
+
+    let validDownLimit = downLimit;
+    let downBsEntry = downInRange ? this.evaluateBsEntry("down", validDownLimit, this.secondsLeft, "dual-side") : null;
+    while (downBsEntry && !downBsEntry.allowed && validDownLimit >= DUAL_SIDE_MIN_ASK) {
+      validDownLimit = Math.round((validDownLimit - 0.01) * 100) / 100;
+      downBsEntry = this.evaluateBsEntry("down", validDownLimit, this.secondsLeft, "dual-side");
+    }
+    if (downBsEntry && !downBsEntry.allowed) downBsEntry = null;
+    downLimit = validDownLimit;
+
     if (upBsEntry && !upBsEntry.allowed) this.logBsReject("dual-side-pre", "up", upLimit, upBsEntry);
     if (downBsEntry && !downBsEntry.allowed) this.logBsReject("dual-side-pre", "down", downLimit, downBsEntry);
 
@@ -2543,13 +2565,14 @@ export class Hedge15mEngine {
       settlementReason,
     });
 
+    // ── 结算 P/L 校验: 链上余额 vs 本地预期 ──
+    const expectedBalance = preSettleBalance + returnVal;
+    
     // 等待链上结算生效后再同步余额
     await sleep(5000);
-    await this.refreshBalance();
+    await this.refreshBalance(expectedBalance);
 
-    // ── 结算 P/L 校验: 链上余额 vs 本地预期 ──
     if (this.tradingMode === "live") {
-      const expectedBalance = preSettleBalance + returnVal;
       const drift = Math.abs(this.balance - expectedBalance);
       if (drift > 0.50) {
         logger.warn(`SETTLE P/L DRIFT: expected=$${expectedBalance.toFixed(2)} actual=$${this.balance.toFixed(2)} drift=$${drift.toFixed(2)} (cost=$${this.totalCost.toFixed(2)} return=$${returnVal.toFixed(2)})`);
