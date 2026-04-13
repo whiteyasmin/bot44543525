@@ -36,7 +36,7 @@ const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
 const MIN_ENTRY_SECS  = 120; // 剩余 <2分钟不开新仓 (放开到最后120s)
 const MAX_ENTRY_ASK   = 0.35;     // Leg1 入场价上限 (实盘: ≤$0.35时EV≥$0.15/份@50%胜率)
-const MIN_ENTRY_ASK   = 0.18;     // Leg1 入场价下限, 深度砸盘时低价=高EV (dumpThreshold已过滤噪声)
+const MIN_ENTRY_ASK   = 0.10;     // Leg1 入场价下限, 深度砸盘时低价=高EV (放宽至极低价捡漏)
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
 const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
 const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 60s内反方向移动超过 0.10% 才拒绝dump
@@ -2584,5 +2584,6 @@ export class Hedge15mEngine {
     this.hedgeState = "done";
   }
 }
+
 
 
