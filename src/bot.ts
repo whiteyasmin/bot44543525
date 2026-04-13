@@ -74,7 +74,11 @@ const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const MIN_NET_EDGE = 0.08;                  // net edge <8% 不做
+const NON_FLAT_MIN_NET_EDGE = 0.10;         // 非flat也提高到10%, 过滤边际噪声单
 const FLAT_MIN_NET_EDGE = 0.12;             // flat行情抬高到12%, 降低噪声入场
+const PROB_SHRINK_LAMBDA = 0.35;            // 概率收缩强度: p' = 0.5 + λ(p-0.5)
+const REACTIVE_MIN_ALIGNMENT_SCORE = 1;     // 盘口信号质量门槛: aligned-contra >= 1
+const REACTIVE_ALIGNMENT_EDGE_OVERRIDE = 0.20; // edge≥20%时允许越过信号门槛
 const MID_NET_EDGE = 0.15;                  // 8%~15% 小仓
 const HIGH_NET_EDGE = 0.25;                 // 15%~25% 正常仓, >25% 强信号仓
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
@@ -1607,22 +1611,38 @@ export class Hedge15mEngine {
     const bsFairRaw = bsEntry.fairRaw;
     const bsWinRate = bsEntry.fairKelly;
     const bsEdgeNet = bsEntry.effectiveEdge;
-    if (directionalBias === "flat" && bsEdgeNet < FLAT_MIN_NET_EDGE) {
-      this.trackRoundRejectReason(`flat-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(FLAT_MIN_NET_EDGE * 100).toFixed(0)}%`);
-      const skipKey = `flat-edge:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEdgeNet * 1000)}`;
+    const shrunkFairRaw = 0.5 + PROB_SHRINK_LAMBDA * (bsFairRaw - 0.5);
+    const shrunkKellyWinRate = 0.5 + PROB_SHRINK_LAMBDA * (bsWinRate - 0.5);
+    const shrunkEdgeNet = shrunkFairRaw - bsEntry.effectiveCost;
+    const minEdgeForRegime = directionalBias === "flat" ? FLAT_MIN_NET_EDGE : NON_FLAT_MIN_NET_EDGE;
+    if (shrunkEdgeNet < minEdgeForRegime) {
+      this.trackRoundRejectReason(`regime-edge: ${(shrunkEdgeNet * 100).toFixed(1)}% < ${(minEdgeForRegime * 100).toFixed(0)}%`);
+      const skipKey = `regime-edge:${dir}:${directionalBias}:${askPrice.toFixed(2)}:${Math.floor(shrunkEdgeNet * 1000)}`;
       if (skipKey !== this.lastSignalSkipKey) {
         this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M REACTIVE SKIP: flat edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(FLAT_MIN_NET_EDGE * 100).toFixed(0)}%`);
+        logger.info(`HEDGE15M REACTIVE SKIP: ${directionalBias} shrunk-edge ${(shrunkEdgeNet * 100).toFixed(1)}% < ${(minEdgeForRegime * 100).toFixed(0)}%`);
       }
       return;
     }
+
+    const alignmentScore = this.dirAlignedCount - this.dirContraCount;
+    if (alignmentScore < REACTIVE_MIN_ALIGNMENT_SCORE && shrunkEdgeNet < REACTIVE_ALIGNMENT_EDGE_OVERRIDE) {
+      this.trackRoundRejectReason(`alignment: score=${alignmentScore} edge=${(shrunkEdgeNet * 100).toFixed(1)}%`);
+      const skipKey = `align:${dir}:${alignmentScore}:${Math.floor(shrunkEdgeNet * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M REACTIVE SKIP: weak signals score=${alignmentScore} edge=${(shrunkEdgeNet * 100).toFixed(1)}%`);
+      }
+      return;
+    }
+
     const netEdgeTier = this.getNetEdgeTier(bsEdgeNet);
 
     // ── Half-Kelly分层仓位: 越便宜买越多, 再叠加趋势加权 ──
     // Kelly: f* = (p*b - q) / b, b = (1-ask)/ask, Half-Kelly = f*/2
     const odds = (1 - askPrice) / askPrice;  // 赔率
     // 用BSM公允胜率替代固定KELLY_WIN_RATE, 更准确反映当前数学期望
-    const kellyFull = (bsWinRate * odds - (1 - bsWinRate)) / odds;
+    const kellyFull = (shrunkKellyWinRate * odds - (1 - shrunkKellyWinRate)) / odds;
     // ── EV+分层Kelly上限: 越便宜EV越高, 允许更大仓位 ──
     const kellyCapForPrice = askPrice <= 0.15 ? 0.45 : askPrice <= 0.20 ? 0.40 : askPrice <= 0.25 ? 0.35 : askPrice <= 0.30 ? 0.32 : askPrice <= 0.35 ? 0.30 : 0.27;
     // 连亏缩仓: 每连亏1次Kelly×0.85, 最低×0.4, 赢1次重置
@@ -1644,9 +1664,9 @@ export class Hedge15mEngine {
     // MOMENTUM REJECT已过滤zero-sum重定价, 剩余contra信号不应惩罚仓位
     if (this.dirAlignedCount >= 3) {
       budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.05; // 3→+5%, 4→+10%, 5→+15%...
-      logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} netEdge=${(bsEdgeNet*100).toFixed(1)}% tier=${netEdgeTier.label}`);
+      logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} score=${alignmentScore} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} edgeRaw=${(bsEdgeNet*100).toFixed(1)}% edgeShrunk=${(shrunkEdgeNet*100).toFixed(1)}% tier=${netEdgeTier.label}`);
     } else {
-      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} netEdge=${(bsEdgeNet*100).toFixed(1)}%`);
+      logger.info(`KELLY SIG: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} score=${alignmentScore} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} edgeRaw=${(bsEdgeNet*100).toFixed(1)}% edgeShrunk=${(shrunkEdgeNet*100).toFixed(1)}%`);
     }
     budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
