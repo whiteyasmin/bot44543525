@@ -287,45 +287,7 @@ tr:hover{background:rgba(118,183,255,.03)}
             <label>仿真余额</label>
             <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
           </div>
-          <div>
-            <label>砸盘确认</label>
-            <select id="cfg-dump-confirm">
-              <option value="1" selected>1周期 (默认, 快速)</option>
-              <option value="2">2周期 (更稳)</option>
-              <option value="3">3周期 (保守)</option>
-            </select>
-          </div>
-          <div>
-            <label>入场窗口</label>
-            <select id="cfg-entry-window">
-              <option value="short">短 6min</option>
-              <option value="medium" selected>中 11min / 截止4min</option>
-              <option value="long">长 13min / 截止2min</option>
-            </select>
-          </div>
-
-          <div>
-            <label>反应价格上限</label>
-            <select id="cfg-max-entry-ask">
-              <option value="0.30">≤$0.30 (仍需净edge≥8%)</option>
-              <option value="0.35" selected>≤$0.35 (仍需净edge≥8%)</option>
-            </select>
-          </div>
-          <div>
-            <label>预挂价格上限</label>
-            <select id="cfg-dual-max-ask">
-              <option value="0.30">≤$0.30 (仍需净edge≥8%)</option>
-              <option value="0.35" selected>≤$0.35 (仍需净edge≥8%)</option>
-            </select>
-          </div>
-          <div>
-            <label>仓位计算</label>
-            <select id="cfg-kelly">
-              <option value="0.25">1/4 Kelly (轻仓)</option>
-              <option value="0.50" selected>1/2 Kelly (默认)</option>
-              <option value="0.75">3/4 Kelly (重仓)</option>
-            </select>
-          </div>
+          <div style="grid-column: span 3; font-size:12px; color:var(--muted); margin-top:8px;">运行参数由后台策略生成 (仓位/时间窗/阈值)</div>
           <div>
             <label>资金地址</label>
             <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
@@ -413,15 +375,11 @@ async function startBot() {
   const fa = document.getElementById('cfg-fa').value.trim();
   const paperBalance = Number(document.getElementById('cfg-paper-balance').value || '100');
   const paperSessionMode = document.getElementById('cfg-paper-session-mode').value;
-  const dumpConfirmCycles = Number(document.getElementById('cfg-dump-confirm').value);
-  const entryWindowPreset = document.getElementById('cfg-entry-window').value;
-  const maxEntryAsk = Number(document.getElementById('cfg-max-entry-ask').value);
-  const dualSideMaxAsk = Number(document.getElementById('cfg-dual-max-ask').value);
-  const kellyFraction = Number(document.getElementById('cfg-kelly').value);
+  
   if (mode === 'live' && !pk) { alert('请先填写私钥'); return; }
   if (mode === 'live' && !fa) { alert('请先填写资金地址'); return; }
   try {
-    const base = { mode, paperBalance, paperSessionMode, dumpConfirmCycles, entryWindowPreset, maxEntryAsk, dualSideMaxAsk, kellyFraction };
+    const base = { mode, paperBalance, paperSessionMode };
     const payload = mode === 'paper' ? base : { ...base, privateKey: pk, funderAddress: fa };
     const r = await fetch(API+'/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'include'});
     const d = await r.json();
@@ -801,3 +759,6 @@ function render(s) {
 </script>
 </body>
 </html>
+
+
+
