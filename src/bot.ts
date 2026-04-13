@@ -1339,7 +1339,6 @@ export class Hedge15mEngine {
                 trendContraPct: TREND_CONTRA_PCT,
                 momentumWindowSec: MOMENTUM_WINDOW_SEC,
                 trendWindowSec: TREND_WINDOW_SEC,
-                btcMovePct: getBtcMovePct(),
               });
 
               if (mispricing.bothSidesDumping) {
