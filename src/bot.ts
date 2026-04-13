@@ -1,4 +1,4 @@
-﻿import * as fs from "fs";
+import * as fs from "fs";
 import * as path from "path";
 import { writeDecisionAudit } from "./decisionAudit";
 import { logger } from "./logger";
@@ -31,12 +31,12 @@ const MAX_SHARES      = 150;      // 单腿上限150份 (低价入场EV+大, 允
 const DUMP_THRESHOLD  = 0.08;     // ask 跌幅 ≥8% 触发Leg1 (基准值, 低价位会动态降低)
 const DUMP_THRESHOLD_LOW_PRICE = 0.06;  // ask≤$0.22时降到6% (低价位EV已高, 不需等大跌)
 const DUMP_LOW_PRICE_CUTOFF = 0.22;     // 低价位分界线
-const ENTRY_WINDOW_S  = 780;      // 开局13分钟内监控砸盘, 窗口关闭=ROUND-780=120s=MIN_ENTRY_SECS
+const ENTRY_WINDOW_S  = 660;      // 开局11分钟内监控砸盘, 窗口关闭=ROUND-660=240s=MIN_ENTRY_SECS
 const ROUND_DURATION  = 900;      // 15分钟
 const TAKER_FEE       = 0.02;     // Polymarket taker fee ~2%
-const MIN_ENTRY_SECS  = 120; // 剩余 <2分钟不开新仓 (放开到最后120s)
+const MIN_ENTRY_SECS  = 120;      // 剩余 <4分钟不开新仓 (放宽: 低价入场EV+即使时间短, 4min足够结算)
 const MAX_ENTRY_ASK   = 0.35;     // Leg1 入场价上限 (实盘: ≤$0.35时EV≥$0.15/份@50%胜率)
-const MIN_ENTRY_ASK   = 0.10;     // Leg1 入场价下限, 深度砸盘时低价=高EV (放宽至极低价捡漏)
+const MIN_ENTRY_ASK   = 0.10;     // Leg1 入场价下限, 深度砸盘时低价=高EV (dumpThreshold已过滤噪声)
 const DIRECTIONAL_MOVE_PCT = 0.0012;       // 回合内价格移动超过 0.12% 才形成方向偏置
 const MOMENTUM_WINDOW_SEC = 60;            // 短期动量窗口 60秒
 const MOMENTUM_CONTRA_PCT = 0.0010;        // BTC 60s内反方向移动超过 0.10% 才拒绝dump
@@ -87,7 +87,7 @@ const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 // ── 资金安全守护 ──
 const MIN_BALANCE_TO_TRADE = 5;             // 余额<$5停止交易 (不够开最小仓)
 const MAX_SESSION_LOSS_PCT = 0.35;          // 单次会话亏损超过初始资金35%→暂停交易 (更早止损保留本金)
-const CONSECUTIVE_LOSS_PAUSE = 5;           // 连续亏损5次→暂停1轮冷静期 (更快适应市场regime变化)
+const CONSECUTIVE_LOSS_PAUSE = 3;           // 连续亏损5次→暂停1轮冷静期 (更快适应市场regime变化)
 
 export type PaperSessionMode = "session" | "persistent";
 
@@ -662,18 +662,18 @@ export class Hedge15mEngine {
     const effectiveEdge = fairRaw - effectiveCost;
 
     if (effectiveEdge < MIN_NET_EDGE) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "net-edge<5%" };
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "net-edge<8%" };
     }
     // Doji检测: 用 |ln(S/K)| (BTC偏离幅度) 而非 |d| (σ√T归一化后的值)
     // 15分钟期权σ√T≈0.003, BTC偏$15→|d|=0.06但|ln(S/K)|=0.00015
     // 旧阈值|d|<0.05误杀: BTC偏$10就触发doji (砸盘场景BTC可能确实没大动)
     // 新阈值: |ln(S/K)|<0.0001 (BTC偏<0.01%≈$10) 才是真doji
-    if (lnMoneyness < 0.0001 && effectiveEdge < 0.15) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<15%" };
+    if (lnMoneyness < 0.0001 && effectiveEdge < 0.18) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<18%" };
     }
     // near-doji: BTC偏<0.03% (≈$30) — 方向不明确, 要求更高edge
-    if (lnMoneyness < 0.0003 && effectiveEdge < 0.08) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<8%" };
+    if (lnMoneyness < 0.0003 && effectiveEdge < 0.12) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<12%" };
     }
 
     return { allowed: true, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "ok" };
@@ -978,8 +978,8 @@ export class Hedge15mEngine {
     // ── 应用运行时参数 ──
     this.rtDumpConfirmCycles = options.dumpConfirmCycles ?? DUMP_CONFIRM_CYCLES;
     const ewPreset = options.entryWindowPreset ?? "medium";
-    if (ewPreset === "short") { this.rtEntryWindowS = 600; this.rtMinEntrySecs = 300; }
-    else if (ewPreset === "long") { this.rtEntryWindowS = 810; this.rtMinEntrySecs = 90; }
+    if (ewPreset === "short") { this.rtEntryWindowS = 360; this.rtMinEntrySecs = 360; }
+    else if (ewPreset === "long") { this.rtEntryWindowS = 660; this.rtMinEntrySecs = 180; }
     else { this.rtEntryWindowS = ENTRY_WINDOW_S; this.rtMinEntrySecs = MIN_ENTRY_SECS; }
     this.rtMaxEntryAsk = options.maxEntryAsk ?? MAX_ENTRY_ASK;
     this.rtDualSideMaxAsk = options.dualSideMaxAsk ?? DUAL_SIDE_MAX_ASK;
@@ -1396,12 +1396,12 @@ export class Hedge15mEngine {
                 const candidate = mispricing.candidates[0];
                 if (candidate) {
                   // ── 早期价格过滤: ask低于MIN_ENTRY_ASK时不尝试入场 (避免无用循环) ──
-                  if (candidate.askPrice < MIN_ENTRY_ASK) {
-                    // 去重: 只在首次或方向变化时打日志
+                  const dynamicMinAsk = elapsed > 660 ? 0.20 : elapsed > 480 ? 0.15 : MIN_ENTRY_ASK;
+                  if (candidate.askPrice < dynamicMinAsk) {
                     const skipKey = `minask:${candidate.dir}:${candidate.askPrice.toFixed(2)}`;
                     if (skipKey !== this.lastEntrySkipKey) {
                       this.lastEntrySkipKey = skipKey;
-                      logger.warn(`Hedge15m Leg1 skipped: ask=${candidate.askPrice.toFixed(2)} < MIN_ENTRY_ASK=${MIN_ENTRY_ASK}`);
+                      logger.warn(`Hedge15m Leg1 skipped (dynamic floor): ask=${candidate.askPrice.toFixed(2)} < floor=${dynamicMinAsk} (elapsed=${Math.floor(elapsed)}s)`);
                     }
                   }
                   // ── 早期价格过滤: ask高于MAX_ENTRY_ASK时不尝试 ──
@@ -1577,7 +1577,7 @@ export class Hedge15mEngine {
       dir: dir as "up" | "down",
       askPrice,
       maxEntryAsk,
-      minEntryAsk: MIN_ENTRY_ASK,
+      minEntryAsk: (typeof dynamicMinAsk !== 'undefined' ? dynamicMinAsk : MIN_ENTRY_ASK),
       directionalBias,
     });
     if (!plan.allowed) {
@@ -2584,8 +2584,3 @@ export class Hedge15mEngine {
     this.hedgeState = "done";
   }
 }
-
-
-
-
-
