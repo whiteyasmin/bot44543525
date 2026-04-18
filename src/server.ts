@@ -202,13 +202,41 @@ app.get("/api/download-all", auth, (_req, res) => {
     historyRows = Array.isArray(raw) ? raw : Array.isArray(raw.history) ? raw.history : [];
   } catch { /* empty */ }
 
-  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
-  const hSep    = "|---|------|------|------|--------|------|------|------|------|------|------|--------|----------|";
+  const fmtPct = (value: unknown): string => typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "-";
+  const fmtNum = (value: unknown, digits = 2): string => typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "-";
+  const safeNum = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
+
+  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | Fair | EffCost | Edge | AskSum | Vol5m | 份数 | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
+  const hSep    = "|---|------|------|------|--------|------|---------|------|--------|------|------|------|------|------|------|------|--------|----------|";
   const hRows = historyRows.map((h: any, i: number) => {
     const price = h.leg1FillPrice > 0 ? h.leg1FillPrice : h.leg1Price || 0;
     const pf = h.profit >= 0 ? `+$${h.profit.toFixed(2)}` : `-$${Math.abs(h.profit).toFixed(2)}`;
-    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${h.entrySource || "-"} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
+    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${fmtPct(h.entryBsFair)} | ${fmtNum(h.entryEffectiveCost, 3)} | ${fmtPct(h.entryEffectiveEdge)} | ${fmtNum(h.entryAskSum, 2)} | ${fmtPct(h.entryVolatility5m)} | ${(h.leg1Shares || 0).toFixed(0)} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${h.entrySource || "-"} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
   });
+
+  const calibrationBins = [
+    { label: "<0%", min: -Infinity, max: 0 },
+    { label: "0-5%", min: 0, max: 0.05 },
+    { label: "5-10%", min: 0.05, max: 0.10 },
+    { label: "10-15%", min: 0.10, max: 0.15 },
+    { label: "15-25%", min: 0.15, max: 0.25 },
+    { label: ">=25%", min: 0.25, max: Infinity },
+  ];
+  const cHeader = "| Edge桶 | 笔数 | 胜率 | 平均入场价 | 平均Fair | 平均Edge | 平均AskSum | 平均Vol5m | 盈亏 | 实际胜率-均价 |";
+  const cSep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
+  const cRows = calibrationBins.map((bin) => {
+    const rows = historyRows.filter((h: any) => typeof h.entryEffectiveEdge === "number" && h.entryEffectiveEdge >= bin.min && h.entryEffectiveEdge < bin.max);
+    if (rows.length === 0) return "";
+    const wins = rows.filter((h: any) => h.result === "WIN").length;
+    const avgPrice = rows.reduce((sum: number, h: any) => sum + safeNum(h.leg1FillPrice || h.leg1Price), 0) / rows.length;
+    const avgFair = rows.reduce((sum: number, h: any) => sum + safeNum(h.entryBsFair), 0) / rows.length;
+    const avgEdge = rows.reduce((sum: number, h: any) => sum + safeNum(h.entryEffectiveEdge), 0) / rows.length;
+    const avgAskSum = rows.reduce((sum: number, h: any) => sum + safeNum(h.entryAskSum), 0) / rows.length;
+    const avgVol = rows.reduce((sum: number, h: any) => sum + safeNum(h.entryVolatility5m), 0) / rows.length;
+    const pnl = rows.reduce((sum: number, h: any) => sum + safeNum(h.profit), 0);
+    const realizedVsBreakeven = wins / rows.length - avgPrice;
+    return `| ${bin.label} | ${rows.length} | ${((wins / rows.length) * 100).toFixed(1)}% | $${avgPrice.toFixed(2)} | ${(avgFair * 100).toFixed(1)}% | ${(avgEdge * 100).toFixed(1)}% | ${avgAskSum.toFixed(2)} | ${(avgVol * 100).toFixed(3)}% | ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)} | ${(realizedVsBreakeven * 100).toFixed(1)}% |`;
+  }).filter(Boolean);
 
   // ── Decision audit table ──
   let decisions: Array<Record<string, unknown>> = [];
@@ -253,6 +281,11 @@ app.get("/api/download-all", auth, (_req, res) => {
     hHeader,
     hSep,
     ...hRows,
+    ``,
+    `## EV校准 (${cRows.length}个桶)`,
+    cHeader,
+    cSep,
+    ...cRows,
     ``,
     `## 决策审计 (${decisions.length}条)`,
     dHeader,
