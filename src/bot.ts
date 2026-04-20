@@ -161,9 +161,15 @@ const PANIC_HEDGE_MIN_ASK = 0.18;
 const PANIC_HEDGE_MAX_ASK = 0.90;
 const PANIC_HEDGE_MAX_ATTEMPTS = 3;
 const PANIC_HEDGE_RETRY_MS = 4000;
-const REGIME_TREND_M180 = 0.0012;
-const REGIME_SHOCK_M60 = 0.0018;
-const REGIME_SHOCK_VOL5M = 0.0024;
+const REGIME_TREND_M180 = 0.0016;
+const REGIME_SHOCK_M60 = 0.0022;
+const REGIME_SHOCK_VOL5M = 0.0032;
+const REGIME_TREND_BTC_MOVE = 0.0010;
+const REGIME_TREND_M60_CONFIRM = 0.0007;
+const REGIME_SHOCK_SUM = 1.10;
+const REGIME_SHOCK_SUM_M60 = 0.0014;
+const REGIME_SWITCH_CONFIRM_STREAK = 3;
+const REGIME_SWITCH_COOLDOWN_MS = 20_000;
 const COUNTER_WIN_TREND_ASK_BONUS = 0.04;
 const COUNTER_WIN_TREND_MAX_ASK_HARD = 0.78;
 
@@ -477,6 +483,10 @@ export class Hedge15mEngine {
   private loopRunId = 0;
   private activeStrategyMode: "none" | "mispricing" | "trend" | "counter-win" = "none";
   private currentTrendBias: "up" | "down" | "flat" = "flat";
+  private counterRegimeStable: CounterWinRegime = "mean-revert";
+  private counterRegimeCandidate: CounterWinRegime = "mean-revert";
+  private counterRegimeCandidateStreak = 0;
+  private counterRegimeLastSwitchAt = 0;
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
   private currentDumpVelocity: "fast" | "normal" | "slow" = "normal"; // dump速度
   private leg1MakerFill = false;             // Leg1是否maker成交
@@ -678,12 +688,53 @@ export class Hedge15mEngine {
     const sum = this.upAsk + this.downAsk;
 
     const trendAligned = this.currentTrendBias === counterDir;
-    const trendStrong = Math.abs(m180) >= REGIME_TREND_M180 || Math.abs(btcMove) >= DIRECTIONAL_TREND_MIN_BTC_MOVE;
-    const shockLike = vol5m >= REGIME_SHOCK_VOL5M || Math.abs(m60) >= REGIME_SHOCK_M60 || (sum >= 1.07 && Math.abs(m60) >= MOMENTUM_CONTRA_PCT);
+    const dirSign = counterDir === "up" ? 1 : -1;
+    const dirM60 = m60 * dirSign;
+    const dirM180 = m180 * dirSign;
+    const dirBtcMove = btcMove * dirSign;
 
-    if (shockLike) return "shock";
-    if (trendAligned && trendStrong) return "trend";
-    return "mean-revert";
+    const trendStrong =
+      dirM180 >= REGIME_TREND_M180 &&
+      dirBtcMove >= REGIME_TREND_BTC_MOVE &&
+      dirM60 >= REGIME_TREND_M60_CONFIRM;
+    const shockLike =
+      vol5m >= REGIME_SHOCK_VOL5M ||
+      Math.abs(m60) >= REGIME_SHOCK_M60 ||
+      (sum >= REGIME_SHOCK_SUM && Math.abs(m60) >= REGIME_SHOCK_SUM_M60);
+
+    const rawRegime: CounterWinRegime = shockLike ? "shock" : (trendAligned && trendStrong ? "trend" : "mean-revert");
+    if (rawRegime === this.counterRegimeStable) {
+      this.counterRegimeCandidate = rawRegime;
+      this.counterRegimeCandidateStreak = 0;
+      return this.counterRegimeStable;
+    }
+
+    const now = Date.now();
+    if (rawRegime === "shock") {
+      this.counterRegimeStable = "shock";
+      this.counterRegimeCandidate = "shock";
+      this.counterRegimeCandidateStreak = 0;
+      this.counterRegimeLastSwitchAt = now;
+      return this.counterRegimeStable;
+    }
+
+    if (now - this.counterRegimeLastSwitchAt < REGIME_SWITCH_COOLDOWN_MS) {
+      return this.counterRegimeStable;
+    }
+
+    if (this.counterRegimeCandidate === rawRegime) {
+      this.counterRegimeCandidateStreak += 1;
+    } else {
+      this.counterRegimeCandidate = rawRegime;
+      this.counterRegimeCandidateStreak = 1;
+    }
+
+    if (this.counterRegimeCandidateStreak >= REGIME_SWITCH_CONFIRM_STREAK) {
+      this.counterRegimeStable = rawRegime;
+      this.counterRegimeCandidateStreak = 0;
+      this.counterRegimeLastSwitchAt = now;
+    }
+    return this.counterRegimeStable;
   }
 
   private getDerivativesBias(dir: "up" | "down"): {
@@ -1365,6 +1416,10 @@ export class Hedge15mEngine {
     this.skips = 0;
     this.consecutiveLosses = 0;
     this.consecutiveWins = 0;
+    this.counterRegimeStable = "mean-revert";
+    this.counterRegimeCandidate = "mean-revert";
+    this.counterRegimeCandidateStreak = 0;
+    this.counterRegimeLastSwitchAt = 0;
     this.totalProfit = 0;
     this.sessionProfit = persistedPaperState && this.tradingMode === "paper" && this.paperSessionMode === "persistent"
       ? persistedPaperState.sessionProfit
