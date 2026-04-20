@@ -49,6 +49,9 @@ let liqWsConnected = false;
 let fundingRate = 0;                                     // 最新资金费率(正=多付空)
 let fundingRateTs = 0;                                   // 最后更新时间
 let nextFundingTime = 0;
+let openInterest = 0;
+let openInterestTs = 0;
+let roundStartOpenInterest = 0;
 
 const recentPrices: { t: number; p: number }[] = [];
 const MAX_SAMPLES = 1500;
@@ -279,6 +282,23 @@ async function fetchFundingRate(): Promise<void> {
   } catch {}
 }
 
+async function fetchOpenInterest(): Promise<void> {
+  try {
+    const resp = await fetch(
+      "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
+      { signal: AbortSignal.timeout(5000) },
+    );
+    if (!resp.ok) return;
+    const d = await resp.json();
+    const nextOi = parseFloat(d.openInterest);
+    if (Number.isFinite(nextOi) && nextOi > 0) {
+      openInterest = nextOi;
+      openInterestTs = Date.now();
+      if (roundStartOpenInterest <= 0) roundStartOpenInterest = nextOi;
+    }
+  } catch {}
+}
+
 // --- Sample loop ---
 
 async function sampleLoop(): Promise<void> {
@@ -306,6 +326,7 @@ async function sampleLoop(): Promise<void> {
     // Q: 每60个周期(~18s)刷新一次资金费率
     if (cycle % 60 === 0) {
       fetchFundingRate().catch(() => {});
+      fetchOpenInterest().catch(() => {});
     }
     cycle++;
     if (wsFresh) {
@@ -330,6 +351,7 @@ export function startPriceFeed(): Promise<void> {
   startDepthWebSocket();           // O
   startLiquidationWebSocket();     // P
   fetchFundingRate().catch(() => {}); // Q: 立即获取一次
+  fetchOpenInterest().catch(() => {});
   sampleLoop();
   return new Promise<void>((resolve) => {
     let waited = 0;
@@ -394,6 +416,9 @@ export function setRoundStartPrice(price = 0): void {
   liqSellVol = 0;
   liqBuyCount = 0;
   liqSellCount = 0;
+  if (openInterest > 0) {
+    roundStartOpenInterest = openInterest;
+  }
 }
 
 export function getRoundStartPrice(): number {
@@ -461,6 +486,7 @@ let _cachedLargeOrder: ReturnType<typeof _getLargeOrderInfo> | null = null;
 let _cachedDepth: ReturnType<typeof _getDepthImbalance> | null = null;
 let _cachedLiq: ReturnType<typeof _getLiquidationInfo> | null = null;
 let _cachedFunding: ReturnType<typeof _getFundingRateInfo> | null = null;
+let _cachedOpenInterest: ReturnType<typeof _getOpenInterestInfo> | null = null;
 
 function invalidateSignalCache(): void {
   _signalCacheTs = 0;
@@ -474,6 +500,7 @@ function refreshSignalCacheIfStale(): void {
   _cachedDepth = _getDepthImbalance();
   _cachedLiq = _getLiquidationInfo();
   _cachedFunding = _getFundingRateInfo();
+  _cachedOpenInterest = _getOpenInterestInfo();
   _signalCacheTs = Date.now();
 }
 
@@ -483,6 +510,7 @@ export function getLargeOrderInfo() { refreshSignalCacheIfStale(); return _cache
 export function getDepthImbalance() { refreshSignalCacheIfStale(); return _cachedDepth!; }
 export function getLiquidationInfo() { refreshSignalCacheIfStale(); return _cachedLiq!; }
 export function getFundingRateInfo() { refreshSignalCacheIfStale(); return _cachedFunding!; }
+export function getOpenInterestInfo() { refreshSignalCacheIfStale(); return _cachedOpenInterest!; }
 
 /**
  * 本回合 Taker 买卖比.
@@ -674,4 +702,35 @@ function _getFundingRateInfo(): {
   else if (fundingRate < -0.0001) direction = "short_pay";
   const extreme = Math.abs(fundingRate) >= 0.01;
   return { rate: fundingRate, direction, extreme, freshMs };
+}
+
+function _getOpenInterestInfo(): {
+  value: number;
+  baseline: number;
+  changePct: number;
+  direction: "long_build" | "short_cover" | "neutral";
+  fresh: boolean;
+} {
+  const fresh = openInterestTs > 0 && Date.now() - openInterestTs < 600_000;
+  if (!fresh || openInterest <= 0 || roundStartOpenInterest <= 0) {
+    return {
+      value: openInterest,
+      baseline: roundStartOpenInterest,
+      changePct: 0,
+      direction: "neutral",
+      fresh: false,
+    };
+  }
+  const changePct = (openInterest - roundStartOpenInterest) / roundStartOpenInterest;
+  let direction: "long_build" | "short_cover" | "neutral" = "neutral";
+  if (Math.abs(changePct) >= 0.003) {
+    direction = changePct > 0 ? "long_build" : "short_cover";
+  }
+  return {
+    value: openInterest,
+    baseline: roundStartOpenInterest,
+    changePct,
+    direction,
+    fresh,
+  };
 }

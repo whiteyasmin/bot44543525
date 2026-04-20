@@ -6,6 +6,7 @@ export interface HedgeEntryPlanInput {
   maxEntryAsk: number;
   minEntryAsk: number;
   directionalBias: DirectionalBias;
+  allowDirectionalContra?: boolean;
 }
 
 export interface EntryPlanResult {
@@ -20,6 +21,7 @@ export function planHedgeEntry(input: HedgeEntryPlanInput): EntryPlanResult {
     maxEntryAsk,
     minEntryAsk,
     directionalBias,
+    allowDirectionalContra = false,
   } = input;
 
   if (askPrice > maxEntryAsk) {
@@ -30,10 +32,10 @@ export function planHedgeEntry(input: HedgeEntryPlanInput): EntryPlanResult {
   }
   // BTC方向逆向拒绝: 市场重定价而非砸盘 (例: BTC跌时买UP=买反)
   // 仅在偏差直接对立时拒绝, flat不阻止
-  if (directionalBias === "down" && dir === "up") {
+  if (!allowDirectionalContra && directionalBias === "down" && dir === "up") {
     return { allowed: false, reason: `BTC偏向DOWN但买UP — 重定价而非砸盘` };
   }
-  if (directionalBias === "up" && dir === "down") {
+  if (!allowDirectionalContra && directionalBias === "up" && dir === "down") {
     return { allowed: false, reason: `BTC偏向UP但买DOWN — 重定价而非砸盘` };
   }
   return { allowed: true };

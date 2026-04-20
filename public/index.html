@@ -122,6 +122,30 @@ header h1{font-size:15px;letter-spacing:.03em}
 .hero3 .box{padding:8px 10px;border-radius:8px;background:rgba(8,15,24,.8);border:1px solid rgba(30,45,66,.6)}
 .hero3 .box .eye{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .hero3 .box .big{margin-top:3px;font:700 16px var(--mono)}
+.hero4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
+.hero4 .box{padding:8px 10px;border-radius:8px;background:rgba(8,15,24,.8);border:1px solid rgba(30,45,66,.6)}
+.hero4 .box .eye{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.hero4 .box .big{margin-top:3px;font:700 15px var(--mono)}
+.decision-lamp{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-bottom:8px;padding:10px 12px;border-radius:10px;
+  border:1px solid rgba(30,45,66,.6);background:rgba(8,15,24,.72)
+}
+.decision-lamp .left{display:flex;flex-direction:column;gap:2px}
+.decision-lamp .eyebrow{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.decision-lamp .headline{font:700 18px var(--mono)}
+.decision-lamp .sub{font-size:11px;color:var(--muted)}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;
+  font-size:11px;line-height:1;border:1px solid transparent
+}
+.pill::before{content:"";width:7px;height:7px;border-radius:999px;background:currentColor}
+.pill-trend{color:var(--blue);background:rgba(118,183,255,.08);border-color:rgba(118,183,255,.18)}
+.pill-dump{color:var(--green);background:rgba(66,211,146,.08);border-color:rgba(66,211,146,.18)}
+.pill-pre{color:var(--yellow);background:rgba(244,201,107,.08);border-color:rgba(244,201,107,.18)}
+.pill-idle{color:var(--muted);background:rgba(122,142,166,.08);border-color:rgba(122,142,166,.16)}
+.panel-note{margin-top:8px;padding:8px;border-radius:8px;background:rgba(8,15,24,.6);border:1px solid rgba(30,45,66,.45);font-size:11px}
+.panel-note .title{color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:10px;margin-bottom:4px}
 
 /* Config grid */
 .cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -147,6 +171,7 @@ tr:hover{background:rgba(118,183,255,.03)}
   .stat-strip{flex-wrap:wrap}
   .stat-strip .cell{flex:1 1 48%}
   .kv{grid-template-columns:1fr}
+  .hero4{grid-template-columns:repeat(2,1fr)}
 }
 </style>
 </head>
@@ -206,34 +231,42 @@ tr:hover{background:rgba(118,183,255,.03)}
       <!-- Col 2: Position & Market -->
       <div class="card c5">
         <h3>持仓 · 盘口</h3>
+        <div class="decision-lamp">
+          <div class="left">
+            <div class="eyebrow">错价 / EV 判断</div>
+            <div class="headline" id="hero-decision">--</div>
+            <div class="sub" id="hero-decision-sub">等待错价...</div>
+          </div>
+          <div id="hero-source-pill" class="pill pill-idle">待机</div>
+        </div>
+        <div class="hero4">
+          <div class="box"><div class="eye">策略类型</div><div class="big" id="hero-strategy">--</div></div>
+          <div class="box"><div class="eye">最佳EV</div><div class="big" id="hero-source">--</div></div>
+          <div class="box"><div class="eye">风险刹车</div><div class="big" id="hero-trend">--</div></div>
+          <div class="box"><div class="eye">入场路径</div><div class="big" id="hero-derivatives">--</div></div>
+        </div>
         <div class="kv">
           <div class="r"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
           <div class="r"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
           <div class="r"><span class="k">策略</span><span class="v" id="h-strategy-mode">--</span></div>
-          <div class="r"><span class="k">趋势</span><span class="v" id="h-trend-bias">--</span></div>
           <div class="r"><span class="k">BTC</span><span class="v" id="h-btc">--</span></div>
-          <div class="r"><span class="k">UP Ask · BS</span><span class="v" id="h-up-ev">--</span></div>
-          <div class="r"><span class="k">DN Ask · BS</span><span class="v" id="h-dn-ev">--</span></div>
-          <div class="r"><span class="k">BS公平值 UP/DN</span><span class="v" id="h-bs-fair">--</span></div>
+          <div class="r"><span class="k">UP Ask · EV</span><span class="v" id="h-up-ev">--</span></div>
+          <div class="r"><span class="k">DN Ask · EV</span><span class="v" id="h-dn-ev">--</span></div>
           <div class="r"><span class="k">净edge UP/DN</span><span class="v" id="h-net-edge">--</span></div>
-          <div class="r"><span class="k">有效成本 UP/DN</span><span class="v" id="h-eff-cost">--</span></div>
-          <div class="r"><span class="k">档位 UP/DN</span><span class="v" id="h-edge-tier">--</span></div>
           <div class="r"><span class="k">持仓</span><span class="v" id="h-leg1">--</span></div>
-          <div class="r"><span class="k">预挂单</span><span class="v" id="h-preorder">--</span></div>
-          <div class="r"><span class="k">入场EV阈值</span><span class="v" id="h-expected">--</span></div>
+          <div class="r"><span class="k">错价EV阈值</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
-          <div class="r"><span class="k">买卖流</span><span class="v" id="h-taker-flow">--</span></div>
-          <div class="r"><span class="k">量能/大单</span><span class="v" id="h-vol-large">--</span></div>
-          <div class="r"><span class="k">深度/强平</span><span class="v" id="h-depth-liq">--</span></div>
-          <div class="r"><span class="k">资金费率</span><span class="v" id="h-funding">--</span></div>
-          <div class="r"><span class="k">信号强度</span><span class="v" id="h-signal-strength">--</span></div>
-          <div class="r"><span class="k">持仓策略</span><span class="v" id="h-mid-exit">--</span></div>
+          <div class="r"><span class="k">风险刹车</span><span class="v" id="h-signal-strength">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
           <div class="r"><span class="k">最近BSM拒绝</span><span class="v" id="h-bsm-reject">--</span></div>
         </div>
+        <div class="panel-note">
+          <div class="title">当前入场解释</div>
+          <div id="entry-explainer">等待错价...</div>
+        </div>
         <div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(8,15,24,.6);font-size:11px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span style="color:var(--muted);font-weight:600">砸盘监控</span>
+            <span style="color:var(--muted);font-weight:600">错价监控</span>
             <span id="dump-status" style="font-family:var(--mono)">--</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;color:var(--muted)">
@@ -254,9 +287,9 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="box"><div class="eye">Edge状态</div><div class="big" id="a-warning">--</div></div>
         </div>
         <div class="kv single">
-          <div class="r"><span class="k">small 档 (8-15%)</span><span class="v" id="a-winrate">--</span></div>
-          <div class="r"><span class="k">normal 档 (15-25%)</span><span class="v" id="a-pf">--</span></div>
-          <div class="r"><span class="k">strong 档 (≥25%)</span><span class="v" id="a-dd">--</span></div>
+          <div class="r"><span class="k">small 档 (3-8%)</span><span class="v" id="a-winrate">--</span></div>
+          <div class="r"><span class="k">normal 档 (8-12%)</span><span class="v" id="a-pf">--</span></div>
+          <div class="r"><span class="k">strong 档 (≥12%)</span><span class="v" id="a-dd">--</span></div>
         </div>
         <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
           <h3 style="margin-bottom:6px">运行状态</h3>
@@ -304,10 +337,9 @@ tr:hover{background:rgba(118,183,255,.03)}
         <h3>运行参数</h3>
         <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px" id="params-bar">
           <span style="color:var(--muted)">仓位 <b id="p-kelly" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">预挂价格上限 <b id="p-dual-ask" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">反应价格上限 <b id="p-max-ask" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">净edge门槛 <b id="p-edge-rule" style="color:var(--text)">≥8%</b></span>
-          <span style="color:var(--muted)">砸盘确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">净edge门槛 <b id="p-edge-rule" style="color:var(--text)">错价≥3%</b></span>
+          <span style="color:var(--muted)">错价确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
         </div>
@@ -344,6 +376,30 @@ const API = '';
 let ws = null;
 let auditTimer = null;
 let latestState = null;
+
+function formatEntrySource(source) {
+  if (source === 'directional-reactive') return '趋势入场';
+  if (source === 'reactive-mispricing') return '错价入场';
+  if (source === 'counter-win') return '反向赌赢';
+  if (source === 'dual-side-preorder') return '预挂入场';
+  return source || '--';
+}
+
+function formatStrategyMode(mode) {
+  if (mode === 'trend') return '趋势辅助';
+  if (mode === 'mispricing') return '错价优先';
+  if (mode === 'counter-win') return '反向赌赢';
+  if (mode === 'none') return '待机';
+  return mode || '--';
+}
+
+function sourcePillClass(source) {
+  if (source === '趋势入场') return 'pill pill-trend';
+  if (source === '错价入场') return 'pill pill-dump';
+  if (source === '反向赌赢') return 'pill pill-trend';
+  if (source === '预挂入场') return 'pill pill-pre';
+  return 'pill pill-idle';
+}
 
 function fmtSecs(t) {
   const s = Math.max(0, Math.floor(t || 0));
@@ -417,7 +473,7 @@ function summarizeWinRate(items) {
 
 async function refreshAudit() {
   try {
-    if (latestState) { renderDirectionalAudit(latestState.history || []); if (!auditTimer) auditTimer = setInterval(refreshAudit, 15000); return; }
+    if (latestState) { renderDirectionalAudit(latestState.history || []); renderHistoryTable(latestState.history || []); if (!auditTimer) auditTimer = setInterval(refreshAudit, 15000); return; }
     const r = await fetch(API+'/api/audit',{credentials:'include'});
     if (!r.ok) return;
     const a = await r.json();
@@ -434,8 +490,48 @@ async function refreshAudit() {
     wEl.textContent = a.warnings && a.warnings.length ? a.warnings[0] : '无';
     wEl.title = a.warnings && a.warnings.length ? a.warnings.join('\n') : '';
     wEl.style.color = a.warnings && a.warnings.length ? '#ff6b6b' : '#42d392';
+    renderHistoryTable(a.history || []);
     if (!auditTimer) auditTimer = setInterval(refreshAudit, 15000);
   } catch {}
+}
+
+function renderHistoryTable(history) {
+  const tbody = document.getElementById('history-body');
+  if (!tbody) return;
+  const rows = (history || []).slice().reverse().slice(0,50);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="color:#7a8ea6;text-align:center;padding:12px">暂无交易历史，等待结算后显示</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(h => {
+    const cls = h.result==='WIN'?'tag-g':'tag-r';
+    const profit = Number(h.profit || 0);
+    const pf = profit>=0?'+\$'+profit.toFixed(2):'-\$'+Math.abs(profit).toFixed(2);
+    const fill = Number(h.leg1FillPrice || 0);
+    const signalPrice = Number(h.leg1Price || 0);
+    const l1 = fill>0?'\$'+fill.toFixed(2):'\$'+signalPrice.toFixed(2);
+    const est = h.estimated?'<span style="color:#f4c96b" title="估算"> ⚠</span>':'';
+    const bd = h.profitBreakdown?' title="'+String(h.profitBreakdown).replace(/"/g,'&quot;')+'"':'';
+    const hEdge = Number(h.entryEffectiveEdge || 0);
+    const hTier = h.entryEdgeTier || '--';
+    const src = formatEntrySource(h.entrySource);
+    const shares = Number(h.leg1Shares || 0);
+    const totalCost = Number(h.totalCost || 0);
+    const phShares = Number(h.panicHedgeShares || 0);
+    const phPrice = Number(h.panicHedgePrice || 0);
+    const ph = h.panicHedgeActive && phShares > 0 ? '<small style="color:#f4c96b"> + PH '+(h.panicHedgeDir||'--')+' $'+phPrice.toFixed(2)+' ×'+phShares.toFixed(0)+'</small>' : '';
+    const cumProfit = Number(h.cumProfit || 0);
+    const exitReason = String(h.exitReason || '-').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<tr><td>'+(h.time||'--')+'</td>'
+      +'<td><span class="tag '+cls+'">'+(h.result||'--')+'</span>'+est+'</td>'
+      +'<td>'+(h.leg1Dir||'--')+'</td>'
+      +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+shares.toFixed(0)+' · '+src+'</small>'+ph+'</td>'
+      +'<td style="color:'+(hEdge>=0.12?'#42d392':hEdge>=0.03?'#76b7ff':hEdge>=0?'#f4c96b':'#ff6b6b')+'">'+((hEdge>=0?'+':'')+(hEdge*100).toFixed(1))+'% '+hTier+'</td>'
+      +'<td>\$'+totalCost.toFixed(2)+'</td>'
+      +'<td style="color:'+(profit>=0?'#42d392':'#ff6b6b')+'"'+bd+'>'+pf+'</td>'
+      +'<td style="color:'+(cumProfit>=0?'#42d392':'#ff6b6b')+'">\$'+cumProfit.toFixed(2)+'</td>'
+      +'<td style="font-size:10px;color:#7a8ea6;max-width:180px;white-space:normal;line-height:1.3">'+exitReason+'</td></tr>';
+  }).join('');
 }
 
 function renderDirectionalAudit(history) {
@@ -453,8 +549,8 @@ function renderDirectionalAudit(history) {
     if (h.entryEdgeTier) return h.entryEdgeTier;
     const e = Number(h.entryEffectiveEdge || 0);
     if (e >= 0.25) return 'strong';
-    if (e >= 0.15) return 'normal';
-    if (e >= 0.08) return 'small';
+    if (e >= 0.12) return 'normal';
+    if (e >= 0.03) return 'small';
     return 'small';
   };
   const byTier = {
@@ -478,8 +574,8 @@ function renderDirectionalAudit(history) {
   eEl.style.color = avgEdge>0?'#42d392':avgEdge<0?'#ff6b6b':'#f4c96b';
   const strongWr = byTier.strong.length ? byTier.strong.filter(h=>h.result==='WIN').length/byTier.strong.length : null;
   const wEl = document.getElementById('a-warning');
-  if (avgEdge >= 0.15 && (strongWr == null || strongWr >= 0.50)) { wEl.textContent='edge健康'; wEl.style.color='#42d392'; }
-  else if (avgEdge < 0.08) { wEl.textContent='edge偏弱'; wEl.style.color='#ff6b6b'; }
+  if (avgEdge >= 0.12 && (strongWr == null || strongWr >= 0.50)) { wEl.textContent='edge健康'; wEl.style.color='#42d392'; }
+  else if (avgEdge < 0.03) { wEl.textContent='edge偏弱'; wEl.style.color='#ff6b6b'; }
   else { wEl.textContent='需观察'; wEl.style.color='#f4c96b'; }
 }
 
@@ -519,7 +615,7 @@ function render(s) {
   const bestEdge = Math.max(Number(s.upNetEdge || -1), Number(s.downNetEdge || -1));
   if (bestEdge > -1) {
     evEl0.textContent = (bestEdge>=0?'+':'') + (bestEdge * 100).toFixed(1) + '%';
-    evEl0.style.color = bestEdge>=0.15?'#42d392':bestEdge>=0.08?'#76b7ff':bestEdge>=0?'#f4c96b':'#ff6b6b';
+    evEl0.style.color = bestEdge>=0.12?'#42d392':bestEdge>=0.03?'#76b7ff':bestEdge>=0?'#f4c96b':'#ff6b6b';
   } else { evEl0.textContent='--'; evEl0.style.color=''; }
   // 实际EV: 历史平均每份盈利
   const avgEvEl = document.getElementById('s-avg-ev');
@@ -556,12 +652,67 @@ function render(s) {
   stEl.textContent = s.status || stMap[s.hedgeState] || s.hedgeState;
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
+  const strategyLabel = s.hedgeState === 'watching' ? '错价优先' : formatStrategyMode(s.activeStrategyMode);
   const strEl = document.getElementById('h-strategy-mode');
-  strEl.textContent = {none:'待机',mispricing:'砸盘持有'}[s.activeStrategyMode]||s.activeStrategyMode||'--';
-  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':'';
+  strEl.textContent = strategyLabel;
+  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='counter-win'?'#f4c96b':s.activeStrategyMode==='trend'?'#76b7ff':'';
+  const trendText = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
+  const trendColor = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'#8ea0b8';
   const trEl = document.getElementById('h-trend-bias');
-  trEl.textContent = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
-  trEl.style.color = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'';
+  if (trEl) {
+    trEl.textContent = trendText;
+    trEl.style.color = trendColor;
+  }
+  const currentEntrySource = formatEntrySource(s.hedgeState === 'leg1_filled' ? s.leg1EntrySource : '');
+  const srcEl = document.getElementById('h-entry-source');
+  const sourceColor = currentEntrySource==='趋势入场'?'#76b7ff':currentEntrySource==='错价入场'?'#42d392':currentEntrySource==='反向赌赢'?'#f4c96b':currentEntrySource==='预挂入场'?'#f4c96b':'#8ea0b8';
+  if (srcEl) {
+    srcEl.textContent = currentEntrySource;
+    srcEl.style.color = sourceColor;
+  }
+  const derivLabel = (s.derivativesBiasDirection||'flat') === 'up' ? '▲多头辅助' : (s.derivativesBiasDirection||'flat') === 'down' ? '▼空头辅助' : '中性';
+  const derivText = derivLabel + ' ' + ((s.derivativesBiasScore ?? 0)>=0?'+':'') + (s.derivativesBiasScore ?? 0);
+  const derivEl = document.getElementById('h-derivatives-bias');
+  const derivColor = (s.derivativesBiasDirection||'flat')==='up'?'#42d392':(s.derivativesBiasDirection||'flat')==='down'?'#ff6b6b':'#8ea0b8';
+  if (derivEl) {
+    derivEl.textContent = derivText;
+    derivEl.style.color = derivColor;
+  }
+  const al = s.dirAlignedCount||0, co = s.dirContraCount||0;
+  const signalNet = al - co;
+  const riskLabel = signalNet <= -3 ? '强反向' : signalNet <= -2 ? '偏反向' : signalNet >= 3 ? '顺风' : '正常';
+  const riskColor = signalNet <= -3 ? '#ff6b6b' : signalNet <= -2 ? '#f4c96b' : signalNet >= 3 ? '#42d392' : '#8ea0b8';
+  document.getElementById('hero-strategy').textContent = strategyLabel;
+  document.getElementById('hero-strategy').style.color = strEl.style.color || '#ecf3ff';
+  document.getElementById('hero-trend').textContent = riskLabel;
+  document.getElementById('hero-trend').style.color = riskColor;
+  document.getElementById('hero-derivatives').textContent = currentEntrySource === '--' ? '待机' : currentEntrySource;
+  document.getElementById('hero-derivatives').style.color = sourceColor || '#ecf3ff';
+  const sourcePill = document.getElementById('hero-source-pill');
+  sourcePill.textContent = currentEntrySource === '--' ? '待机' : currentEntrySource;
+  sourcePill.className = sourcePillClass(currentEntrySource);
+  const bestEdgePct = bestEdge > -1 ? bestEdge * 100 : null;
+  document.getElementById('hero-source').textContent = bestEdgePct == null ? '--' : ((bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%');
+  document.getElementById('hero-source').style.color = bestEdgePct == null ? '#ecf3ff' : bestEdge>=0.12?'#42d392':bestEdge>=0.03?'#76b7ff':bestEdge>=0?'#f4c96b':'#ff6b6b';
+  const decisionEl = document.getElementById('hero-decision');
+  const decisionSubEl = document.getElementById('hero-decision-sub');
+  if (s.hedgeState === 'leg1_filled') {
+    decisionEl.textContent = '持仓中';
+    decisionEl.style.color = '#42d392';
+    decisionSubEl.textContent = currentEntrySource + ' · ' + (s.hedgeLeg1Dir || '--') + ' · edge ' + ((Number(s.leg1EffectiveEdge||0)>=0?'+':'') + (Number(s.leg1EffectiveEdge||0)*100).toFixed(1) + '%');
+  } else if (bestEdgePct != null && bestEdgePct >= 3) {
+    decisionEl.textContent = 'EV 已过线';
+    decisionEl.style.color = '#42d392';
+    decisionSubEl.textContent = '错价优先 · 最佳净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '% · 趋势只做刹车';
+  } else if (bestEdgePct != null && bestEdgePct >= 0) {
+    decisionEl.textContent = '等更厚错价';
+    decisionEl.style.color = '#f4c96b';
+    decisionSubEl.textContent = '当前净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%，未到错价基础线 3%';
+  } else {
+    decisionEl.textContent = '等待错价';
+    decisionEl.style.color = '#8ea0b8';
+    decisionSubEl.textContent = '不等趋势单独给方向，先等市场价格给便宜货';
+  }
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
   // UP/DN asks with BS net-edge
   const upA = s.upAsk>0?s.upAsk.toFixed(2):'--';
@@ -570,17 +721,21 @@ function render(s) {
   const upEvStr = s.upAsk>0?fmtNetEdge(Number(s.upNetEdge||0)):'';
   const dnEvStr = s.downAsk>0?fmtNetEdge(Number(s.downNetEdge||0)):'';
   const upEvEl = document.getElementById('h-up-ev');
-  upEvEl.innerHTML = '\$'+upA+'<span style=\"margin-left:6px;color:'+(Number(s.upNetEdge||0)>=0.15?'#42d392':Number(s.upNetEdge||0)>=0.08?'#76b7ff':Number(s.upNetEdge||0)>=0?'#f4c96b':'#ff6b6b')+'\">'+(upEvStr||'')+'</span>';
+  upEvEl.innerHTML = '\$'+upA+'<span style=\"margin-left:6px;color:'+(Number(s.upNetEdge||0)>=0.12?'#42d392':Number(s.upNetEdge||0)>=0.03?'#76b7ff':Number(s.upNetEdge||0)>=0?'#f4c96b':'#ff6b6b')+'\">'+(upEvStr||'')+'</span>';
   const dnEvEl = document.getElementById('h-dn-ev');
-  dnEvEl.innerHTML = '\$'+dnA+'<span style=\"margin-left:6px;color:'+(Number(s.downNetEdge||0)>=0.15?'#42d392':Number(s.downNetEdge||0)>=0.08?'#76b7ff':Number(s.downNetEdge||0)>=0?'#f4c96b':'#ff6b6b')+'\">'+(dnEvStr||'')+'</span>';
+  dnEvEl.innerHTML = '\$'+dnA+'<span style=\"margin-left:6px;color:'+(Number(s.downNetEdge||0)>=0.12?'#42d392':Number(s.downNetEdge||0)>=0.03?'#76b7ff':Number(s.downNetEdge||0)>=0?'#f4c96b':'#ff6b6b')+'\">'+(dnEvStr||'')+'</span>';
   const bsFairEl = document.getElementById('h-bs-fair');
-  bsFairEl.textContent = (s.upBsFair>0?s.upBsFair.toFixed(3):'--')+' / '+(s.downBsFair>0?s.downBsFair.toFixed(3):'--');
-  bsFairEl.style.color = '#76b7ff';
+  if (bsFairEl) {
+    bsFairEl.textContent = (s.upBsFair>0?s.upBsFair.toFixed(3):'--')+' / '+(s.downBsFair>0?s.downBsFair.toFixed(3):'--');
+    bsFairEl.style.color = '#76b7ff';
+  }
   const netEdgeEl = document.getElementById('h-net-edge');
   netEdgeEl.textContent = ((s.upNetEdge>=0?'+':'')+(s.upNetEdge*100).toFixed(1)+'%')+' / '+((s.downNetEdge>=0?'+':'')+(s.downNetEdge*100).toFixed(1)+'%');
-  netEdgeEl.style.color = bestEdge>=0.15?'#42d392':bestEdge>=0.08?'#76b7ff':'#f4c96b';
-  document.getElementById('h-eff-cost').textContent = (s.upEffectiveCost>0?s.upEffectiveCost.toFixed(3):'--')+' / '+(s.downEffectiveCost>0?s.downEffectiveCost.toFixed(3):'--');
-  document.getElementById('h-edge-tier').textContent = (s.upEdgeTier||'--')+' / '+(s.downEdgeTier||'--');
+  netEdgeEl.style.color = bestEdge>=0.12?'#42d392':bestEdge>=0.03?'#76b7ff':'#f4c96b';
+  const effCostEl = document.getElementById('h-eff-cost');
+  if (effCostEl) effCostEl.textContent = (s.upEffectiveCost>0?s.upEffectiveCost.toFixed(3):'--')+' / '+(s.downEffectiveCost>0?s.downEffectiveCost.toFixed(3):'--');
+  const edgeTierEl = document.getElementById('h-edge-tier');
+  if (edgeTierEl) edgeTierEl.textContent = (s.upEdgeTier||'--')+' / '+(s.downEdgeTier||'--');
   const bsmRejectEl = document.getElementById('h-bsm-reject');
   bsmRejectEl.textContent = s.lastBsmRejectReason || '--';
   bsmRejectEl.style.color = s.lastBsmRejectReason ? '#f4c96b' : '#7a8ea6';
@@ -600,7 +755,7 @@ function render(s) {
   if (s.hedgeLeg1Price > 0) {
     const edge = Number(s.leg1EffectiveEdge || 0);
     evEl.textContent = (edge>=0?'+':'') + (edge * 100).toFixed(1) + '% · ' + (s.leg1EdgeTier || '--');
-    evEl.style.color = edge >= 0.15 ? '#42d392' : edge >= 0.08 ? '#76b7ff' : '#f4c96b';
+    evEl.style.color = edge >= 0.12 ? '#42d392' : edge >= 0.03 ? '#76b7ff' : '#f4c96b';
   } else {
     evEl.textContent = '--'; evEl.style.color = '';
   }
@@ -609,29 +764,36 @@ function render(s) {
   // 信号强度: dirAligned / dirContra
   const sigEl = document.getElementById('h-signal-strength');
   if (sigEl) {
-    const al = s.dirAlignedCount||0, co = s.dirContraCount||0;
-    const net = al - co;
-    const label = net >= 3 ? '强一致' : net >= 1 ? '偏一致' : net <= -2 ? '有矛盾' : '中性';
-    sigEl.textContent = '\u2191'+al+' \u2193'+co+' '+label;
-    sigEl.style.color = net >= 3 ? '#42d392' : net >= 1 ? '#76b7ff' : net <= -2 ? '#ff6b6b' : '#7a8ea6';
+    sigEl.textContent = riskLabel + ' · 趋势' + trendText + ' · 信号' + al + '/' + co;
+    sigEl.style.color = riskColor;
   }
   // 持仓策略: net-edge显示
   const meEl = document.getElementById('h-mid-exit');
   if (s.hedgeState === 'leg1_filled') {
     const edge = Number(s.leg1EffectiveEdge || 0);
-    const srcLabel = '砸盘持有';
+    const srcLabel = currentEntrySource;
     meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' edge '+(edge>=0?'+':'')+(edge*100).toFixed(1)+'% ('+(s.leg1EdgeTier||'--')+')</span>';
   } else {
     meEl.textContent = '--'; meEl.style.color = '';
   }
+  const explainerEl = document.getElementById('entry-explainer');
+  if (explainerEl) {
+    if (s.hedgeState === 'leg1_filled') {
+      const edge = Number(s.leg1EffectiveEdge || 0);
+      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + (s.panicHedgeActive ? '，已触发panic hedge：'+(s.panicHedgeDir||'--')+'。' : '，若持仓被急速打反才启用panic hedge。');
+    } else {
+      explainerEl.textContent = '当前无持仓。策略=错价优先；若薄错价明显买反，且反方向高价票也有EV+，允许小仓反向赌赢。';
+    }
+  }
   if (s.hedgeLeg1Price>0) {
     const posEdge = Number(s.leg1EffectiveEdge || 0);
-    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' edge'+(posEdge>=0?'+':'')+(posEdge*100).toFixed(1)+'%</span>';
+    const ph = s.panicHedgeActive ? ' <span class="tag tag-y">PH '+(s.panicHedgeDir||'--')+' @\$'+Number(s.panicHedgePrice||0).toFixed(2)+' ×'+Number(s.panicHedgeShares||0).toFixed(0)+'</span>' : '';
+    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' edge'+(posEdge>=0?'+':'')+(posEdge*100).toFixed(1)+'%</span>'+ph;
   } else {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '≤$'+s.effectiveMaxAsk.toFixed(2)+' (净edge≥8%)';
+  xEl.textContent = '时间桶+动量定方向；错价优先；持仓被急速打反才FAK panic hedge';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -684,6 +846,13 @@ function render(s) {
       frEl.style.color = fe?'#ff6b6b':fd==='long_pay'?'#f4c96b':fd==='short_pay'?'#76b7ff':'#7a8ea6';
     }
   }
+  const oiEl = document.getElementById('h-open-interest');
+  if (oiEl) {
+    const chg = Number(s.openInterestChangePct || 0) * 100;
+    const regime = s.openInterestRegime || '--';
+    oiEl.textContent = s.openInterestFresh ? ((chg>=0?'+':'') + chg.toFixed(2) + '% ' + regime) : '--';
+    oiEl.style.color = regime === 'long_build' || regime === 'short_cover' ? '#42d392' : regime === 'short_build' || regime === 'long_unwind' ? '#ff6b6b' : '#8ea0b8';
+  }
   const prEl = document.getElementById('h-preorder');
   if (prEl) {
     const up=s.preOrderUpPrice||0, dn=s.preOrderDownPrice||0;
@@ -697,9 +866,10 @@ function render(s) {
   if (s.rtKellyFraction != null) {
     const kMap = {0.25:'1/4 Kelly',0.5:'1/2 Kelly',0.75:'3/4 Kelly'};
     document.getElementById('p-kelly').textContent = kMap[s.rtKellyFraction] || (s.rtKellyFraction*100).toFixed(0)+'% Kelly';
-    document.getElementById('p-dual-ask').textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
+    const dualAskEl = document.getElementById('p-dual-ask');
+    if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
     document.getElementById('p-max-ask').textContent = '≤$'+s.rtMaxEntryAsk.toFixed(2);
-    document.getElementById('p-edge-rule').textContent = '≥8%';
+    document.getElementById('p-edge-rule').textContent = '3% / 8% / 12%';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }
@@ -725,27 +895,7 @@ function render(s) {
   liEl.textContent = fmtIssue(d.localBookStaleCount, d.localBookCrossedCount);
   liEl.style.color = ((d.localBookStaleCount||0)>0||(d.localBookCrossedCount||0)>0)?'#f4c96b':'#42d392';
 
-  // History table
-  const tbody = document.getElementById('history-body');
-  const rows = (s.history||[]).slice().reverse().slice(0,50);
-  tbody.innerHTML = rows.map(h => {
-    const cls = h.result==='WIN'?'tag-g':'tag-r';
-    const pf = h.profit>=0?'+\$'+h.profit.toFixed(2):'-\$'+Math.abs(h.profit).toFixed(2);
-    const l1 = h.leg1FillPrice>0?'\$'+h.leg1FillPrice.toFixed(2):'\$'+(h.leg1Price||0).toFixed(2);
-    const est = h.estimated?'<span style="color:#f4c96b" title="估算"> ⚠</span>':'';
-    const bd = h.profitBreakdown?' title="'+h.profitBreakdown.replace(/"/g,'&quot;')+'"':'';
-    const hEdge = Number(h.entryEffectiveEdge || 0);
-    const hTier = h.entryEdgeTier || '--';
-    return '<tr><td>'+h.time+'</td>'
-      +'<td><span class="tag '+cls+'">'+h.result+'</span>'+est+'</td>'
-      +'<td>'+h.leg1Dir+'</td>'
-      +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+(h.leg1Shares||0).toFixed(0)+'</small></td>'
-      +'<td style="color:'+(hEdge>=0.15?'#42d392':hEdge>=0.08?'#76b7ff':hEdge>=0?'#f4c96b':'#ff6b6b')+'">'+((hEdge>=0?'+':'')+(hEdge*100).toFixed(1))+'% '+hTier+'</td>'
-      +'<td>\$'+(h.totalCost||0).toFixed(2)+'</td>'
-      +'<td style="color:'+(h.profit>=0?'#42d392':'#ff6b6b')+'"'+bd+'>'+pf+'</td>'
-      +'<td style="color:'+(h.cumProfit>=0?'#42d392':'#ff6b6b')+'">\$'+(h.cumProfit||0).toFixed(2)+'</td>'
-      +'<td style="font-size:10px;color:#7a8ea6;max-width:180px;white-space:normal;line-height:1.3">'+(h.exitReason||'-')+'</td></tr>';
-  }).join('');
+  renderHistoryTable(s.history || []);
 
   renderDirectionalAudit(s.history || []);
 }

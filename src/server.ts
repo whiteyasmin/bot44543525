@@ -105,6 +105,15 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
 // --- Bot ---
 const bot = new Hedge15mEngine();
 
+function formatEntrySource(source: unknown): string {
+  const value = String(source || "");
+  if (value === "directional-reactive") return "趋势入场";
+  if (value === "reactive-mispricing") return "错价入场";
+  if (value === "counter-win") return "反向赌赢";
+  if (value === "dual-side-preorder") return "预挂入场";
+  return value || "-";
+}
+
 // --- Routes ---
 
 app.post("/api/login", (req, res) => {
@@ -202,12 +211,13 @@ app.get("/api/download-all", auth, (_req, res) => {
     historyRows = Array.isArray(raw) ? raw : Array.isArray(raw.history) ? raw.history : [];
   } catch { /* empty */ }
 
-  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
-  const hSep    = "|---|------|------|------|--------|------|------|------|------|------|------|--------|----------|";
+  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | Panic Hedge | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
+  const hSep    = "|---|------|------|------|--------|------|-------------|------|------|------|------|------|--------|----------|";
   const hRows = historyRows.map((h: any, i: number) => {
     const price = h.leg1FillPrice > 0 ? h.leg1FillPrice : h.leg1Price || 0;
     const pf = h.profit >= 0 ? `+$${h.profit.toFixed(2)}` : `-$${Math.abs(h.profit).toFixed(2)}`;
-    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${h.entrySource || "-"} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
+    const panic = h.panicHedgeActive ? `${h.panicHedgeDir || "-"} $${(h.panicHedgePrice || 0).toFixed(2)} x${(h.panicHedgeShares || 0).toFixed(0)}` : "-";
+    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | ${panic} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${formatEntrySource(h.entrySource)} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
   });
 
   // ── Decision audit table ──

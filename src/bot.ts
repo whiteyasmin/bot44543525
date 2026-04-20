@@ -10,7 +10,7 @@ import {
   getBtcMovePct, getBtcDirection,
   getTakerFlowRatio, getTakerFlowTrend,
   getVolumeSpikeInfo, getLargeOrderInfo,
-  getDepthImbalance, getLiquidationInfo, getFundingRateInfo,
+  getDepthImbalance, getLiquidationInfo, getFundingRateInfo, getOpenInterestInfo,
   setRoundSecsLeft, setRoundStartPrice, stopPriceFeed,
   getRecentMomentum, getRecentVolatility,
 } from "./btcPrice";
@@ -22,8 +22,82 @@ import { planHedgeEntry } from "./executionPlanner";
 import {
   evaluateMispricingOpportunity,
   getDirectionalBias as getDirectionalBiasSignal,
+  type MispricingCandidate,
 } from "./strategyEngine";
 import { Trader, type TraderDiagnostics } from "./trader";
+
+const DIRECTIONAL_REACTIVE_ENABLED = true;
+const DISABLE_DUAL_SIDE_PREORDER = true;
+const DIRECTIONAL_MIN_POSITIVE_EDGE = 0.01;
+const DIRECTIONAL_SMALL_EDGE = 0.03;
+const DIRECTIONAL_MEDIUM_EDGE = 0.05;
+const DIRECTIONAL_SMALL_BUDGET_SCALE = 0.35;
+const DIRECTIONAL_MEDIUM_BUDGET_SCALE = 0.60;
+const DIRECTIONAL_CHASE_MOMENTUM = 0.0012;
+const DIRECTIONAL_TREND_MIN_BTC_MOVE = 0.0008;
+const DIRECTIONAL_TREND_MIN_EDGE = 0.02;
+const DIRECTIONAL_TREND_MAX_ASK = 0.72;
+const DIRECTIONAL_TREND_PULLBACK_MAX_ASK = 0.58;
+const TIME_BUCKET_WARMUP_END = 60;
+const TIME_BUCKET_EARLY_END = 240;
+const TIME_BUCKET_MAIN_END = 660;
+const TIME_BUCKET_LATE_END = 780;
+const TIME_BUCKET_EARLY_COUNTER_EDGE = 0.18;
+const TIME_BUCKET_MAIN_COUNTER_EDGE = 0.12;
+const TIME_BUCKET_LATE_COUNTER_EDGE = 0.18;
+const TIME_BUCKET_EXTREME_COUNTER_ASK = 0.15;
+const TIME_BUCKET_EXTREME_COUNTER_EDGE = 0.18;
+const TIME_BUCKET_WARMUP_BUDGET_CAP = 0.05;
+const TIME_BUCKET_EARLY_BUDGET_CAP = 0.10;
+const TIME_BUCKET_MAIN_BUDGET_CAP = 0.18;
+const TIME_BUCKET_LATE_BUDGET_CAP = 0.10;
+const TIME_BUCKET_FINAL_BUDGET_CAP = 0.06;
+const PANIC_HEDGE_ENABLED = true;
+const PANIC_HEDGE_MIN_SECS_LEFT = 60;
+const PANIC_HEDGE_MAX_ASK = 0.88;
+const PANIC_HEDGE_MIN_ASK = 0.30;
+const PANIC_HEDGE_AGAINST_BTC_MOVE = 0.0010;
+const PANIC_HEDGE_AGAINST_MOMENTUM_60 = 0.0008;
+const PANIC_HEDGE_FAIR_DROP = 0.16;
+const PANIC_HEDGE_LEG_FAIR_CUTOFF = 0.38;
+const PANIC_HEDGE_BUDGET_PCT = 0.10;
+const PANIC_HEDGE_MAX_COST_PCT_OF_LEG = 0.75;
+const PANIC_HEDGE_MAX_ATTEMPTS = 2;
+const PANIC_HEDGE_RETRY_MS = 4000;
+const MISPRICING_MIN_EDGE = 0.03;
+const MISPRICING_STRONG_DROP = 0.12;
+const MISPRICING_LOW_PRICE = 0.22;
+const MISPRICING_STRONG_CONTRA_SCORE = -3;
+const MISPRICING_CONTRA_EDGE_OVERRIDE = 0.12;
+const MISPRICING_NORMAL_EDGE = 0.08;
+const MISPRICING_FAST_LANE_EDGE = 0.12;
+const MISPRICING_LOW_TICKET_EDGE = 0.12;
+const MISPRICING_ABSOLUTE_MIN_ASK = 0.06;
+const MISPRICING_COUNTER_BTC_MOVE = 0.0005;
+const MISPRICING_COUNTER_BTC_MIN_EDGE = MISPRICING_NORMAL_EDGE;
+const MISPRICING_STRONG_COUNTER_MIN_EDGE = 0.18;
+const MISPRICING_STRONG_COUNTER_MAX_ASK = 0.15;
+const MISPRICING_UNFAVORED_FAIR = 0.30;
+const MISPRICING_DEEP_UNFAVORED_FAIR = 0.25;
+const MISPRICING_DEEP_UNFAVORED_MIN_EDGE = MISPRICING_FAST_LANE_EDGE;
+const COUNTER_WIN_ENABLED = true;
+const COUNTER_WIN_MIN_EDGE = 0.02;
+const COUNTER_WIN_STRONG_EDGE = 0.05;
+const COUNTER_WIN_MIN_ASK = 0.55;
+const COUNTER_WIN_MAX_ASK = 0.86;
+const COUNTER_WIN_MAX_BUDGET_PCT = 0.14;
+const DOJI_LN_MONEYNESS = 0.0001;
+const NEAR_DOJI_LN_MONEYNESS = 0.0003;
+const DOJI_MAX_BUDGET_PCT = 0.08;
+const NEAR_DOJI_MAX_BUDGET_PCT = 0.12;
+const DOJI_HIGH_ASK_CUTOFF = 0.20;
+const DOJI_HIGH_ASK_MAX_BUDGET_PCT = 0.08;
+const EARLY_DOJI_SECS_LEFT = 600;
+const EARLY_DOJI_MIN_DROP = 0.15;
+const EARLY_DOJI_MAX_BUDGET_PCT = 0.05;
+const EARLY_SMALL_EDGE_SECS_LEFT = 780;
+const EARLY_SMALL_EDGE_MIN_EDGE = MISPRICING_NORMAL_EDGE;
+const EARLY_COUNTER_MOMENTUM_MIN_EDGE = MISPRICING_FAST_LANE_EDGE;
 
 // ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
@@ -72,6 +146,7 @@ const SUM_DIVERGENCE_RELAXED = 1.05;        // 大dump(≥12%)时放宽sum上限
 const SUM_DIVERGENCE_MIN = 0.85;            // 入场时 upAsk+downAsk < 此值 → 方向性强、砸盘更可信
 const DUMP_CONFIRM_CYCLES = 1;              // 连续 N 个循环看到 dump 才触发入场 (1: dumpThreshold已过滤噪声, 无需多次确认)
 const MIN_ENTRY_ELAPSED = 30;               // 回合开始至少30s后才允许反应式入场 (30s数据已足够稳定)
+const BOOT_ROUND_MAX_ELAPSED = MIN_ENTRY_ELAPSED; // 启动时只允许接入刚开局的回合, 禁止局中启动入仓
 const TREND_BUDGET_BOOST = 0.03;            // 趋势一致在Kelly基础上再加3%
 const TREND_BUDGET_CUT = 0.02;              // 方向中性时在Kelly基础上减2%
 const MIN_NET_EDGE = 0.05;                  // net edge <8% 不做
@@ -79,8 +154,8 @@ const NON_FLAT_MIN_NET_EDGE = 0.08;         // 非flat也提高到10%, 过滤边
 const FLAT_MIN_NET_EDGE = 0.10;             // flat行情抬高到12%, 降低噪声入场
 const REACTIVE_MIN_ALIGNMENT_SCORE = 1;     // 盘口信号质量门槛: aligned-contra >= 1
 const REACTIVE_ALIGNMENT_EDGE_OVERRIDE = 0.20; // edge≥20%时允许越过信号门槛
-const MID_NET_EDGE = 0.15;                  // 8%~15% 小仓
-const HIGH_NET_EDGE = 0.25;                 // 15%~25% 正常仓, >25% 强信号仓
+const MID_NET_EDGE = MISPRICING_NORMAL_EDGE;
+const HIGH_NET_EDGE = MISPRICING_FAST_LANE_EDGE;
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 
@@ -119,6 +194,12 @@ export interface Hedge15mState {
   hedgeLeg1Dir: string;
   hedgeLeg1Price: number;
   hedgeTotalCost: number;
+  panicHedgeActive: boolean;
+  panicHedgeDir: string;
+  panicHedgePrice: number;
+  panicHedgeShares: number;
+  panicHedgeCost: number;
+  panicHedgeReason: string;
   dumpDetected: string;
   maxEntryAsk: number;
   activeStrategyMode: string;
@@ -179,6 +260,14 @@ export interface Hedge15mState {
   fundingRate: number;
   fundingDirection: string;
   fundingExtreme: boolean;
+  // R: Futures Open Interest
+  openInterest: number;
+  openInterestChangePct: number;
+  openInterestDirection: string;
+  openInterestFresh: boolean;
+  openInterestRegime: string;
+  derivativesBiasScore: number;
+  derivativesBiasDirection: string;
   rtDumpConfirmCycles: number;
   rtEntryWindowS: number;
   rtMinEntrySecs: number;
@@ -267,6 +356,12 @@ export interface HedgeHistoryEntry {
   entryEffectiveCost?: number; // 入场综合成本(含费率/滑点)
   entryEffectiveEdge?: number; // 入场净edge = bsFair - effectiveCost
   entryEdgeTier?: string;   // net-edge档位: small/normal/strong
+  panicHedgeActive?: boolean;
+  panicHedgeDir?: string;
+  panicHedgePrice?: number;
+  panicHedgeShares?: number;
+  panicHedgeCost?: number;
+  panicHedgeReason?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -275,6 +370,16 @@ function sleep(ms: number): Promise<void> {
 
 function timeStr(): string {
   return new Date().toTimeString().slice(0, 8);
+}
+
+type TimeBucketName = "warmup" | "early" | "main" | "late" | "final";
+
+interface TimeBucketRule {
+  name: TimeBucketName;
+  elapsed: number;
+  trendMinEdge: number;
+  counterMispricingMinEdge: number;
+  budgetCap: number;
 }
 
 /** 给 Promise 加超时保护，超时返回 null 而不 reject */
@@ -363,7 +468,7 @@ export class Hedge15mEngine {
   private roundMomentumRejects = 0;
   private roundEntryAskRejects = 0;
   private loopRunId = 0;
-  private activeStrategyMode: "none" | "mispricing" | "trend" = "none";
+  private activeStrategyMode: "none" | "mispricing" | "trend" | "counter-win" = "none";
   private currentTrendBias: "up" | "down" | "flat" = "flat";
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
   private currentDumpVelocity: "fast" | "normal" | "slow" = "normal"; // dump速度
@@ -375,6 +480,18 @@ export class Hedge15mEngine {
   private leg1EdgeTier = "--";
   private preOrderUpId = "";                 // 双侧预挂单: UP token GTC orderId
   private preOrderDownId = "";               // 双侧预挂单: DOWN token GTC orderId
+  private panicHedgeActive = false;
+  private panicHedgeDir: "up" | "down" | "" = "";
+  private panicHedgePrice = 0;
+  private panicHedgeShares = 0;
+  private panicHedgeToken = "";
+  private panicHedgeCost = 0;
+  private panicHedgeReason = "";
+  private panicHedgeOrderId = "";
+  private panicHedgeFilledAt = 0;
+  private panicHedgeInFlight = false;
+  private panicHedgeAttempts = 0;
+  private panicHedgeLastAttemptAt = 0;
   private preOrderUpPrice = 0;
   private preOrderDownPrice = 0;
   private preOrderUpShares = 0;
@@ -495,7 +612,7 @@ export class Hedge15mEngine {
   }
 
   private getRoundDirectionalBias(): "up" | "down" | "flat" {
-    return getDirectionalBiasSignal({
+    const baseBias = getDirectionalBiasSignal({
       roundStartPrice: this.roundStartBtcPrice,
       btcNow: getBtcPrice(),
       shortMomentum: getRecentMomentum(MOMENTUM_WINDOW_SEC),
@@ -504,6 +621,138 @@ export class Hedge15mEngine {
       momentumContraPct: MOMENTUM_CONTRA_PCT,
       trendContraPct: TREND_CONTRA_PCT,
     });
+    if (baseBias === "flat") return "flat";
+
+    const derivatives = this.getDerivativesBias(baseBias);
+    if (derivatives.contra >= 2 && derivatives.aligned === 0) return "flat";
+    return baseBias;
+  }
+
+  private getTimeBucket(secsLeft = this.secondsLeft): TimeBucketRule {
+    const elapsed = Math.max(0, Math.min(ROUND_DURATION, ROUND_DURATION - secsLeft));
+    if (elapsed < TIME_BUCKET_WARMUP_END) {
+      return {
+        name: "warmup",
+        elapsed,
+        trendMinEdge: 0.03,
+        counterMispricingMinEdge: 0.99,
+        budgetCap: TIME_BUCKET_WARMUP_BUDGET_CAP,
+      };
+    }
+    if (elapsed < TIME_BUCKET_EARLY_END) {
+      return {
+        name: "early",
+        elapsed,
+        trendMinEdge: DIRECTIONAL_TREND_MIN_EDGE,
+        counterMispricingMinEdge: TIME_BUCKET_EARLY_COUNTER_EDGE,
+        budgetCap: TIME_BUCKET_EARLY_BUDGET_CAP,
+      };
+    }
+    if (elapsed < TIME_BUCKET_MAIN_END) {
+      return {
+        name: "main",
+        elapsed,
+        trendMinEdge: DIRECTIONAL_TREND_MIN_EDGE,
+        counterMispricingMinEdge: TIME_BUCKET_MAIN_COUNTER_EDGE,
+        budgetCap: TIME_BUCKET_MAIN_BUDGET_CAP,
+      };
+    }
+    if (elapsed < TIME_BUCKET_LATE_END) {
+      return {
+        name: "late",
+        elapsed,
+        trendMinEdge: 0.03,
+        counterMispricingMinEdge: TIME_BUCKET_LATE_COUNTER_EDGE,
+        budgetCap: TIME_BUCKET_LATE_BUDGET_CAP,
+      };
+    }
+    return {
+      name: "final",
+      elapsed,
+      trendMinEdge: 0.05,
+      counterMispricingMinEdge: 0.99,
+      budgetCap: TIME_BUCKET_FINAL_BUDGET_CAP,
+    };
+  }
+
+  private getMomentumBucketBias(): "up" | "down" | "flat" {
+    if (this.currentTrendBias !== "flat") return this.currentTrendBias;
+
+    const btcMovePct = getBtcMovePct();
+    const btcDir = getBtcDirection();
+    const m60 = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+    const m180 = getRecentMomentum(TREND_WINDOW_SEC);
+    const sameUp = btcDir === "up" && m60 > 0 && m180 > -(MOMENTUM_CONTRA_PCT * 0.5);
+    const sameDown = btcDir === "down" && m60 < 0 && m180 < (MOMENTUM_CONTRA_PCT * 0.5);
+    if (btcMovePct >= MISPRICING_COUNTER_BTC_MOVE && sameUp) return "up";
+    if (btcMovePct >= MISPRICING_COUNTER_BTC_MOVE && sameDown) return "down";
+    if (Math.abs(m60) >= MOMENTUM_CONTRA_PCT && Math.sign(m60) === Math.sign(m180 || m60)) {
+      return m60 > 0 ? "up" : "down";
+    }
+    return "flat";
+  }
+
+  private getDerivativesBias(dir: "up" | "down"): {
+    aligned: number;
+    contra: number;
+    score: number;
+    direction: "up" | "down" | "flat";
+  } {
+    let aligned = 0;
+    let contra = 0;
+
+    const flow = getTakerFlowRatio();
+    if (flow.confidence !== "low") {
+      if ((dir === "up" && flow.direction === "buy") || (dir === "down" && flow.direction === "sell")) aligned++;
+      else if ((dir === "up" && flow.direction === "sell") || (dir === "down" && flow.direction === "buy")) contra++;
+    }
+
+    const funding = getFundingRateInfo();
+    if (!funding.extreme && funding.freshMs < 600_000) {
+      if ((dir === "up" && funding.direction === "long_pay") || (dir === "down" && funding.direction === "short_pay")) aligned++;
+      else if ((dir === "up" && funding.direction === "short_pay") || (dir === "down" && funding.direction === "long_pay")) contra++;
+    }
+
+    const oiRegime = this.getOpenInterestRegime();
+    if (oiRegime.regime !== "neutral") {
+      if ((dir === "up" && oiRegime.bullish) || (dir === "down" && oiRegime.bearish)) aligned++;
+      else if ((dir === "up" && oiRegime.bearish) || (dir === "down" && oiRegime.bullish)) contra++;
+    }
+
+    const score = aligned - contra;
+    return {
+      aligned,
+      contra,
+      score,
+      direction: score > 0 ? dir : score < 0 ? (dir === "up" ? "down" : "up") : "flat",
+    };
+  }
+
+  private getOpenInterestRegime(): {
+    regime: "long_build" | "short_build" | "short_cover" | "long_unwind" | "neutral";
+    bullish: boolean;
+    bearish: boolean;
+  } {
+    const oi = getOpenInterestInfo();
+    if (!oi.fresh || Math.abs(oi.changePct) < 0.003) {
+      return { regime: "neutral", bullish: false, bearish: false };
+    }
+
+    const priceMove = getRecentMomentum(TREND_WINDOW_SEC);
+    if (priceMove >= 0.0008 && oi.changePct > 0) {
+      return { regime: "long_build", bullish: true, bearish: false };
+    }
+    if (priceMove <= -0.0008 && oi.changePct > 0) {
+      return { regime: "short_build", bullish: false, bearish: true };
+    }
+    if (priceMove >= 0.0008 && oi.changePct < 0) {
+      return { regime: "short_cover", bullish: true, bearish: false };
+    }
+    if (priceMove <= -0.0008 && oi.changePct < 0) {
+      return { regime: "long_unwind", bullish: false, bearish: true };
+    }
+
+    return { regime: "neutral", bullish: false, bearish: false };
   }
 
   private getEffectiveMaxAsk(): number {
@@ -561,6 +810,20 @@ export class Hedge15mEngine {
     const mom180 = getRecentMomentum(180);
     if ((dir === "up" && mom180 > 0.001) || (dir === "down" && mom180 < -0.001)) aligned++;
     else if ((dir === "up" && mom180 < -0.001) || (dir === "down" && mom180 > 0.001)) contra++;
+
+    // 8. Funding
+    const funding = getFundingRateInfo();
+    if (!funding.extreme && funding.freshMs < 600_000) {
+      if ((dir === "up" && funding.direction === "long_pay") || (dir === "down" && funding.direction === "short_pay")) aligned++;
+      else if ((dir === "up" && funding.direction === "short_pay") || (dir === "down" && funding.direction === "long_pay")) contra++;
+    }
+
+    // 9. Open interest
+    const oiRegime = this.getOpenInterestRegime();
+    if (oiRegime.regime !== "neutral") {
+      if ((dir === "up" && oiRegime.bullish) || (dir === "down" && oiRegime.bearish)) aligned++;
+      else if ((dir === "up" && oiRegime.bearish) || (dir === "down" && oiRegime.bullish)) contra++;
+    }
 
     this.dirAlignedCount = aligned;
     this.dirContraCount = contra;
@@ -644,45 +907,65 @@ export class Hedge15mEngine {
     dir: string,
     quotedPrice: number,
     secsLeft: number,
-    mode: "reactive" | "dual-side",
+    mode: "reactive" | "dual-side" | "trend" | "mispricing" | "counter-win",
     readonly_ = false,
   ): {
     allowed: boolean;
     fairRaw: number;
     fairKelly: number;
     dAbs: number;
+    lnMoneyness: number;
     effectiveCost: number;
     effectiveEdge: number;
     reason: string;
   } {
     const { fairRaw, fairKelly, dAbs, lnMoneyness } = this.getBsSnapshot(dir, secsLeft, readonly_);
-    const takerFeeBuffer = mode === "reactive" ? quotedPrice * TAKER_FEE : 0;
-    const slippageBuffer = mode === "reactive" ? 0.005 : 0;
+    const takerFeeBuffer = mode !== "dual-side" ? quotedPrice * TAKER_FEE : 0;
+    const slippageBuffer = mode !== "dual-side" ? 0.005 : 0;
     const effectiveCost = quotedPrice + takerFeeBuffer + slippageBuffer;
     const effectiveEdge = fairRaw - effectiveCost;
 
-    let dynamicMinEdge = MIN_NET_EDGE;
+    let dynamicMinEdge = mode === "trend"
+      ? DIRECTIONAL_MIN_POSITIVE_EDGE
+      : mode === "mispricing"
+        ? MISPRICING_MIN_EDGE
+        : mode === "counter-win"
+          ? COUNTER_WIN_MIN_EDGE
+          : MIN_NET_EDGE;
     if (secsLeft < 300) {
-      dynamicMinEdge = Math.max(0.01, MIN_NET_EDGE - 0.03); 
+      dynamicMinEdge = Math.max(0.01, dynamicMinEdge - 0.02); 
     } else if (secsLeft > 600) {
-      dynamicMinEdge = MIN_NET_EDGE + 0.02; 
+      dynamicMinEdge = dynamicMinEdge + (mode === "trend" ? 0.01 : mode === "mispricing" || mode === "counter-win" ? 0.01 : 0.02); 
     }
     if (effectiveEdge < dynamicMinEdge) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: `net-edge<${(dynamicMinEdge*100).toFixed(0)}%` };
+      return { allowed: false, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: `net-edge<${(dynamicMinEdge*100).toFixed(0)}%` };
     }
     // Doji检测: 用 |ln(S/K)| (BTC偏离幅度) 而非 |d| (σ√T归一化后的值)
     // 15分钟期权σ√T≈0.003, BTC偏$15→|d|=0.06但|ln(S/K)|=0.00015
     // 旧阈值|d|<0.05误杀: BTC偏$10就触发doji (砸盘场景BTC可能确实没大动)
     // 新阈值: |ln(S/K)|<0.0001 (BTC偏<0.01%≈$10) 才是真doji
-    if (lnMoneyness < 0.0001 && effectiveEdge < 0.18) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "doji-net-edge<18%" };
+    if (lnMoneyness < DOJI_LN_MONEYNESS && effectiveEdge < 0.18) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: "doji-net-edge<18%" };
     }
     // near-doji: BTC偏<0.03% (≈$30) — 方向不明确, 要求更高edge
-    if (lnMoneyness < 0.0003 && effectiveEdge < 0.12) {
-      return { allowed: false, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<12%" };
+    if (lnMoneyness < NEAR_DOJI_LN_MONEYNESS && effectiveEdge < 0.12) {
+      return { allowed: false, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: "near-doji-net-edge<12%" };
     }
 
-    return { allowed: true, fairRaw, fairKelly, dAbs, effectiveCost, effectiveEdge, reason: "ok" };
+    return { allowed: true, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: "ok" };
+  }
+
+  private rankMispricingCandidates(candidates: MispricingCandidate[], secsLeft: number): MispricingCandidate[] {
+    return candidates
+      .map(candidate => {
+        const bs = this.evaluateBsEntry(candidate.dir, candidate.askPrice, secsLeft, "mispricing", true);
+        return { candidate, bs };
+      })
+      .sort((left, right) => {
+        if (left.bs.allowed !== right.bs.allowed) return left.bs.allowed ? -1 : 1;
+        return right.bs.effectiveEdge - left.bs.effectiveEdge;
+      })
+      .map(item => item.candidate);
   }
 
   private getNetEdgeTier(edge: number): { label: "small" | "normal" | "strong"; multiplier: number } {
@@ -698,6 +981,7 @@ export class Hedge15mEngine {
     result: {
       fairRaw: number;
       dAbs: number;
+      lnMoneyness?: number;
       effectiveCost: number;
       effectiveEdge: number;
       reason: string;
@@ -791,7 +1075,13 @@ export class Hedge15mEngine {
       hedgeState: this.hedgeState,
       hedgeLeg1Dir: this.leg1Dir,
       hedgeLeg1Price: this.leg1Price,
-      hedgeTotalCost: this.totalCost,
+      hedgeTotalCost: this.totalCost + this.panicHedgeCost,
+      panicHedgeActive: this.panicHedgeActive,
+      panicHedgeDir: this.panicHedgeDir,
+      panicHedgePrice: this.panicHedgePrice,
+      panicHedgeShares: this.panicHedgeShares,
+      panicHedgeCost: this.panicHedgeCost,
+      panicHedgeReason: this.panicHedgeReason,
       dumpDetected: this.dumpDetected,
       maxEntryAsk: this.getMaxEntryAsk(),
       activeStrategyMode: this.activeStrategyMode,
@@ -866,6 +1156,22 @@ export class Hedge15mEngine {
         fundingExtreme: fr.extreme,
       }; })(),
       // 运行时参数 (UI显示)
+      ...(() => {
+        const oi = getOpenInterestInfo();
+        const oiRegime = this.getOpenInterestRegime();
+        const derivatives = this.currentTrendBias === "flat"
+          ? { score: 0, direction: "flat" as const }
+          : this.getDerivativesBias(this.currentTrendBias);
+        return {
+          openInterest: oi.value,
+          openInterestChangePct: oi.changePct,
+          openInterestDirection: oi.direction,
+          openInterestFresh: oi.fresh,
+          openInterestRegime: oiRegime.regime,
+          derivativesBiasScore: derivatives.score,
+          derivativesBiasDirection: derivatives.direction,
+        };
+      })(),
       rtDumpConfirmCycles: this.rtDumpConfirmCycles,
       rtEntryWindowS: this.rtEntryWindowS,
       rtMinEntrySecs: this.rtMinEntrySecs,
@@ -943,6 +1249,15 @@ export class Hedge15mEngine {
           leg1FillPrice: this.leg1FillPrice,
           leg1OrderId: this.leg1OrderId,
           totalCost: this.totalCost,
+          panicHedgeActive: this.panicHedgeActive,
+          panicHedgeDir: this.panicHedgeDir,
+          panicHedgeToken: this.panicHedgeToken,
+          panicHedgePrice: this.panicHedgePrice,
+          panicHedgeShares: this.panicHedgeShares,
+          panicHedgeCost: this.panicHedgeCost,
+          panicHedgeReason: this.panicHedgeReason,
+          panicHedgeOrderId: this.panicHedgeOrderId,
+          panicHedgeFilledAt: this.panicHedgeFilledAt,
           roundStartBtcPrice: this.roundStartBtcPrice,
           entrySource: this.leg1EntrySource,
           filledAt: this.leg1FilledAt,
@@ -1079,6 +1394,15 @@ export class Hedge15mEngine {
         this.leg1Price = pos.leg1FillPrice;
         this.leg1OrderId = pos.leg1OrderId;
         this.totalCost = pos.totalCost;
+        this.panicHedgeActive = !!pos.panicHedgeActive;
+        this.panicHedgeDir = pos.panicHedgeDir === "up" || pos.panicHedgeDir === "down" ? pos.panicHedgeDir : "";
+        this.panicHedgeToken = pos.panicHedgeToken || "";
+        this.panicHedgePrice = pos.panicHedgePrice || 0;
+        this.panicHedgeShares = pos.panicHedgeShares || 0;
+        this.panicHedgeCost = pos.panicHedgeCost || 0;
+        this.panicHedgeReason = pos.panicHedgeReason || "";
+        this.panicHedgeOrderId = pos.panicHedgeOrderId || "";
+        this.panicHedgeFilledAt = pos.panicHedgeFilledAt || 0;
         this.roundStartBtcPrice = pos.roundStartBtcPrice;
         this.leg1EntrySource = pos.entrySource;
         this.leg1FilledAt = pos.filledAt;
@@ -1167,6 +1491,18 @@ export class Hedge15mEngine {
     this.leg1EffectiveCost = 0;
     this.leg1EffectiveEdge = 0;
     this.leg1EdgeTier = "--";
+    this.panicHedgeActive = false;
+    this.panicHedgeDir = "";
+    this.panicHedgePrice = 0;
+    this.panicHedgeShares = 0;
+    this.panicHedgeToken = "";
+    this.panicHedgeCost = 0;
+    this.panicHedgeReason = "";
+    this.panicHedgeOrderId = "";
+    this.panicHedgeFilledAt = 0;
+    this.panicHedgeInFlight = false;
+    this.panicHedgeAttempts = 0;
+    this.panicHedgeLastAttemptAt = 0;
     this.leg1EntrySource = "";
     this.leg1EntryTrendBias = "flat";
     this.leg1EntrySecondsLeft = 0;
@@ -1206,6 +1542,7 @@ export class Hedge15mEngine {
   private async mainLoop(runId: number): Promise<void> {
     const trader = this.trader!;
     let curCid = "";
+    let firstObservedRound = true;
 
     while (this.isActiveRun(runId)) {
       try {
@@ -1234,6 +1571,8 @@ export class Hedge15mEngine {
 
         // New round
         if (cid !== curCid) {
+          const isBootRound = firstObservedRound;
+          firstObservedRound = false;
           if (curCid && this.totalCost > 0) {
             await this.settleHedge();
           }
@@ -1262,6 +1601,12 @@ export class Hedge15mEngine {
             this.skips++;
             logger.warn(`CAPITAL GUARD: session loss $${this.sessionProfit.toFixed(2)} exceeds ${(MAX_SESSION_LOSS_PCT * 100).toFixed(0)}% of bankroll $${this.initialBankroll.toFixed(2)}, skipping`);
             this.writeRoundAudit("round-skip-capital", { reason: "session-loss-limit", sessionProfit: this.sessionProfit, initialBankroll: this.initialBankroll });
+          } else if (isBootRound && (ROUND_DURATION - secs) > BOOT_ROUND_MAX_ELAPSED) {
+            this.hedgeState = "done";
+            this.status = `跳过: 局中启动 ${Math.floor(ROUND_DURATION - secs)}s > ${BOOT_ROUND_MAX_ELAPSED}s`;
+            this.skips++;
+            logger.info(`HEDGE15M SKIP BOOT MID-ROUND: elapsed ${Math.floor(ROUND_DURATION - secs)}s > ${BOOT_ROUND_MAX_ELAPSED}s, waiting next round`);
+            this.writeRoundAudit("round-skip-boot-midround", { elapsed: ROUND_DURATION - secs, secondsLeft: secs, maxBootElapsed: BOOT_ROUND_MAX_ELAPSED, negRisk: this.negRisk });
           } else if (this.consecutiveLosses >= CONSECUTIVE_LOSS_PAUSE) {
             // 连亏≥5: 不再完全跳过, 而是以最低仓位(×0.4)继续交易 — JSONL数据证明低价入场长期EV+
             const cLossScale = Math.max(0.4, Math.pow(0.85, this.consecutiveLosses));
@@ -1310,6 +1655,7 @@ export class Hedge15mEngine {
           if (this.upAsk > 0 && this.downAsk > 0) {
             const { dumpWindowMs, dumpBaselineMs } = getDynamicParams();
             this.marketState.push(this.upAsk, this.downAsk, dumpWindowMs + 500);
+            this.currentTrendBias = this.getRoundDirectionalBias();
 
             // ── 双侧预挂单做市: 检查成交 + 刷新挂单 ──
             await this.manageDualSideOrders(trader, rnd, secs);
@@ -1323,6 +1669,10 @@ export class Hedge15mEngine {
               const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
               const directionalBias = this.getRoundDirectionalBias();
               this.currentTrendBias = directionalBias;
+              await this.maybeEnterDirectionalLeg1(trader, rnd);
+              if (this.hedgeState !== "watching") {
+                continue;
+              }
 
               // 低价位动态降低dump阈值: ask已经便宜时不需等大跌幅
               const lowestAsk = Math.min(this.upAsk, this.downAsk);
@@ -1346,6 +1696,7 @@ export class Hedge15mEngine {
                 momentumWindowSec: MOMENTUM_WINDOW_SEC,
                 trendWindowSec: TREND_WINDOW_SEC,
               });
+              mispricing.candidates = this.rankMispricingCandidates(mispricing.candidates, secs);
 
               if (mispricing.bothSidesDumping) {
                 // 双侧都在dump: 现在candidates已经过过滤(momentum/dumpRatio/对侧)
@@ -1353,12 +1704,12 @@ export class Hedge15mEngine {
                 const btcDir = getBtcDirection();
                 const btcAlignedDir: "up" | "down" = btcDir === "up" ? "up" : "down";
                 // 优先BTC方向一致的候选, 其次跌幅最大的(已按跌幅排序)
-                const aligned = mispricing.candidates.find(c => c.dir === btcAlignedDir);
-                const bestCandidate = aligned || mispricing.candidates[0];
+                const bestCandidate = mispricing.candidates[0];
+                const aligned = bestCandidate?.dir === btcAlignedDir;
                 if (bestCandidate) {
                   const maxAsk = this.getMaxEntryAsk();
-                  if (bestCandidate.askPrice > 0 && bestCandidate.askPrice <= maxAsk && bestCandidate.askPrice >= MIN_ENTRY_ASK) {
-                    logger.info(`HEDGE15M BOTH DUMP → picking ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)} (BTC=${btcDir}${aligned ? " aligned" : " best-drop"}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
+                  if (bestCandidate.askPrice > 0 && bestCandidate.askPrice <= maxAsk && bestCandidate.askPrice >= MISPRICING_ABSOLUTE_MIN_ASK) {
+                    logger.info(`HEDGE15M BOTH DUMP → picking ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)} (BTC=${btcDir}${aligned ? " aligned" : " best-ev"}) (UP -${(dumpBaseline.upDrop*100).toFixed(1)}%, DN -${(dumpBaseline.downDrop*100).toFixed(1)}%)`);
                     this.dumpDetected = `BOTH-DUMP → ${bestCandidate.dir.toUpperCase()} @${bestCandidate.askPrice.toFixed(2)}`;
                     this.currentDumpDrop = bestCandidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
                     this.currentDumpVelocity = bestCandidate.dumpVelocity;
@@ -1402,7 +1753,7 @@ export class Hedge15mEngine {
                 const candidate = mispricing.candidates[0];
                 if (candidate) {
                   // ── 早期价格过滤: ask低于MIN_ENTRY_ASK时不尝试入场 (避免无用循环) ──
-                  const dynamicMinAsk = elapsed > 660 ? 0.20 : elapsed > 480 ? 0.15 : MIN_ENTRY_ASK;
+                  const dynamicMinAsk = MISPRICING_ABSOLUTE_MIN_ASK;
                   if (candidate.askPrice < dynamicMinAsk) {
                     const skipKey = `minask:${candidate.dir}:${candidate.askPrice.toFixed(2)}`;
                     if (skipKey !== this.lastEntrySkipKey) {
@@ -1436,13 +1787,21 @@ export class Hedge15mEngine {
                     }
                     // 信号强一致(≥4源aligned)时跳过确认等待 — dump更可信
                     this.computeSignalAlignment(candidate.dir);
-                    const signalFastTrack = this.dirAlignedCount >= 4 && this.dirContraCount <= 1;
+                    const candidateDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                    const strongMispricingCandidate = candidateDrop >= MISPRICING_STRONG_DROP || candidate.askPrice <= MISPRICING_LOW_PRICE;
+                    const candidateBs = this.evaluateBsEntry(candidate.dir, candidate.askPrice, secs, "mispricing", true);
+                    const edgeFastTrack = candidateBs.effectiveEdge >= MISPRICING_FAST_LANE_EDGE;
+                    const signalFastTrack = strongMispricingCandidate || edgeFastTrack || (this.dirAlignedCount >= 3 && this.dirContraCount <= 2);
                     if (!signalFastTrack && this.dumpConfirmCount < this.rtDumpConfirmCycles) {
                       // 还未达到确认次数且信号不够强, 继续等
                     } else {
+                      const counterEntered = await this.maybeEnterCounterWin(trader, rnd, candidate, candidateBs);
+                      if (counterEntered) {
+                        continue;
+                      }
                       // ── #2 Sum分歧度过滤: 市场不确定时拒绝入场 ──
                       const currentSum = this.upAsk + this.downAsk;
-                      const candDrop = candidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                      const candDrop = candidateDrop;
                       // 大dump(≥12%)时放宽sum上限: 深度砸盘说明定价效率低, sum略高仍有edge
                       const effectiveSumMax = candDrop >= 0.12 ? SUM_DIVERGENCE_RELAXED : SUM_DIVERGENCE_MAX;
                       if (currentSum > effectiveSumMax) {
@@ -1508,6 +1867,7 @@ export class Hedge15mEngine {
         }
 
         if (this.hedgeState === "leg1_filled") {
+          await this.maybeEnterPanicHedge(trader, rnd);
           // ── 方向性策略: 纯持有到结算, 零中途干预 ──
           // 入场价≤$0.35, 即使50%随机胜率也EV+$0.15/share
           // 卖出要付2% taker fee, 持有到结算 0 fee — 任何中途卖出都是EV-
@@ -1558,12 +1918,99 @@ export class Hedge15mEngine {
 
   // ── Trading Actions ──
 
+  private async maybeEnterDirectionalLeg1(trader: Trader, rnd: Round15m): Promise<void> {
+    if (!DIRECTIONAL_REACTIVE_ENABLED) return;
+    if (this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
+
+    const dir = this.currentTrendBias;
+    if (dir === "flat") return;
+
+    const askPrice = dir === "up" ? this.upAsk : this.downAsk;
+    const buyToken = dir === "up" ? rnd.upToken : rnd.downToken;
+    if (askPrice <= 0 || !buyToken) return;
+
+    const bucket = this.getTimeBucket(rnd.secondsLeft);
+    if (bucket.name === "warmup" || bucket.name === "final") return;
+
+    const btcMovePct = getBtcMovePct();
+    const shortMomentum = getRecentMomentum(60);
+    const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
+    const isChasingImpulse = (dir === "up" && shortMomentum >= DIRECTIONAL_CHASE_MOMENTUM)
+      || (dir === "down" && shortMomentum <= -DIRECTIONAL_CHASE_MOMENTUM);
+    const maxTrendAsk = isChasingImpulse ? DIRECTIONAL_TREND_PULLBACK_MAX_ASK : DIRECTIONAL_TREND_MAX_ASK;
+    if (btcMovePct < DIRECTIONAL_TREND_MIN_BTC_MOVE) return;
+    if (askPrice > maxTrendAsk) {
+      const skipKey = `dir-ask:${dir}:${askPrice.toFixed(2)}:${isChasingImpulse ? "impulse" : "trend"}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M DIRECTIONAL WAIT: ${dir.toUpperCase()} ask=${askPrice.toFixed(2)} > ${maxTrendAsk.toFixed(2)}${isChasingImpulse ? " (impulse pullback)" : ""}`);
+      }
+      return;
+    }
+
+    const bsEntry = this.evaluateBsEntry(dir, askPrice, rnd.secondsLeft, "trend", true);
+    if (!bsEntry.allowed || bsEntry.effectiveEdge < bucket.trendMinEdge) {
+      this.trackRoundRejectReason(`trend-edge: ${(bsEntry.effectiveEdge * 100).toFixed(1)}% < ${(bucket.trendMinEdge * 100).toFixed(0)}%`);
+      const skipKey = `dir-edge:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEntry.effectiveEdge * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M DIRECTIONAL SKIP: ${dir.toUpperCase()} ${bucket.name} edge ${(bsEntry.effectiveEdge * 100).toFixed(1)}% < ${(bucket.trendMinEdge * 100).toFixed(0)}% fair=${bsEntry.fairRaw.toFixed(3)} ask=${askPrice.toFixed(2)}`);
+      }
+      return;
+    }
+
+    logger.info(`HEDGE15M DIRECTIONAL ENTRY: ${dir.toUpperCase()} ${bucket.name} ask=${askPrice.toFixed(2)} edge=${(bsEntry.effectiveEdge * 100).toFixed(1)}% BTCmove=${(btcMovePct * 100).toFixed(3)}% m60=${(shortMomentum * 100).toFixed(3)}% m180=${(trendMomentum * 100).toFixed(3)}%`);
+
+    await this.buyLeg1(trader, rnd, dir, askPrice, buyToken, "trend", "directional-reactive");
+  }
+
+  private async maybeEnterCounterWin(
+    trader: Trader,
+    rnd: Round15m,
+    weakCandidate: MispricingCandidate,
+    weakCandidateBs: { effectiveEdge: number },
+  ): Promise<boolean> {
+    if (!COUNTER_WIN_ENABLED) return false;
+    if (this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound) return false;
+    if (weakCandidateBs.effectiveEdge >= MISPRICING_NORMAL_EDGE) return false;
+
+    const counterDir: "up" | "down" = weakCandidate.dir === "up" ? "down" : "up";
+    const counterAsk = counterDir === "up" ? this.upAsk : this.downAsk;
+    const counterToken = counterDir === "up" ? rnd.upToken : rnd.downToken;
+    if (!counterToken || counterAsk < COUNTER_WIN_MIN_ASK || counterAsk > COUNTER_WIN_MAX_ASK) return false;
+
+    const weakScore = this.dirAlignedCount - this.dirContraCount;
+    const trendSupportsCounter = this.currentTrendBias === counterDir;
+    const signalsRejectWeakSide = weakScore <= -1;
+    if (!trendSupportsCounter && !signalsRejectWeakSide) return false;
+
+    const counterBs = this.evaluateBsEntry(counterDir, counterAsk, rnd.secondsLeft, "counter-win", true);
+    if (!counterBs.allowed) {
+      this.logBsReject("counter-win", counterDir, counterAsk, counterBs);
+      return false;
+    }
+
+    const deriv = this.getDerivativesBias(counterDir);
+    if (deriv.contra >= 2 && deriv.aligned === 0 && counterBs.effectiveEdge < COUNTER_WIN_STRONG_EDGE) {
+      this.trackRoundRejectReason(`counter-deriv-contra: edge=${(counterBs.effectiveEdge * 100).toFixed(1)}%`);
+      return false;
+    }
+
+    logger.info(
+      `HEDGE15M COUNTER-WIN: ${counterDir.toUpperCase()} @${counterAsk.toFixed(2)} edge=${(counterBs.effectiveEdge * 100).toFixed(1)}% vs weak ${weakCandidate.dir.toUpperCase()} edge=${(weakCandidateBs.effectiveEdge * 100).toFixed(1)}% trend=${this.currentTrendBias} score=${weakScore}`,
+    );
+    await this.buyLeg1(trader, rnd, counterDir, counterAsk, counterToken, "counter-win", "counter-win");
+    return this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound;
+  }
+
   private async buyLeg1(
     trader: Trader,
     rnd: Round15m,
     dir: string,
     askPrice: number,
     buyToken: string,
+    strategyMode: "mispricing" | "trend" | "counter-win" = "mispricing",
+    entrySource = "reactive-mispricing",
   ): Promise<void> {
     if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) {
@@ -1576,15 +2023,16 @@ export class Hedge15mEngine {
     }
 
     // ── Leg1价格上限: 只接受足够低价的EV+入场, 强信号时动态提升 ──
-    const maxEntryAsk = this.getDynamicMaxEntryAsk(dir);
+    const maxEntryAsk = strategyMode === "counter-win" ? COUNTER_WIN_MAX_ASK : this.getDynamicMaxEntryAsk(dir);
     const directionalBias = this.getRoundDirectionalBias();
 
     const plan = planHedgeEntry({
       dir: dir as "up" | "down",
       askPrice,
       maxEntryAsk,
-      minEntryAsk: rnd.secondsLeft > 660 ? 0.20 : rnd.secondsLeft > 480 ? 0.15 : MIN_ENTRY_ASK,
+      minEntryAsk: strategyMode === "counter-win" ? COUNTER_WIN_MIN_ASK : strategyMode === "mispricing" ? MISPRICING_ABSOLUTE_MIN_ASK : rnd.secondsLeft > 660 ? 0.20 : rnd.secondsLeft > 480 ? 0.15 : MIN_ENTRY_ASK,
       directionalBias,
+      allowDirectionalContra: strategyMode !== "trend",
     });
     if (!plan.allowed) {
       if (plan.reason?.includes("MAX_ENTRY_ASK")) this.roundEntryAskRejects += 1;
@@ -1603,7 +2051,8 @@ export class Hedge15mEngine {
 
     // ── 低波过滤: reactive在微行情中噪声极高, 直接跳过 ──
     const reactiveVol = getRecentVolatility(300);
-    if (reactiveVol < REACTIVE_MIN_VOL) {
+    const strongMispricing = strategyMode === "mispricing" && (this.currentDumpDrop >= MISPRICING_STRONG_DROP || askPrice <= MISPRICING_LOW_PRICE);
+    if (strategyMode !== "counter-win" && !strongMispricing && reactiveVol < REACTIVE_MIN_VOL) {
       this.trackRoundRejectReason(`reactive-low-vol: ${(reactiveVol * 100).toFixed(3)}% < ${(REACTIVE_MIN_VOL * 100).toFixed(2)}%`);
       const skipKey = `reactive-vol:${dir}:${Math.floor(reactiveVol * 100000)}`;
       if (skipKey !== this.lastSignalSkipKey) {
@@ -1614,7 +2063,12 @@ export class Hedge15mEngine {
     }
 
     // ── BSM数字期权动态胜率 ──
-    const bsEntry = this.evaluateBsEntry(dir, askPrice, rnd.secondsLeft, "reactive");
+    const bsEntry = this.evaluateBsEntry(
+      dir,
+      askPrice,
+      rnd.secondsLeft,
+      strategyMode === "trend" ? "trend" : strategyMode === "counter-win" ? "counter-win" : "mispricing",
+    );
     if (!bsEntry.allowed) {
       this.trackRoundRejectReason(`bsm: ${bsEntry.reason}`);
       this.logBsReject("reactive", dir, askPrice, bsEntry);
@@ -1623,7 +2077,104 @@ export class Hedge15mEngine {
     const bsFairRaw = bsEntry.fairRaw;
     const bsWinRate = bsEntry.fairKelly;
     const bsEdgeNet = bsEntry.effectiveEdge;
+    const dojiRegime = bsEntry.lnMoneyness < DOJI_LN_MONEYNESS ? "doji" : bsEntry.lnMoneyness < NEAR_DOJI_LN_MONEYNESS ? "near-doji" : "directional";
+    const timeBucket = this.getTimeBucket(rnd.secondsLeft);
+    if (strategyMode === "mispricing" && (timeBucket.name === "warmup" || timeBucket.name === "final")) {
+      this.trackRoundRejectReason(`time-bucket: ${timeBucket.name} blocks mispricing`);
+      const skipKey = `bucket:${timeBucket.name}:${dir}:${askPrice.toFixed(2)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M MISPRICING SKIP: ${timeBucket.name} bucket blocks ${dir.toUpperCase()} ask=${askPrice.toFixed(2)} edge ${(bsEdgeNet * 100).toFixed(1)}%`);
+      }
+      return;
+    }
+    if (
+      strategyMode === "mispricing" &&
+      dojiRegime === "doji" &&
+      rnd.secondsLeft > EARLY_DOJI_SECS_LEFT &&
+      this.currentDumpDrop < EARLY_DOJI_MIN_DROP
+    ) {
+      this.trackRoundRejectReason(`early-doji-weak-dump: drop ${(this.currentDumpDrop * 100).toFixed(1)}% < ${(EARLY_DOJI_MIN_DROP * 100).toFixed(0)}%`);
+      const skipKey = `early-doji:${dir}:${Math.floor(rnd.secondsLeft)}:${Math.floor(this.currentDumpDrop * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M MISPRICING SKIP: early doji ${Math.floor(rnd.secondsLeft)}s drop ${(this.currentDumpDrop * 100).toFixed(1)}% < ${(EARLY_DOJI_MIN_DROP * 100).toFixed(0)}% edge ${(bsEdgeNet * 100).toFixed(1)}%`);
+      }
+      return;
+    }
+    if (strategyMode === "mispricing" && rnd.secondsLeft > EARLY_SMALL_EDGE_SECS_LEFT) {
+      const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+      const counterShortMomentum = (dir === "up" && shortMomentum < 0) || (dir === "down" && shortMomentum > 0);
+      const earlyMinEdge = counterShortMomentum ? EARLY_COUNTER_MOMENTUM_MIN_EDGE : EARLY_SMALL_EDGE_MIN_EDGE;
+      if (bsEdgeNet < earlyMinEdge) {
+        this.trackRoundRejectReason(`early-small-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(earlyMinEdge * 100).toFixed(0)}%`);
+        const skipKey = `early-edge:${dir}:${Math.floor(rnd.secondsLeft)}:${Math.floor(bsEdgeNet * 1000)}`;
+        if (skipKey !== this.lastSignalSkipKey) {
+          this.lastSignalSkipKey = skipKey;
+          logger.info(`HEDGE15M MISPRICING SKIP: early ${Math.floor(rnd.secondsLeft)}s edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(earlyMinEdge * 100).toFixed(0)}%${counterShortMomentum ? " (counter-momentum)" : ""}`);
+        }
+        return;
+      }
+    }
+    if (strategyMode === "mispricing") {
+      const btcDir = getBtcDirection();
+      const btcMovePct = getBtcMovePct();
+      const momentumBias = this.getMomentumBucketBias();
+      const counterBtc = btcMovePct >= MISPRICING_COUNTER_BTC_MOVE && btcDir !== dir;
+      const counterMomentumBucket = momentumBias !== "flat" && momentumBias !== dir;
+      const alignmentScore = this.dirAlignedCount - this.dirContraCount;
+      const strongCounterSignal = alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE && (counterBtc || counterMomentumBucket);
+      const deepUnfavored = bsFairRaw < MISPRICING_DEEP_UNFAVORED_FAIR;
+      const unfavored = bsFairRaw < MISPRICING_UNFAVORED_FAIR;
+      const requiredCounterEdge = deepUnfavored
+        ? MISPRICING_DEEP_UNFAVORED_MIN_EDGE
+        : strongCounterSignal && askPrice > MISPRICING_STRONG_COUNTER_MAX_ASK
+          ? MISPRICING_STRONG_COUNTER_MIN_EDGE
+        : (counterBtc || counterMomentumBucket) && askPrice <= TIME_BUCKET_EXTREME_COUNTER_ASK
+          ? TIME_BUCKET_EXTREME_COUNTER_EDGE
+        : counterBtc || counterMomentumBucket || unfavored
+          ? Math.max(MISPRICING_COUNTER_BTC_MIN_EDGE, timeBucket.counterMispricingMinEdge)
+          : 0;
+      if (requiredCounterEdge > 0 && bsEdgeNet < requiredCounterEdge) {
+        this.trackRoundRejectReason(`counter-wind: bucket=${timeBucket.name} bias=${momentumBias} fair=${bsFairRaw.toFixed(3)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(requiredCounterEdge * 100).toFixed(0)}%`);
+        const skipKey = `counter-wind:${dir}:${btcDir}:${momentumBias}:${Math.floor(btcMovePct * 100000)}:${Math.floor(bsEdgeNet * 1000)}`;
+        if (skipKey !== this.lastSignalSkipKey) {
+          this.lastSignalSkipKey = skipKey;
+          logger.info(`HEDGE15M MISPRICING SKIP: counter-wind ${timeBucket.name} ${dir.toUpperCase()} vs BTC=${btcDir}/bias=${momentumBias} move=${(btcMovePct * 100).toFixed(3)}% fair=${bsFairRaw.toFixed(3)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(requiredCounterEdge * 100).toFixed(0)}%`);
+        }
+        return;
+      }
+    }
+    if (strategyMode === "mispricing" && askPrice < MIN_ENTRY_ASK && bsEdgeNet < MISPRICING_LOW_TICKET_EDGE) {
+      this.trackRoundRejectReason(`low-ticket-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(MISPRICING_LOW_TICKET_EDGE * 100).toFixed(0)}%`);
+      const skipKey = `low-ticket:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEdgeNet * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M MISPRICING SKIP: low ticket ask=${askPrice.toFixed(2)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(MISPRICING_LOW_TICKET_EDGE * 100).toFixed(0)}%`);
+      }
+      return;
+    }
     let minEdgeForRegime = directionalBias === "flat" ? FLAT_MIN_NET_EDGE : NON_FLAT_MIN_NET_EDGE;
+    if (strategyMode === "trend") {
+      if (directionalBias === dir) minEdgeForRegime = DIRECTIONAL_MIN_POSITIVE_EDGE;
+      else if (directionalBias === "flat") minEdgeForRegime = 0.03;
+      else minEdgeForRegime = 0.05;
+    } else if (strategyMode === "counter-win") {
+      if (directionalBias === dir) minEdgeForRegime = COUNTER_WIN_MIN_EDGE;
+      else if (directionalBias === "flat") minEdgeForRegime = 0.03;
+      else minEdgeForRegime = COUNTER_WIN_STRONG_EDGE;
+    } else if (strategyMode === "mispricing") {
+      if (directionalBias === dir) minEdgeForRegime = 0.03;
+      else if (directionalBias === "flat") minEdgeForRegime = 0.04;
+      else minEdgeForRegime = 0.06;
+      if (strongMispricing) {
+        minEdgeForRegime = Math.max(MISPRICING_MIN_EDGE, minEdgeForRegime - 0.02);
+      }
+    } else if (directionalBias === dir) {
+      minEdgeForRegime = Math.max(0.04, minEdgeForRegime - 0.01);
+    } else if (directionalBias !== "flat" && directionalBias !== dir) {
+      minEdgeForRegime += 0.02;
+    }
     if (this.secondsLeft < 300) {
       minEdgeForRegime = Math.max(0.02, minEdgeForRegime - 0.03); // 最后5分钟放宽
     } else if (this.secondsLeft > 600) {
@@ -1640,14 +2191,29 @@ export class Hedge15mEngine {
     }
 
     const alignmentScore = this.dirAlignedCount - this.dirContraCount;
-    if (alignmentScore < REACTIVE_MIN_ALIGNMENT_SCORE && bsEdgeNet < REACTIVE_ALIGNMENT_EDGE_OVERRIDE) {
-      this.trackRoundRejectReason(`alignment: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
-      const skipKey = `align:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M REACTIVE SKIP: weak signals score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+    if (strategyMode === "mispricing") {
+      const strongContra = alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE;
+      if (strongContra && bsEdgeNet < MISPRICING_CONTRA_EDGE_OVERRIDE) {
+        this.trackRoundRejectReason(`strong-contra: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+        const skipKey = `contra:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
+        if (skipKey !== this.lastSignalSkipKey) {
+          this.lastSignalSkipKey = skipKey;
+          logger.info(`HEDGE15M MISPRICING SKIP: strong contra score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+        }
+        return;
       }
-      return;
+    } else {
+      const alignmentFloor = directionalBias !== "flat" && directionalBias !== dir ? 0 : REACTIVE_MIN_ALIGNMENT_SCORE;
+      const strongCounterTrendOverride = bsEdgeNet >= (REACTIVE_ALIGNMENT_EDGE_OVERRIDE + 0.05);
+      if (alignmentScore < alignmentFloor && bsEdgeNet < REACTIVE_ALIGNMENT_EDGE_OVERRIDE && !strongCounterTrendOverride) {
+        this.trackRoundRejectReason(`alignment: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+        const skipKey = `align:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
+        if (skipKey !== this.lastSignalSkipKey) {
+          this.lastSignalSkipKey = skipKey;
+          logger.info(`HEDGE15M REACTIVE SKIP: weak signals score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+        }
+        return;
+      }
     }
 
     const netEdgeTier = this.getNetEdgeTier(bsEdgeNet);
@@ -1675,6 +2241,15 @@ export class Hedge15mEngine {
     if (liveSum > 0 && liveSum <= SUM_DIVERGENCE_MIN) {
       budgetPct = Math.min(kellyCapForPrice, budgetPct * 1.15); // 强方向×1.15
     }
+    if (strategyMode === "mispricing") {
+      if (bsEdgeNet >= MISPRICING_FAST_LANE_EDGE) budgetPct *= 1.15;
+      else if (bsEdgeNet >= MISPRICING_NORMAL_EDGE) budgetPct *= 1.05;
+      if (alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE && bsEdgeNet < MISPRICING_FAST_LANE_EDGE) {
+        budgetPct *= 0.75;
+      }
+    } else if (strategyMode === "counter-win") {
+      budgetPct *= bsEdgeNet >= COUNTER_WIN_STRONG_EDGE ? 0.70 : 0.50;
+    }
     if (directionalBias === dir) {
       budgetPct += TREND_BUDGET_BOOST; // 趋势一致追加
     } else if (directionalBias === "flat") {
@@ -1691,15 +2266,41 @@ export class Hedge15mEngine {
     }
     budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
+    if (strategyMode === "trend") {
+      if (bsEdgeNet < DIRECTIONAL_SMALL_EDGE) budgetPct *= DIRECTIONAL_SMALL_BUDGET_SCALE;
+      else if (bsEdgeNet < DIRECTIONAL_MEDIUM_EDGE) budgetPct *= DIRECTIONAL_MEDIUM_BUDGET_SCALE;
+      budgetPct = Math.min(0.16, budgetPct);
+    }
+    if (strategyMode === "counter-win") {
+      budgetPct = Math.min(COUNTER_WIN_MAX_BUDGET_PCT, budgetPct);
+    }
+    if (strategyMode === "mispricing" && dojiRegime !== "directional") {
+      let dojiCap = dojiRegime === "doji" ? DOJI_MAX_BUDGET_PCT : NEAR_DOJI_MAX_BUDGET_PCT;
+      if (dojiRegime === "doji" && rnd.secondsLeft > EARLY_DOJI_SECS_LEFT) {
+        dojiCap = Math.min(dojiCap, EARLY_DOJI_MAX_BUDGET_PCT);
+      }
+      if (askPrice > DOJI_HIGH_ASK_CUTOFF) {
+        dojiCap = Math.min(dojiCap, DOJI_HIGH_ASK_MAX_BUDGET_PCT);
+      }
+      if (budgetPct > dojiCap) {
+        logger.info(`DOJI SIZE CAP: ${dojiRegime} ln=${bsEntry.lnMoneyness.toFixed(6)} ask=${askPrice.toFixed(2)} edge=${(bsEdgeNet * 100).toFixed(1)}% pct ${(budgetPct * 100).toFixed(1)}% -> ${(dojiCap * 100).toFixed(1)}%`);
+        budgetPct = dojiCap;
+      }
+    }
+    if (budgetPct > timeBucket.budgetCap) {
+      logger.info(`TIME BUCKET SIZE CAP: ${timeBucket.name} elapsed=${Math.floor(timeBucket.elapsed)}s pct ${(budgetPct * 100).toFixed(1)}% -> ${(timeBucket.budgetCap * 100).toFixed(1)}%`);
+      budgetPct = timeBucket.budgetCap;
+    }
+
     await this.openLeg1Position(
       trader,
       dir,
       askPrice,
       buyToken,
       budgetPct,
-      "mispricing",
+      strategyMode,
       Date.now(),
-      "reactive-mispricing",
+      entrySource,
       bsEntry,
     );
   }
@@ -1794,6 +2395,12 @@ export class Hedge15mEngine {
    * 3. 如果一侧被吃到 → 等于拿到便宜的 Leg1, 持有到结算
    */
   private async manageDualSideOrders(trader: Trader, rnd: Round15m, secs: number): Promise<void> {
+    if (DISABLE_DUAL_SIDE_PREORDER) {
+      if (this.preOrderUpId || this.preOrderDownId) {
+        await this.cancelDualSideOrders(trader);
+      }
+      return;
+    }
     if (!DUAL_SIDE_ENABLED) return;
     if (this.hedgeState !== "watching") return;
     if (this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
@@ -2317,12 +2924,13 @@ export class Hedge15mEngine {
     askPrice: number,
     buyToken: string,
     budgetPct: number,
-    strategyMode: "mispricing",
+    strategyMode: "mispricing" | "trend" | "counter-win",
     signalDetectedAt = Date.now(),
     entrySource = "reactive-mispricing",
     bsEntry?: {
       fairRaw: number;
       fairKelly: number;
+      lnMoneyness?: number;
       effectiveCost: number;
       effectiveEdge: number;
     },
@@ -2419,7 +3027,7 @@ export class Hedge15mEngine {
 
       this.hedgeState = "leg1_filled";
       this.leg1AttemptedThisRound = true; // 真正成交后才锁定, FAK失败可重试
-      this.activeStrategyMode = "mispricing";
+      this.activeStrategyMode = strategyMode;
       this.leg1Dir = dir;
       this.leg1Price = entryAsk;
       this.leg1FillPrice = realFillPrice;
@@ -2448,7 +3056,7 @@ export class Hedge15mEngine {
       this.status = `Leg1 ${dir.toUpperCase()} @${realFillPrice.toFixed(2)} x${filledShares.toFixed(0)}${isMaker ? " maker" : ""}, 等结算`;
       logger.info(`HEDGE15M LEG1 FILLED: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 ask=${entryAsk.toFixed(2)} fill=${realFillPrice.toFixed(2)} orderId=${orderId.slice(0, 12)} maker=${isMaker} fee=${(actualFee * 100).toFixed(0)}%`);
       this.writeRoundAudit("leg1-filled", {
-        strategyMode: "mispricing",
+        strategyMode,
         dir,
         entryAsk,
         fillPrice: realFillPrice,
@@ -2463,6 +3071,94 @@ export class Hedge15mEngine {
       if (this.hedgeState === "leg1_pending") {
         this.hedgeState = "watching";
       }
+    }
+  }
+
+  private async maybeEnterPanicHedge(trader: Trader, rnd: Round15m): Promise<void> {
+    if (!PANIC_HEDGE_ENABLED) return;
+    if (this.hedgeState !== "leg1_filled" || this.panicHedgeActive || this.panicHedgeInFlight) return;
+    if (this.panicHedgeAttempts >= PANIC_HEDGE_MAX_ATTEMPTS) return;
+    if (Date.now() - this.panicHedgeLastAttemptAt < PANIC_HEDGE_RETRY_MS) return;
+    if (rnd.secondsLeft < PANIC_HEDGE_MIN_SECS_LEFT || this.leg1Shares <= 0 || !this.leg1Dir) return;
+
+    const legDir = this.leg1Dir === "down" ? "down" : "up";
+    const hedgeDir: "up" | "down" = legDir === "up" ? "down" : "up";
+    const hedgeToken = hedgeDir === "up" ? rnd.upToken : rnd.downToken;
+    const signalAsk = hedgeDir === "up" ? this.upAsk : this.downAsk;
+    if (!hedgeToken || signalAsk <= 0) return;
+
+    const btcDir = getBtcDirection();
+    const btcMovePct = getBtcMovePct();
+    const momentum60 = getRecentMomentum(60);
+    const btcAgainstLeg = btcDir !== legDir && btcMovePct >= PANIC_HEDGE_AGAINST_BTC_MOVE;
+    const momentumAgainstLeg = legDir === "up"
+      ? momentum60 <= -PANIC_HEDGE_AGAINST_MOMENTUM_60
+      : momentum60 >= PANIC_HEDGE_AGAINST_MOMENTUM_60;
+    if (!btcAgainstLeg || !momentumAgainstLeg) return;
+
+    const legMark = legDir === "up" ? this.upAsk : this.downAsk;
+    const legBs = this.evaluateBsEntry(legDir, legMark > 0 ? legMark : this.leg1FillPrice, rnd.secondsLeft, "trend", true);
+    const fairDrop = this.leg1BsFair - legBs.fairRaw;
+    const fairBroken = fairDrop >= PANIC_HEDGE_FAIR_DROP || legBs.fairRaw <= PANIC_HEDGE_LEG_FAIR_CUTOFF;
+    if (!fairBroken) return;
+
+    const liveBook = await getHotBestPrices(trader, hedgeToken).catch(() => null);
+    const liveAsk = liveBook?.ask && liveBook.ask > 0 ? liveBook.ask : signalAsk;
+    if (liveAsk < PANIC_HEDGE_MIN_ASK || liveAsk > PANIC_HEDGE_MAX_ASK) {
+      this.panicHedgeAttempts++;
+      this.panicHedgeLastAttemptAt = Date.now();
+      logger.warn(`PANIC HEDGE SKIP: ${hedgeDir.toUpperCase()} ask=${liveAsk.toFixed(2)} outside ${PANIC_HEDGE_MIN_ASK.toFixed(2)}-${PANIC_HEDGE_MAX_ASK.toFixed(2)}`);
+      return;
+    }
+
+    const maxBudget = Math.min(this.balance * PANIC_HEDGE_BUDGET_PCT, this.totalCost * PANIC_HEDGE_MAX_COST_PCT_OF_LEG);
+    const shares = Math.min(MAX_SHARES, Math.floor(maxBudget / liveAsk));
+    if (shares < MIN_SHARES) {
+      this.panicHedgeAttempts++;
+      this.panicHedgeLastAttemptAt = Date.now();
+      logger.warn(`PANIC HEDGE SKIP: shares ${shares} < ${MIN_SHARES} (budget=$${maxBudget.toFixed(2)} ask=${liveAsk.toFixed(2)})`);
+      return;
+    }
+
+    const reason = `BTC ${btcDir} ${(btcMovePct * 100).toFixed(2)}%, m60 ${(momentum60 * 100).toFixed(2)}%, fair ${this.leg1BsFair.toFixed(2)}→${legBs.fairRaw.toFixed(2)}`;
+    this.panicHedgeInFlight = true;
+    this.panicHedgeAttempts++;
+    this.panicHedgeLastAttemptAt = Date.now();
+    this.status = `PANIC HEDGE: ${hedgeDir.toUpperCase()} @${liveAsk.toFixed(2)} x${shares}`;
+    logger.warn(`PANIC HEDGE TRIGGER: leg=${legDir.toUpperCase()} hedge=${hedgeDir.toUpperCase()} ask=${liveAsk.toFixed(2)} x${shares} reason=${reason}`);
+
+    try {
+      const fill = await this.fakBuyFallback(trader, hedgeToken, shares, liveAsk, this.negRisk);
+      if (!fill || fill.filled <= 0 || fill.avgPrice <= 0) {
+        logger.warn(`PANIC HEDGE FAILED: no fill for ${hedgeDir.toUpperCase()} @${liveAsk.toFixed(2)} x${shares}`);
+        return;
+      }
+
+      const fee = fill.maker ? 0 : TAKER_FEE;
+      const cost = fill.filled * fill.avgPrice * (1 + fee);
+      this.panicHedgeActive = true;
+      this.panicHedgeDir = hedgeDir;
+      this.panicHedgeToken = hedgeToken;
+      this.panicHedgePrice = fill.avgPrice;
+      this.panicHedgeShares = fill.filled;
+      this.panicHedgeCost = cost;
+      this.panicHedgeReason = reason;
+      this.panicHedgeOrderId = fill.orderId ? fill.orderId.slice(0, 12) : "";
+      this.panicHedgeFilledAt = Date.now();
+      this.balance -= cost;
+      this.status = `PANIC HEDGE FILLED: ${hedgeDir.toUpperCase()} @${fill.avgPrice.toFixed(2)} x${fill.filled.toFixed(0)}`;
+      this.writeRoundAudit("panic-hedge-filled", {
+        legDir,
+        hedgeDir,
+        signalAsk,
+        fillPrice: fill.avgPrice,
+        shares: fill.filled,
+        cost,
+        reason,
+        orderId: this.panicHedgeOrderId,
+      });
+    } finally {
+      this.panicHedgeInFlight = false;
     }
   }
 
@@ -2511,15 +3207,22 @@ export class Hedge15mEngine {
     if (this.leg1Dir === actualDir && this.leg1Shares > 0) {
       returnVal = this.leg1Shares;
     }
+    if (this.panicHedgeActive && this.panicHedgeDir === actualDir && this.panicHedgeShares > 0) {
+      returnVal += this.panicHedgeShares;
+    }
 
-    const profit = returnVal - this.totalCost;
+    const settlementCost = this.totalCost + this.panicHedgeCost;
+    const profit = returnVal - settlementCost;
 
     // NaN防护: totalCost或returnVal异常时中止, 防止P/L追踪损坏
-    if (!Number.isFinite(profit) || !Number.isFinite(this.totalCost)) {
-      logger.error(`SETTLE NaN GUARD: profit=${profit} totalCost=${this.totalCost} returnVal=${returnVal} — skipping P/L update`);
-      this.writeRoundAudit("settle-nan-guard", { profit, totalCost: this.totalCost, returnVal, leg1Shares: this.leg1Shares });
+    if (!Number.isFinite(profit) || !Number.isFinite(settlementCost)) {
+      logger.error(`SETTLE NaN GUARD: profit=${profit} totalCost=${settlementCost} returnVal=${returnVal} — skipping P/L update`);
+      this.writeRoundAudit("settle-nan-guard", { profit, totalCost: settlementCost, returnVal, leg1Shares: this.leg1Shares, panicHedgeShares: this.panicHedgeShares });
       this.totalCost = 0;
       this.leg1Shares = 0;
+      this.panicHedgeActive = false;
+      this.panicHedgeShares = 0;
+      this.panicHedgeCost = 0;
       this.hedgeState = "done";
       await this.refreshBalance();
       return;
@@ -2542,12 +3245,12 @@ export class Hedge15mEngine {
       result,
       leg1Dir: this.leg1Dir.toUpperCase(),
       leg1Price: this.leg1Price,
-      totalCost: this.totalCost,
+      totalCost: settlementCost,
       profit,
       cumProfit: this.totalProfit,
       exitType: "settlement",
       exitReason: settlementReason,
-      profitBreakdown: `结算回收$${returnVal.toFixed(2)}(${this.leg1Shares.toFixed(0)}份) - 成本$${this.totalCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
+      profitBreakdown: `结算回收$${returnVal.toFixed(2)}(L1 ${this.leg1Shares.toFixed(0)}${this.panicHedgeActive ? ` + PH ${this.panicHedgeShares.toFixed(0)}` : ""}份) - 成本$${settlementCost.toFixed(2)} = ${profit>=0?'+':''}$${profit.toFixed(2)}`,
       leg1Shares: this.leg1Shares,
       leg1FillPrice: this.leg1FillPrice,
       orderId: this.leg1OrderId,
@@ -2560,12 +3263,18 @@ export class Hedge15mEngine {
       entryEffectiveCost: this.leg1EffectiveCost,
       entryEffectiveEdge: this.leg1EffectiveEdge,
       entryEdgeTier: this.leg1EdgeTier,
+      panicHedgeActive: this.panicHedgeActive,
+      panicHedgeDir: this.panicHedgeDir ? this.panicHedgeDir.toUpperCase() : "",
+      panicHedgePrice: this.panicHedgePrice,
+      panicHedgeShares: this.panicHedgeShares,
+      panicHedgeCost: this.panicHedgeCost,
+      panicHedgeReason: this.panicHedgeReason,
     });
     if (this.history.length > 200) this.history.shift();
     this.saveHistory();
 
     this.status = `结算: ${result} ${profit >= 0 ? "+" : ""}$${profit.toFixed(2)} (返$${returnVal.toFixed(2)} dir=${actualDir}/${dirSource})`;
-    logger.info(`HEDGE15M SETTLED: ${result} dir=${actualDir}(${dirSource}) return=$${returnVal.toFixed(2)} cost=$${this.totalCost.toFixed(2)} profit=$${profit.toFixed(2)} L1fill=${this.leg1FillPrice.toFixed(2)}`);
+    logger.info(`HEDGE15M SETTLED: ${result} dir=${actualDir}(${dirSource}) return=$${returnVal.toFixed(2)} cost=$${settlementCost.toFixed(2)} profit=$${profit.toFixed(2)} L1fill=${this.leg1FillPrice.toFixed(2)} panic=${this.panicHedgeActive ? `${this.panicHedgeDir}@${this.panicHedgePrice.toFixed(2)}x${this.panicHedgeShares.toFixed(0)}` : "none"}`);
     this.writeRoundAudit("settlement", {
       result,
       actualDir,
@@ -2585,13 +3294,16 @@ export class Hedge15mEngine {
     if (this.tradingMode === "live") {
       const drift = Math.abs(this.balance - expectedBalance);
       if (drift > 0.50) {
-        logger.warn(`SETTLE P/L DRIFT: expected=$${expectedBalance.toFixed(2)} actual=$${this.balance.toFixed(2)} drift=$${drift.toFixed(2)} (cost=$${this.totalCost.toFixed(2)} return=$${returnVal.toFixed(2)})`);
-        this.writeRoundAudit("settle-pl-drift", { preSettleBalance, expectedBalance, actualBalance: this.balance, drift, returnVal, totalCost: this.totalCost });
+        logger.warn(`SETTLE P/L DRIFT: expected=$${expectedBalance.toFixed(2)} actual=$${this.balance.toFixed(2)} drift=$${drift.toFixed(2)} (cost=$${settlementCost.toFixed(2)} return=$${returnVal.toFixed(2)})`);
+        this.writeRoundAudit("settle-pl-drift", { preSettleBalance, expectedBalance, actualBalance: this.balance, drift, returnVal, totalCost: settlementCost });
       }
     }
 
     this.totalCost = 0;
     this.leg1Shares = 0;
+    this.panicHedgeActive = false;
+    this.panicHedgeShares = 0;
+    this.panicHedgeCost = 0;
     this.hedgeState = "done";
   }
 }
