@@ -55,14 +55,18 @@ const MISPRICING_UNFAVORED_FAIR = 0.30;
 const MISPRICING_DEEP_UNFAVORED_FAIR = 0.25;
 const MISPRICING_DEEP_UNFAVORED_MIN_EDGE = MISPRICING_FAST_LANE_EDGE;
 const COUNTER_WIN_ENABLED = true;
-const COUNTER_WIN_MIN_EDGE = 0.04;
-const COUNTER_WIN_STRONG_EDGE = 0.07;
+const COUNTER_WIN_MIN_EDGE = 0.03;
+const COUNTER_WIN_STRONG_EDGE = 0.06;
 const COUNTER_WIN_MIN_ASK = 0.55;
-const COUNTER_WIN_MAX_ASK = 0.72;
-const COUNTER_WIN_MAX_BUDGET_PCT = 0.10;
-const COUNTER_WIN_MAIN_MAX_ASK = 0.76;
-const COUNTER_WIN_EARLY_LATE_MAX_ASK = 0.72;
-const COUNTER_WIN_WARMUP_FINAL_MAX_ASK = 0.68;
+const COUNTER_WIN_MAX_ASK = 0.78;
+const COUNTER_WIN_MAX_BUDGET_PCT = 0.12;
+const COUNTER_WIN_MAIN_MAX_ASK = 0.80;
+const COUNTER_WIN_EARLY_LATE_MAX_ASK = 0.78;
+const COUNTER_WIN_WARMUP_FINAL_MAX_ASK = 0.72;
+const COUNTER_WIN_HIGH_ASK_SOFT = 0.72;
+const COUNTER_WIN_HIGH_ASK_HARD = 0.76;
+const COUNTER_WIN_HIGH_ASK_SOFT_SIZE_SCALE = 0.70;
+const COUNTER_WIN_HIGH_ASK_HARD_SIZE_SCALE = 0.55;
 const COUNTER_WIN_STREAK_WIN_BOOST = 0.08;
 const COUNTER_WIN_STREAK_WIN_CAP = 1.24;
 const COUNTER_WIN_STREAK_LOSS_CUT = 0.12;
@@ -173,7 +177,7 @@ const REGIME_SHOCK_SUM_M60 = 0.0014;
 const REGIME_SWITCH_CONFIRM_STREAK = 3;
 const REGIME_SWITCH_COOLDOWN_MS = 20_000;
 const COUNTER_WIN_TREND_ASK_BONUS = 0.04;
-const COUNTER_WIN_TREND_MAX_ASK_HARD = 0.78;
+const COUNTER_WIN_TREND_MAX_ASK_HARD = 0.80;
 
 type TimeBucketName = "warmup" | "early" | "main" | "late" | "final";
 type CounterWinRegime = "trend" | "mean-revert" | "shock";
@@ -1844,16 +1848,11 @@ export class Hedge15mEngine {
                     if (!signalFastTrack && this.dumpConfirmCount < this.rtDumpConfirmCycles) {
                       // 还未达到确认次数且信号不够强, 继续等
                     } else {
-                      const counterDirForRegime: "up" | "down" = candidate.dir === "up" ? "down" : "up";
-                      const counterRegime = this.getCounterWinRegime(counterDirForRegime);
-                      const preferMispricingFirst = counterRegime === "mean-revert" && candidateBs.effectiveEdge < MISPRICING_FAST_LANE_EDGE;
-                      if (!preferMispricingFirst) {
+                      {
                         const counterEntered = await this.maybeEnterCounterWin(trader, rnd, candidate, candidateBs);
                         if (counterEntered) {
                           continue;
                         }
-                      } else {
-                        this.trackRoundRejectReason(`counter-wait-regime:${counterRegime}`);
                       }
                       // ── #2 Sum分歧度过滤: 市场不确定时拒绝入场 ──
                       const currentSum = this.upAsk + this.downAsk;
@@ -2041,10 +2040,6 @@ export class Hedge15mEngine {
     const counterAsk = counterDir === "up" ? this.upAsk : this.downAsk;
     const counterToken = counterDir === "up" ? rnd.upToken : rnd.downToken;
     const regime = this.getCounterWinRegime(counterDir);
-    if (regime === "shock") {
-      this.trackRoundRejectReason("counter-regime-shock");
-      return false;
-    }
     const bucketMaxAsk = Math.min(COUNTER_WIN_MAX_ASK, this.getCounterWinMaxAskByBucket(bucket));
     const regimeAskCap = regime === "trend"
       ? Math.min(COUNTER_WIN_TREND_MAX_ASK_HARD, bucketMaxAsk + COUNTER_WIN_TREND_ASK_BONUS)
@@ -2053,7 +2048,7 @@ export class Hedge15mEngine {
 
     const weakScore = this.dirAlignedCount - this.dirContraCount;
     const trendSupportsCounter = this.currentTrendBias === counterDir;
-    const signalsRejectWeakSide = weakScore <= -1;
+    const signalsRejectWeakSide = weakScore <= 0;
     if (!trendSupportsCounter && !signalsRejectWeakSide) return false;
 
     const counterBs = this.evaluateBsEntry(counterDir, counterAsk, rnd.secondsLeft, "counter-win", true);
@@ -2061,14 +2056,18 @@ export class Hedge15mEngine {
       this.logBsReject("counter-win", counterDir, counterAsk, counterBs);
       return false;
     }
-    const regimeMinEdge = regime === "trend" ? COUNTER_WIN_MIN_EDGE : COUNTER_WIN_STRONG_EDGE;
+    const regimeMinEdge = regime === "shock"
+      ? COUNTER_WIN_STRONG_EDGE + 0.02
+      : regime === "trend"
+        ? COUNTER_WIN_MIN_EDGE
+        : COUNTER_WIN_STRONG_EDGE;
     if (counterBs.effectiveEdge < regimeMinEdge) {
       this.trackRoundRejectReason(`counter-regime-edge: ${regime} ${(counterBs.effectiveEdge * 100).toFixed(1)}% < ${(regimeMinEdge * 100).toFixed(0)}%`);
       return false;
     }
 
     const deriv = this.getDerivativesBias(counterDir);
-    if (deriv.contra >= 2 && deriv.aligned === 0 && counterBs.effectiveEdge < COUNTER_WIN_STRONG_EDGE) {
+    if (deriv.contra >= 2 && deriv.aligned === 0 && counterBs.effectiveEdge < COUNTER_WIN_STRONG_EDGE + 0.02) {
       this.trackRoundRejectReason(`counter-deriv-contra: edge=${(counterBs.effectiveEdge * 100).toFixed(1)}%`);
       return false;
     }
@@ -2338,10 +2337,12 @@ export class Hedge15mEngine {
       }
     } else if (strategyMode === "counter-win") {
       const counterRegime = this.getCounterWinRegime(dir as "up" | "down");
-      budgetPct *= bsEdgeNet >= COUNTER_WIN_STRONG_EDGE ? 0.70 : 0.50;
-      if (counterRegime === "trend") budgetPct *= 1.15;
-      else if (counterRegime === "mean-revert") budgetPct *= 0.85;
-      else budgetPct *= 0.60;
+      budgetPct *= bsEdgeNet >= COUNTER_WIN_STRONG_EDGE ? 0.90 : 0.70;
+      if (counterRegime === "trend") budgetPct *= 1.10;
+      else if (counterRegime === "mean-revert") budgetPct *= 1.00;
+      else budgetPct *= 0.85;
+      if (askPrice > COUNTER_WIN_HIGH_ASK_HARD) budgetPct *= COUNTER_WIN_HIGH_ASK_HARD_SIZE_SCALE;
+      else if (askPrice > COUNTER_WIN_HIGH_ASK_SOFT) budgetPct *= COUNTER_WIN_HIGH_ASK_SOFT_SIZE_SCALE;
       const winScale = Math.min(
         COUNTER_WIN_STREAK_WIN_CAP,
         1 + this.consecutiveWins * COUNTER_WIN_STREAK_WIN_BOOST,

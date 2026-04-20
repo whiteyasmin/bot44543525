@@ -257,7 +257,7 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">入场约束</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
           <div class="r"><span class="k">趋势与信号</span><span class="v" id="h-signal-strength">--</span></div>
-          <div class="r"><span class="k">行情分型</span><span class="v" id="h-counter-regime">--</span></div>
+          <div class="r"><span class="k">分型(参考)</span><span class="v" id="h-counter-regime">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
           <div class="r"><span class="k">最近BSM拒绝</span><span class="v" id="h-bsm-reject">--</span></div>
         </div>
@@ -810,7 +810,7 @@ function render(s) {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '错价3%｜反向4/7%(≤0.72)｜panic双确认';
+  xEl.textContent = '错价3%｜反向3/6%(≤0.78, 高价缩仓)｜panic双确认';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -886,7 +886,7 @@ function render(s) {
     const dualAskEl = document.getElementById('p-dual-ask');
     if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
     document.getElementById('p-max-ask').textContent = '错价≤$'+s.rtMaxEntryAsk.toFixed(2)+' / 趋势≤$0.58~0.72';
-    document.getElementById('p-edge-rule').textContent = '错价3% · 反向4/7% · panic双确认';
+    document.getElementById('p-edge-rule').textContent = '错价3% · 反向3/6%(≤0.78) · 分型仅参考';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }
