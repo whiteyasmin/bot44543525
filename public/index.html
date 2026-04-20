@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>时间桶错价-15m</title>
+  <title>时间桶-15m</title>
 <style>
 :root{
   --bg:#09111b;
@@ -179,7 +179,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="login-overlay">
   <div class="login-box">
-    <h2>时间桶错价-15m</h2>
+      <h2>时间桶-15m</h2>
     <p class="login-sub">BTC 15分钟二元期权 · EV+正期望值引擎</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
@@ -190,7 +190,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="app" style="display:none">
   <header>
-    <h1>时间桶错价-15m</h1>
+        <h1>时间桶-15m</h1>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
       <button class="btn-b" onclick="downloadAll()">导出</button>
@@ -233,7 +233,7 @@ tr:hover{background:rgba(118,183,255,.03)}
         <h3>持仓 · 盘口</h3>
         <div class="decision-lamp">
           <div class="left">
-            <div class="eyebrow">错价 / EV 判断</div>
+            <div class="eyebrow">时间桶 / 动量 / EV</div>
             <div class="headline" id="hero-decision">--</div>
             <div class="sub" id="hero-decision-sub">等待错价...</div>
           </div>
@@ -242,22 +242,22 @@ tr:hover{background:rgba(118,183,255,.03)}
         <div class="hero4">
           <div class="box"><div class="eye">策略类型</div><div class="big" id="hero-strategy">--</div></div>
           <div class="box"><div class="eye">最佳EV</div><div class="big" id="hero-source">--</div></div>
-          <div class="box"><div class="eye">风险刹车</div><div class="big" id="hero-trend">--</div></div>
+          <div class="box"><div class="eye">风控状态</div><div class="big" id="hero-trend">--</div></div>
           <div class="box"><div class="eye">入场路径</div><div class="big" id="hero-derivatives">--</div></div>
         </div>
         <div class="kv">
           <div class="r"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
           <div class="r"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
-          <div class="r"><span class="k">版本</span><span class="v" id="h-version">时间桶错价-15m</span></div>
           <div class="r"><span class="k">策略</span><span class="v" id="h-strategy-mode">--</span></div>
           <div class="r"><span class="k">BTC</span><span class="v" id="h-btc">--</span></div>
           <div class="r"><span class="k">UP Ask · EV</span><span class="v" id="h-up-ev">--</span></div>
           <div class="r"><span class="k">DN Ask · EV</span><span class="v" id="h-dn-ev">--</span></div>
           <div class="r"><span class="k">净edge UP/DN</span><span class="v" id="h-net-edge">--</span></div>
           <div class="r"><span class="k">持仓</span><span class="v" id="h-leg1">--</span></div>
-          <div class="r"><span class="k">错价EV阈值</span><span class="v" id="h-expected">--</span></div>
+          <div class="r"><span class="k">入场约束</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
-          <div class="r"><span class="k">风险刹车</span><span class="v" id="h-signal-strength">--</span></div>
+          <div class="r"><span class="k">趋势与信号</span><span class="v" id="h-signal-strength">--</span></div>
+          <div class="r"><span class="k">行情分型</span><span class="v" id="h-counter-regime">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
           <div class="r"><span class="k">最近BSM拒绝</span><span class="v" id="h-bsm-reject">--</span></div>
         </div>
@@ -321,7 +321,7 @@ tr:hover{background:rgba(118,183,255,.03)}
             <label>仿真余额</label>
             <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
           </div>
-          <div style="grid-column: span 3; font-size:12px; color:var(--muted); margin-top:8px;">运行参数由后台策略生成 (仓位/时间窗/阈值)</div>
+          <div style="grid-column: span 3; font-size:12px; color:var(--muted); margin-top:8px;">运行参数由后台策略生成（时间桶/错价/反向赌赢/恐慌对冲）</div>
           <div>
             <label>资金地址</label>
             <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
@@ -650,8 +650,7 @@ function render(s) {
   stEl.textContent = s.status || stMap[s.hedgeState] || s.hedgeState;
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
-  document.getElementById('h-version').textContent = '时间桶错价-15m';
-  const strategyLabel = s.hedgeState === 'watching' ? '错价优先' : formatStrategyMode(s.activeStrategyMode);
+  const strategyLabel = s.hedgeState === 'watching' ? '时间桶错价+动量' : formatStrategyMode(s.activeStrategyMode);
   const strEl = document.getElementById('h-strategy-mode');
   strEl.textContent = strategyLabel;
   strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='counter-win'?'#f4c96b':s.activeStrategyMode==='trend'?'#76b7ff':'';
@@ -702,7 +701,7 @@ function render(s) {
   } else if (bestEdgePct != null && bestEdgePct >= 3) {
     decisionEl.textContent = 'EV 已过线';
     decisionEl.style.color = '#42d392';
-    decisionSubEl.textContent = '错价优先 · 最佳净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '% · 趋势只做刹车';
+    decisionSubEl.textContent = '时间桶错价优先 · 最佳净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '% · 允许反向赌赢/恐慌对冲';
   } else if (bestEdgePct != null && bestEdgePct >= 0) {
     decisionEl.textContent = '等更厚错价';
     decisionEl.style.color = '#f4c96b';
@@ -710,7 +709,7 @@ function render(s) {
   } else {
     decisionEl.textContent = '等待错价';
     decisionEl.style.color = '#8ea0b8';
-    decisionSubEl.textContent = '不等趋势单独给方向，先等市场价格给便宜货';
+    decisionSubEl.textContent = '趋势只定方向，入场仍看错价与EV；恶化时触发恐慌对冲';
   }
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
   // UP/DN asks with BS net-edge
@@ -766,22 +765,34 @@ function render(s) {
     sigEl.textContent = riskLabel + ' · 趋势' + trendText + ' · 信号' + al + '/' + co;
     sigEl.style.color = riskColor;
   }
+  const regimeEl = document.getElementById('h-counter-regime');
+  if (regimeEl) {
+    const regime = s.counterWinRegime || '--';
+    const regimeText = regime === 'trend' ? '趋势延续'
+      : regime === 'mean-revert' ? '震荡回归'
+      : regime === 'shock' ? '冲击风险'
+      : regime;
+    regimeEl.textContent = regimeText;
+    regimeEl.style.color = regime === 'trend' ? '#42d392' : regime === 'mean-revert' ? '#f4c96b' : regime === 'shock' ? '#ff6b6b' : '#8ea0b8';
+  }
   // 持仓策略: net-edge显示
   const meEl = document.getElementById('h-mid-exit');
-  if (s.hedgeState === 'leg1_filled') {
-    const edge = Number(s.leg1EffectiveEdge || 0);
-    const srcLabel = currentEntrySource;
-    meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' edge '+(edge>=0?'+':'')+(edge*100).toFixed(1)+'% ('+(s.leg1EdgeTier||'--')+')</span>';
-  } else {
-    meEl.textContent = '--'; meEl.style.color = '';
+  if (meEl) {
+    if (s.hedgeState === 'leg1_filled') {
+      const edge = Number(s.leg1EffectiveEdge || 0);
+      const srcLabel = currentEntrySource;
+      meEl.innerHTML = '<span class=\"tag tag-g\">'+srcLabel+' edge '+(edge>=0?'+':'')+(edge*100).toFixed(1)+'% ('+(s.leg1EdgeTier||'--')+')</span>';
+    } else {
+      meEl.textContent = '--'; meEl.style.color = '';
+    }
   }
   const explainerEl = document.getElementById('entry-explainer');
   if (explainerEl) {
     if (s.hedgeState === 'leg1_filled') {
       const edge = Number(s.leg1EffectiveEdge || 0);
-      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + '，趋势/衍生品只做刹车和仓位加减。';
+      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + '，若逆动量/逆BTC且fair恶化，会触发恐慌对冲。';
     } else {
-      explainerEl.textContent = '当前无持仓。策略=错价优先；若薄错价明显买反，且反方向高价票也有EV+，允许小仓反向赌赢。';
+      explainerEl.textContent = '当前无持仓。策略=时间桶+动量定方向，错价EV优先入场；薄错价会启用反向赌赢，高风险段由恐慌对冲接管。';
     }
   }
   if (s.hedgeLeg1Price>0) {
@@ -791,7 +802,7 @@ function render(s) {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '时间桶+动量定方向；顺风EV≥2%；逆风错价需12-18%；早/末段限仓';
+  xEl.textContent = '错价≥3%；反向赌赢需4%/7%且价格≤0.72；panic触发: BTC逆0.07%或M60逆0.06%或fair恶化';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -867,31 +878,52 @@ function render(s) {
     const dualAskEl = document.getElementById('p-dual-ask');
     if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
     document.getElementById('p-max-ask').textContent = '≤$'+s.rtMaxEntryAsk.toFixed(2);
-    document.getElementById('p-edge-rule').textContent = '3% / 8% / 12%';
+    document.getElementById('p-edge-rule').textContent = '错价≥3% · 反向≥4%/7% · panic自动';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }
 
   // Infra
-  const l50 = s.latencyP50||0;
+  const l50 = Number(s.latencyP50||0);
   const lEl = document.getElementById('h-lat-p50');
-  lEl.textContent = l50>0?l50+'ms · '+((s.latencyNetworkSource||'ping').toUpperCase()):'--';
-  lEl.style.color = latColor(l50);
+  if (l50 > 0) {
+    lEl.textContent = l50+'ms · '+((s.latencyNetworkSource||'ping').toUpperCase());
+    lEl.style.color = latColor(l50);
+  } else {
+    lEl.textContent = s.botRunning ? '采集中' : '未启动';
+    lEl.style.color = s.botRunning ? '#f4c96b' : '#8ea0b8';
+  }
   const d = s.diagnostics||{};
-  const mw = fmtWs(d.marketWsConnected, d.marketWsAgeMs);
-  const mwEl = document.getElementById('h-market-ws'); mwEl.textContent=mw.t; mwEl.style.color=mw.c;
+  const hasDiag = Object.keys(d).length > 0;
+  const mwEl = document.getElementById('h-market-ws');
   const bsEl = document.getElementById('h-book-source');
-  bsEl.textContent = fmtBook(d.orderbookSource, d.fallbackActive);
-  bsEl.style.color = d.orderbookSource==='ws'?'#42d392':d.orderbookSource==='http'?'#f4c96b':'';
   const s2f = document.getElementById('h-exec-s2f');
-  s2f.textContent = d.execSignalToFillP50>0?d.execSignalToFillP50+'ms / P90 '+(d.execSignalToFillP90||0)+'ms':'--';
-  s2f.style.color = latColor(d.execSignalToFillP50||0);
   const lbEl = document.getElementById('h-local-book');
-  lbEl.textContent = (d.localBookReady?'就绪':'未就绪')+' · '+(d.localBookTokenCount||0)+'/'+(d.trackedTokenCount||0);
-  lbEl.style.color = d.localBookReady?'#42d392':'#f4c96b';
   const liEl = document.getElementById('h-local-book-issues');
-  liEl.textContent = fmtIssue(d.localBookStaleCount, d.localBookCrossedCount);
-  liEl.style.color = ((d.localBookStaleCount||0)>0||(d.localBookCrossedCount||0)>0)?'#f4c96b':'#42d392';
+  if (hasDiag) {
+    const mw = fmtWs(d.marketWsConnected, d.marketWsAgeMs);
+    mwEl.textContent = mw.t;
+    mwEl.style.color = mw.c;
+    bsEl.textContent = fmtBook(d.orderbookSource, d.fallbackActive);
+    bsEl.style.color = d.orderbookSource==='ws'?'#42d392':d.orderbookSource==='http'?'#f4c96b':'#8ea0b8';
+    s2f.textContent = d.execSignalToFillP50>0?d.execSignalToFillP50+'ms / P90 '+(d.execSignalToFillP90||0)+'ms':'待样本';
+    s2f.style.color = d.execSignalToFillP50>0?latColor(d.execSignalToFillP50):'#8ea0b8';
+    lbEl.textContent = (d.localBookReady?'就绪':'未就绪')+' · '+(d.localBookTokenCount||0)+'/'+(d.trackedTokenCount||0);
+    lbEl.style.color = d.localBookReady?'#42d392':'#f4c96b';
+    liEl.textContent = fmtIssue(d.localBookStaleCount, d.localBookCrossedCount);
+    liEl.style.color = ((d.localBookStaleCount||0)>0||(d.localBookCrossedCount||0)>0)?'#f4c96b':'#42d392';
+  } else {
+    mwEl.textContent = s.botRunning ? '运行中(待WS)' : '未启动';
+    mwEl.style.color = s.botRunning ? '#f4c96b' : '#8ea0b8';
+    bsEl.textContent = s.botRunning ? '待采集' : '--';
+    bsEl.style.color = '#8ea0b8';
+    s2f.textContent = s.botRunning ? '待样本' : '--';
+    s2f.style.color = '#8ea0b8';
+    lbEl.textContent = s.botRunning ? '待采集' : '--';
+    lbEl.style.color = '#8ea0b8';
+    liEl.textContent = '--';
+    liEl.style.color = '#8ea0b8';
+  }
 
   renderHistoryTable(s.history || []);
 

@@ -249,11 +249,11 @@ app.get("/api/download-all", auth, (_req, res) => {
     `- 战绩: ${state.wins}W / ${state.losses}L / ${state.skips}S`,
     `- ROI: ${(state.sessionROI || 0).toFixed(1)}%`,
     `- 模式: ${state.tradingMode}`,
-    `- 版本: 时间桶错价-15m`,
+    `- 版本: 时间桶-15m`,
   ].join("\n");
 
   const md = [
-    `# 时间桶错价-15m 导出报告`,
+    `# 时间桶-15m 导出报告`,
     `> ${new Date().toISOString()}`,
     ``,
     `## 概要`,
@@ -277,14 +277,14 @@ app.get("/api/download-all", auth, (_req, res) => {
   ].join("\n");
 
   res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="时间桶错价-15m-report-${ts}.md"`);
+  res.setHeader("Content-Disposition", `attachment; filename="时间桶-15m-report-${ts}.md"`);
   res.send(md);
 });
 
 app.get("/api/download-logs", auth, (_req, res) => {
   const logPath = getLogFilePath();
   if (!fs.existsSync(logPath)) {
-    res.status(404).json({ error: "日志文件未找到" });
+    res.redirect("/api/download-all");
     return;
   }
   const raw = fs.readFileSync(logPath, "utf-8");
@@ -298,7 +298,7 @@ app.get("/api/download-logs", auth, (_req, res) => {
 app.get("/api/download-history", auth, (_req, res) => {
   const historyPath = bot.getHistoryFilePath();
   if (!fs.existsSync(historyPath)) {
-    res.status(404).json({ error: "历史文件未找到" });
+    res.redirect("/api/download-all");
     return;
   }
   res.setHeader("Content-Type", "application/json; charset=utf-8");
