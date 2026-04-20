@@ -26,7 +26,7 @@ import {
 } from "./strategyEngine";
 import { Trader, type TraderDiagnostics } from "./trader";
 
-const DIRECTIONAL_REACTIVE_ENABLED = true;
+const DIRECTIONAL_REACTIVE_ENABLED = false;
 const DISABLE_DUAL_SIDE_PREORDER = true;
 const DIRECTIONAL_MIN_POSITIVE_EDGE = 0.01;
 const DIRECTIONAL_SMALL_EDGE = 0.03;
@@ -154,8 +154,10 @@ const PANIC_HEDGE_FAIR_DROP = 0.16;
 const PANIC_HEDGE_FAIR_FLOOR = 0.38;
 const PANIC_HEDGE_ENTRY_DROP_RATIO = 0.18;
 const PANIC_HEDGE_MIN_HOLD_MS = 15_000;
+const PANIC_HEDGE_TREND_MIN_HOLD_MS = 45_000;
 const PANIC_HEDGE_TREND_ADVERSE_SCALE = 1.40;
 const PANIC_HEDGE_BALANCE_PCT = 0.10;
+const PANIC_HEDGE_TREND_BALANCE_PCT = 0.06;
 const PANIC_HEDGE_LEG_COST_PCT = 0.90;
 const PANIC_HEDGE_MIN_ASK = 0.18;
 const PANIC_HEDGE_MAX_ASK = 0.90;
@@ -3188,6 +3190,8 @@ export class Hedge15mEngine {
     const now = Date.now();
     if (this.panicHedgeLastAttemptAt > 0 && now - this.panicHedgeLastAttemptAt < PANIC_HEDGE_RETRY_MS) return;
     if (this.leg1FilledAt > 0 && now - this.leg1FilledAt < PANIC_HEDGE_MIN_HOLD_MS) return;
+    const trendEntry = this.leg1EntrySource === "directional-reactive";
+    if (trendEntry && this.leg1FilledAt > 0 && now - this.leg1FilledAt < PANIC_HEDGE_TREND_MIN_HOLD_MS) return;
 
     const leg1Dir = this.leg1Dir === "down" ? "down" : "up";
     const hedgeDir: "up" | "down" = leg1Dir === "up" ? "down" : "up";
@@ -3221,13 +3225,17 @@ export class Hedge15mEngine {
       ? m60 <= -(PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE)
       : m60 >= PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE;
     const strongMomentumConfirmed = strongAdverseBtc && strongAdverseM60;
-    if (trendProtected) {
+    if (trendEntry) {
+      // 趋势入场的panic只在冲击态启用，避免把正常回撤误判成要对冲
+      if (leg1Regime !== "shock") return;
+      if (!(strongMomentumConfirmed && adverseFair && adverseEntryDrop)) return;
+    } else if (trendProtected) {
       if (!(strongMomentumConfirmed && pricingDeteriorated)) return;
     } else {
       if (!momentumConfirmed && !mixedConfirmed) return;
     }
 
-    const capByBalance = this.balance * PANIC_HEDGE_BALANCE_PCT;
+    const capByBalance = this.balance * (trendEntry ? PANIC_HEDGE_TREND_BALANCE_PCT : PANIC_HEDGE_BALANCE_PCT);
     const capByLegCost = this.totalCost * PANIC_HEDGE_LEG_COST_PCT;
     const hedgeBudget = Math.min(capByBalance, capByLegCost);
     const hedgeShares = Math.min(MAX_SHARES, Math.floor(hedgeBudget / hedgeAsk));
@@ -3240,6 +3248,7 @@ export class Hedge15mEngine {
     if (adverseM60) reasons.push(`m60=${(m60 * 100).toFixed(3)}%`);
     if (adverseFair) reasons.push(`fair=${fairNow.toFixed(3)} drop=${(fairDrop * 100).toFixed(1)}%`);
     if (adverseEntryDrop) reasons.push(`entryDrop=${(Math.max(0, this.leg1FillPrice - leg1NowAsk) * 100).toFixed(1)}c`);
+    if (trendEntry) reasons.push("trend-entry");
     if (trendProtected) reasons.push("trend-protected");
     this.panicHedgeReason = reasons.join(", ");
 

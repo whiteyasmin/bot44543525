@@ -379,7 +379,7 @@ let auditTimer = null;
 let latestState = null;
 
 function formatEntrySource(source) {
-  if (source === 'directional-reactive') return '趋势入场';
+  if (source === 'directional-reactive') return '旧趋势单';
   if (source === 'reactive-mispricing') return '错价入场';
   if (source === 'counter-win') return '反向赌赢';
   if (source === 'dual-side-preorder') return '预挂入场';
@@ -387,7 +387,7 @@ function formatEntrySource(source) {
 }
 
 function formatStrategyMode(mode) {
-  if (mode === 'trend') return '趋势辅助';
+  if (mode === 'trend') return '已停用';
   if (mode === 'mispricing') return '错价优先';
   if (mode === 'counter-win') return '反向赌赢';
   if (mode === 'none') return '待机';
@@ -403,7 +403,7 @@ function compactDumpText(raw) {
 }
 
 function sourcePillClass(source) {
-  if (source === '趋势入场') return 'pill pill-trend';
+  if (source === '旧趋势单') return 'pill pill-idle';
   if (source === '错价入场') return 'pill pill-dump';
   if (source === '反向赌赢') return 'pill pill-trend';
   if (source === '预挂入场') return 'pill pill-pre';
@@ -658,10 +658,10 @@ function render(s) {
   stEl.textContent = s.status || stMap[s.hedgeState] || s.hedgeState;
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
-  const strategyLabel = s.hedgeState === 'watching' ? '桶+动量' : formatStrategyMode(s.activeStrategyMode);
+  const strategyLabel = s.hedgeState === 'watching' ? '错价+反向赌赢' : formatStrategyMode(s.activeStrategyMode);
   const strEl = document.getElementById('h-strategy-mode');
   strEl.textContent = strategyLabel;
-  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='counter-win'?'#f4c96b':s.activeStrategyMode==='trend'?'#76b7ff':'';
+  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='counter-win'?'#f4c96b':'';
   const trendText = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
   const trendColor = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'#8ea0b8';
   const trEl = document.getElementById('h-trend-bias');
@@ -671,7 +671,7 @@ function render(s) {
   }
   const currentEntrySource = formatEntrySource(s.hedgeState === 'leg1_filled' ? s.leg1EntrySource : '');
   const srcEl = document.getElementById('h-entry-source');
-  const sourceColor = currentEntrySource==='趋势入场'?'#76b7ff':currentEntrySource==='错价入场'?'#42d392':currentEntrySource==='反向赌赢'?'#f4c96b':currentEntrySource==='预挂入场'?'#f4c96b':'#8ea0b8';
+  const sourceColor = currentEntrySource==='错价入场'?'#42d392':currentEntrySource==='反向赌赢'?'#f4c96b':currentEntrySource==='预挂入场'?'#f4c96b':'#8ea0b8';
   if (srcEl) {
     srcEl.textContent = currentEntrySource;
     srcEl.style.color = sourceColor;
@@ -717,7 +717,7 @@ function render(s) {
   } else {
     decisionEl.textContent = '等待错价';
     decisionEl.style.color = '#8ea0b8';
-    decisionSubEl.textContent = '趋势定方向，错价+EV 决定入场';
+    decisionSubEl.textContent = '错价优先，薄错价可反向赌赢';
   }
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
   // UP/DN asks with BS net-edge
@@ -800,7 +800,7 @@ function render(s) {
       const edge = Number(s.leg1EffectiveEdge || 0);
       explainerEl.textContent = currentEntrySource + ' · ' + (s.hedgeLeg1Dir || '--') + ' · edge ' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '% · ' + riskLabel;
     } else {
-      explainerEl.textContent = '无持仓：方向看桶+动量，入场看EV。';
+      explainerEl.textContent = '无持仓：优先错价EV，次选反向赌赢。';
     }
   }
   if (s.hedgeLeg1Price>0) {
@@ -886,7 +886,7 @@ function render(s) {
     const dualAskEl = document.getElementById('p-dual-ask');
     if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
     document.getElementById('p-max-ask').textContent = '错价≤$'+s.rtMaxEntryAsk.toFixed(2)+' / 趋势≤$0.58~0.72';
-    document.getElementById('p-edge-rule').textContent = '错价≥3% · 反向≥4%/7% · panic双确认(顺风更严)';
+    document.getElementById('p-edge-rule').textContent = '错价3% · 反向4/7% · panic双确认';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }
