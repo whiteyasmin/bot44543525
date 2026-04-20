@@ -17,15 +17,6 @@ export interface PaperRuntimeState {
     leg1FillPrice: number;
     leg1OrderId: string;
     totalCost: number;
-    panicHedgeActive?: boolean;
-    panicHedgeDir?: string;
-    panicHedgeToken?: string;
-    panicHedgePrice?: number;
-    panicHedgeShares?: number;
-    panicHedgeCost?: number;
-    panicHedgeReason?: string;
-    panicHedgeOrderId?: string;
-    panicHedgeFilledAt?: number;
     roundStartBtcPrice: number;
     entrySource: string;
     filledAt: number;
@@ -60,15 +51,6 @@ export function loadPaperRuntimeState(): PaperRuntimeState | null {
         leg1FillPrice: Number(raw.openPosition.leg1FillPrice) || 0,
         leg1OrderId: String(raw.openPosition.leg1OrderId || ""),
         totalCost: Number(raw.openPosition.totalCost) || 0,
-        panicHedgeActive: !!raw.openPosition.panicHedgeActive,
-        panicHedgeDir: String(raw.openPosition.panicHedgeDir || ""),
-        panicHedgeToken: String(raw.openPosition.panicHedgeToken || ""),
-        panicHedgePrice: Number(raw.openPosition.panicHedgePrice) || 0,
-        panicHedgeShares: Number(raw.openPosition.panicHedgeShares) || 0,
-        panicHedgeCost: Number(raw.openPosition.panicHedgeCost) || 0,
-        panicHedgeReason: String(raw.openPosition.panicHedgeReason || ""),
-        panicHedgeOrderId: String(raw.openPosition.panicHedgeOrderId || ""),
-        panicHedgeFilledAt: Number(raw.openPosition.panicHedgeFilledAt) || 0,
         roundStartBtcPrice: Number(raw.openPosition.roundStartBtcPrice) || 0,
         entrySource: String(raw.openPosition.entrySource || ""),
         filledAt: Number(raw.openPosition.filledAt) || 0,

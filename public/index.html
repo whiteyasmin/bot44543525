@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vortex-15m</title>
+<title>时间桶错价-15m</title>
 <style>
 :root{
   --bg:#09111b;
@@ -179,7 +179,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="login-overlay">
   <div class="login-box">
-    <h2>Vortex-15m</h2>
+    <h2>时间桶错价-15m</h2>
     <p class="login-sub">BTC 15分钟二元期权 · EV+正期望值引擎</p>
     <label>密码</label>
     <input type="password" id="pwd" autocomplete="current-password">
@@ -190,7 +190,7 @@ tr:hover{background:rgba(118,183,255,.03)}
 
 <div id="app" style="display:none">
   <header>
-    <h1>Vortex-15m</h1>
+    <h1>时间桶错价-15m</h1>
     <div class="hdr-right">
       <span id="badge" class="badge badge-stop">已停止</span>
       <button class="btn-b" onclick="downloadAll()">导出</button>
@@ -248,6 +248,7 @@ tr:hover{background:rgba(118,183,255,.03)}
         <div class="kv">
           <div class="r"><span class="k">状态</span><span class="v" id="h-state">--</span></div>
           <div class="r"><span class="k">模式</span><span class="v" id="h-mode">--</span></div>
+          <div class="r"><span class="k">版本</span><span class="v" id="h-version">时间桶错价-15m</span></div>
           <div class="r"><span class="k">策略</span><span class="v" id="h-strategy-mode">--</span></div>
           <div class="r"><span class="k">BTC</span><span class="v" id="h-btc">--</span></div>
           <div class="r"><span class="k">UP Ask · EV</span><span class="v" id="h-up-ev">--</span></div>
@@ -517,15 +518,12 @@ function renderHistoryTable(history) {
     const src = formatEntrySource(h.entrySource);
     const shares = Number(h.leg1Shares || 0);
     const totalCost = Number(h.totalCost || 0);
-    const phShares = Number(h.panicHedgeShares || 0);
-    const phPrice = Number(h.panicHedgePrice || 0);
-    const ph = h.panicHedgeActive && phShares > 0 ? '<small style="color:#f4c96b"> + PH '+(h.panicHedgeDir||'--')+' $'+phPrice.toFixed(2)+' ×'+phShares.toFixed(0)+'</small>' : '';
     const cumProfit = Number(h.cumProfit || 0);
     const exitReason = String(h.exitReason || '-').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return '<tr><td>'+(h.time||'--')+'</td>'
       +'<td><span class="tag '+cls+'">'+(h.result||'--')+'</span>'+est+'</td>'
       +'<td>'+(h.leg1Dir||'--')+'</td>'
-      +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+shares.toFixed(0)+' · '+src+'</small>'+ph+'</td>'
+      +'<td>'+l1+'<small style="color:#7a8ea6"> ×'+shares.toFixed(0)+' · '+src+'</small></td>'
       +'<td style="color:'+(hEdge>=0.12?'#42d392':hEdge>=0.03?'#76b7ff':hEdge>=0?'#f4c96b':'#ff6b6b')+'">'+((hEdge>=0?'+':'')+(hEdge*100).toFixed(1))+'% '+hTier+'</td>'
       +'<td>\$'+totalCost.toFixed(2)+'</td>'
       +'<td style="color:'+(profit>=0?'#42d392':'#ff6b6b')+'"'+bd+'>'+pf+'</td>'
@@ -652,6 +650,7 @@ function render(s) {
   stEl.textContent = s.status || stMap[s.hedgeState] || s.hedgeState;
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
+  document.getElementById('h-version').textContent = '时间桶错价-15m';
   const strategyLabel = s.hedgeState === 'watching' ? '错价优先' : formatStrategyMode(s.activeStrategyMode);
   const strEl = document.getElementById('h-strategy-mode');
   strEl.textContent = strategyLabel;
@@ -780,20 +779,19 @@ function render(s) {
   if (explainerEl) {
     if (s.hedgeState === 'leg1_filled') {
       const edge = Number(s.leg1EffectiveEdge || 0);
-      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + (s.panicHedgeActive ? '，已触发panic hedge：'+(s.panicHedgeDir||'--')+'。' : '，若持仓被急速打反才启用panic hedge。');
+      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + '，趋势/衍生品只做刹车和仓位加减。';
     } else {
       explainerEl.textContent = '当前无持仓。策略=错价优先；若薄错价明显买反，且反方向高价票也有EV+，允许小仓反向赌赢。';
     }
   }
   if (s.hedgeLeg1Price>0) {
     const posEdge = Number(s.leg1EffectiveEdge || 0);
-    const ph = s.panicHedgeActive ? ' <span class="tag tag-y">PH '+(s.panicHedgeDir||'--')+' @\$'+Number(s.panicHedgePrice||0).toFixed(2)+' ×'+Number(s.panicHedgeShares||0).toFixed(0)+'</span>' : '';
-    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' edge'+(posEdge>=0?'+':'')+(posEdge*100).toFixed(1)+'%</span>'+ph;
+    document.getElementById('h-leg1').innerHTML='<span class="tag tag-b">'+s.hedgeLeg1Dir+' @\$'+s.hedgeLeg1Price.toFixed(2)+' edge'+(posEdge>=0?'+':'')+(posEdge*100).toFixed(1)+'%</span>';
   } else {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '时间桶+动量定方向；错价优先；持仓被急速打反才FAK panic hedge';
+  xEl.textContent = '时间桶+动量定方向；顺风EV≥2%；逆风错价需12-18%；早/末段限仓';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {

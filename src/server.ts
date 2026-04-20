@@ -211,13 +211,12 @@ app.get("/api/download-all", auth, (_req, res) => {
     historyRows = Array.isArray(raw) ? raw : Array.isArray(raw.history) ? raw.history : [];
   } catch { /* empty */ }
 
-  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | Panic Hedge | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
-  const hSep    = "|---|------|------|------|--------|------|-------------|------|------|------|------|------|--------|----------|";
+  const hHeader = "| # | 时间 | 结果 | 方向 | 入场价 | 份数 | 成本 | 盈亏 | 累计 | 来源 | 趋势 | 剩余秒 | 退出理由 |";
+  const hSep    = "|---|------|------|------|--------|------|------|------|------|------|------|--------|----------|";
   const hRows = historyRows.map((h: any, i: number) => {
     const price = h.leg1FillPrice > 0 ? h.leg1FillPrice : h.leg1Price || 0;
     const pf = h.profit >= 0 ? `+$${h.profit.toFixed(2)}` : `-$${Math.abs(h.profit).toFixed(2)}`;
-    const panic = h.panicHedgeActive ? `${h.panicHedgeDir || "-"} $${(h.panicHedgePrice || 0).toFixed(2)} x${(h.panicHedgeShares || 0).toFixed(0)}` : "-";
-    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | ${panic} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${formatEntrySource(h.entrySource)} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
+    return `| ${i + 1} | ${h.time || ""} | ${h.result || ""} | ${h.leg1Dir || ""} | $${price.toFixed(2)} | ${(h.leg1Shares || 0).toFixed(0)} | $${(h.totalCost || 0).toFixed(2)} | ${pf} | $${(h.cumProfit || 0).toFixed(2)} | ${formatEntrySource(h.entrySource)} | ${h.entryTrendBias || "-"} | ${h.entrySecondsLeft ?? "-"} | ${(h.exitReason || "-").replace(/\|/g, "/")} |`;
   });
 
   // ── Decision audit table ──
@@ -250,10 +249,11 @@ app.get("/api/download-all", auth, (_req, res) => {
     `- 战绩: ${state.wins}W / ${state.losses}L / ${state.skips}S`,
     `- ROI: ${(state.sessionROI || 0).toFixed(1)}%`,
     `- 模式: ${state.tradingMode}`,
+    `- 版本: 时间桶错价-15m`,
   ].join("\n");
 
   const md = [
-    `# Vortex-15m 导出报告`,
+    `# 时间桶错价-15m 导出报告`,
     `> ${new Date().toISOString()}`,
     ``,
     `## 概要`,
@@ -277,7 +277,7 @@ app.get("/api/download-all", auth, (_req, res) => {
   ].join("\n");
 
   res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="vortex-15m-report-${ts}.md"`);
+  res.setHeader("Content-Disposition", `attachment; filename="时间桶错价-15m-report-${ts}.md"`);
   res.send(md);
 });
 
