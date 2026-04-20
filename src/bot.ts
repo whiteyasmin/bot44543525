@@ -2100,8 +2100,14 @@ export class Hedge15mEngine {
     // ── Leg1价格上限: 只接受足够低价的EV+入场, 强信号时动态提升 ──
     const directionalBias = this.getEntryDirectionalBias();
     const timeBucket = this.getTimeBucket(rnd.secondsLeft);
+    const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+    const trendImpulse = (dir === "up" && shortMomentum >= DIRECTIONAL_CHASE_MOMENTUM)
+      || (dir === "down" && shortMomentum <= -DIRECTIONAL_CHASE_MOMENTUM);
+    const trendMaxEntryAsk = trendImpulse ? DIRECTIONAL_TREND_PULLBACK_MAX_ASK : DIRECTIONAL_TREND_MAX_ASK;
     const maxEntryAsk = strategyMode === "counter-win"
       ? Math.min(COUNTER_WIN_MAX_ASK, this.getCounterWinMaxAskByBucket(timeBucket))
+      : strategyMode === "trend"
+        ? trendMaxEntryAsk
       : this.getDynamicMaxEntryAsk(dir);
 
     const plan = planHedgeEntry({

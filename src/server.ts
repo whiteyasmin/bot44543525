@@ -264,11 +264,11 @@ app.get("/api/download-all", auth, (_req, res) => {
     `- 战绩: ${state.wins}W / ${state.losses}L / ${state.skips}S`,
     `- ROI: ${(state.sessionROI || 0).toFixed(1)}%`,
     `- 模式: ${state.tradingMode}`,
-    `- 版本: 时间桶-15m`,
+    `- 版本: 赞美欧姆弥赛亚`,
   ].join("\n");
 
   const md = [
-    `# 时间桶-15m 导出报告`,
+    `# 赞美欧姆弥赛亚 导出报告`,
     `> ${new Date().toISOString()}`,
     ``,
     `## 概要`,
@@ -294,8 +294,8 @@ app.get("/api/download-all", auth, (_req, res) => {
   setDownloadHeaders(
     res,
     "text/markdown; charset=utf-8",
-    `time-bucket-15m-report-${ts}.md`,
-    `时间桶-15m-report-${ts}.md`,
+    `ohm-messiah-report-${ts}.md`,
+    `赞美欧姆弥赛亚-report-${ts}.md`,
   );
   res.send(md);
 });
