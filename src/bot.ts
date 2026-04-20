@@ -148,16 +148,19 @@ const MIN_BALANCE_TO_TRADE = 5;             // 余额<$5停止交易 (不够开�
 const MAX_SESSION_LOSS_PCT = 0.35;          // 单次会话亏损超过初始资金35%→暂停交易 (更早止损保留本金)
 const CONSECUTIVE_LOSS_PAUSE = 3;           // 连续亏损5次→暂停1轮冷静期 (更快适应市场regime变化)
 const PANIC_HEDGE_ENABLED = true;
-const PANIC_HEDGE_BTC_ADVERSE_MOVE = 0.0007;
-const PANIC_HEDGE_MOMENTUM60_ADVERSE = 0.0006;
-const PANIC_HEDGE_FAIR_DROP = 0.12;
-const PANIC_HEDGE_FAIR_FLOOR = 0.42;
-const PANIC_HEDGE_BALANCE_PCT = 0.14;
+const PANIC_HEDGE_BTC_ADVERSE_MOVE = 0.0010;
+const PANIC_HEDGE_MOMENTUM60_ADVERSE = 0.0009;
+const PANIC_HEDGE_FAIR_DROP = 0.16;
+const PANIC_HEDGE_FAIR_FLOOR = 0.38;
+const PANIC_HEDGE_ENTRY_DROP_RATIO = 0.18;
+const PANIC_HEDGE_MIN_HOLD_MS = 15_000;
+const PANIC_HEDGE_TREND_ADVERSE_SCALE = 1.40;
+const PANIC_HEDGE_BALANCE_PCT = 0.10;
 const PANIC_HEDGE_LEG_COST_PCT = 0.90;
 const PANIC_HEDGE_MIN_ASK = 0.18;
 const PANIC_HEDGE_MAX_ASK = 0.90;
 const PANIC_HEDGE_MAX_ATTEMPTS = 3;
-const PANIC_HEDGE_RETRY_MS = 2500;
+const PANIC_HEDGE_RETRY_MS = 4000;
 const REGIME_TREND_M180 = 0.0012;
 const REGIME_SHOCK_M60 = 0.0018;
 const REGIME_SHOCK_VOL5M = 0.0024;
@@ -3123,6 +3126,7 @@ export class Hedge15mEngine {
 
     const now = Date.now();
     if (this.panicHedgeLastAttemptAt > 0 && now - this.panicHedgeLastAttemptAt < PANIC_HEDGE_RETRY_MS) return;
+    if (this.leg1FilledAt > 0 && now - this.leg1FilledAt < PANIC_HEDGE_MIN_HOLD_MS) return;
 
     const leg1Dir = this.leg1Dir === "down" ? "down" : "up";
     const hedgeDir: "up" | "down" = leg1Dir === "up" ? "down" : "up";
@@ -3141,8 +3145,26 @@ export class Hedge15mEngine {
     const fairNow = leg1NowBs.fairRaw;
     const fairDrop = this.leg1BsFair > 0 ? this.leg1BsFair - fairNow : 0;
     const adverseFair = fairDrop >= PANIC_HEDGE_FAIR_DROP || fairNow <= PANIC_HEDGE_FAIR_FLOOR;
-
-    if (!adverseBtc && !adverseM60 && !adverseFair) return;
+    const adverseEntryDrop = this.leg1FillPrice > 0
+      ? leg1NowAsk <= this.leg1FillPrice * (1 - PANIC_HEDGE_ENTRY_DROP_RATIO)
+      : false;
+    const momentumConfirmed = adverseBtc && adverseM60;
+    const pricingDeteriorated = adverseFair || adverseEntryDrop;
+    const mixedConfirmed = pricingDeteriorated && (adverseBtc || adverseM60);
+    const leg1Regime = this.getCounterWinRegime(leg1Dir);
+    const trendProtected = leg1Regime === "trend" && this.currentTrendBias === leg1Dir;
+    const strongAdverseBtc = leg1Dir === "up"
+      ? btcMove <= -(PANIC_HEDGE_BTC_ADVERSE_MOVE * PANIC_HEDGE_TREND_ADVERSE_SCALE)
+      : btcMove >= PANIC_HEDGE_BTC_ADVERSE_MOVE * PANIC_HEDGE_TREND_ADVERSE_SCALE;
+    const strongAdverseM60 = leg1Dir === "up"
+      ? m60 <= -(PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE)
+      : m60 >= PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE;
+    const strongMomentumConfirmed = strongAdverseBtc && strongAdverseM60;
+    if (trendProtected) {
+      if (!(strongMomentumConfirmed && pricingDeteriorated)) return;
+    } else {
+      if (!momentumConfirmed && !mixedConfirmed) return;
+    }
 
     const capByBalance = this.balance * PANIC_HEDGE_BALANCE_PCT;
     const capByLegCost = this.totalCost * PANIC_HEDGE_LEG_COST_PCT;
@@ -3156,6 +3178,8 @@ export class Hedge15mEngine {
     if (adverseBtc) reasons.push(`btc=${(btcMove * 100).toFixed(3)}%`);
     if (adverseM60) reasons.push(`m60=${(m60 * 100).toFixed(3)}%`);
     if (adverseFair) reasons.push(`fair=${fairNow.toFixed(3)} drop=${(fairDrop * 100).toFixed(1)}%`);
+    if (adverseEntryDrop) reasons.push(`entryDrop=${(Math.max(0, this.leg1FillPrice - leg1NowAsk) * 100).toFixed(1)}c`);
+    if (trendProtected) reasons.push("trend-protected");
     this.panicHedgeReason = reasons.join(", ");
 
     logger.warn(

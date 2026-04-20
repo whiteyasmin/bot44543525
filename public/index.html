@@ -701,15 +701,15 @@ function render(s) {
   } else if (bestEdgePct != null && bestEdgePct >= 3) {
     decisionEl.textContent = 'EV 已过线';
     decisionEl.style.color = '#42d392';
-    decisionSubEl.textContent = '时间桶错价优先 · 最佳净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '% · 允许反向赌赢/恐慌对冲';
+    decisionSubEl.textContent = '错价优先 · 净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%';
   } else if (bestEdgePct != null && bestEdgePct >= 0) {
     decisionEl.textContent = '等更厚错价';
     decisionEl.style.color = '#f4c96b';
-    decisionSubEl.textContent = '当前净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%，未到错价基础线 3%';
+    decisionSubEl.textContent = '净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%，未到 3%';
   } else {
     decisionEl.textContent = '等待错价';
     decisionEl.style.color = '#8ea0b8';
-    decisionSubEl.textContent = '趋势只定方向，入场仍看错价与EV；恶化时触发恐慌对冲';
+    decisionSubEl.textContent = '趋势定方向，错价+EV 决定入场';
   }
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
   // UP/DN asks with BS net-edge
@@ -790,9 +790,9 @@ function render(s) {
   if (explainerEl) {
     if (s.hedgeState === 'leg1_filled') {
       const edge = Number(s.leg1EffectiveEdge || 0);
-      explainerEl.textContent = currentEntrySource + '，方向=' + (s.hedgeLeg1Dir || '--') + '，净edge=' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%。风险=' + riskLabel + '，若逆动量/逆BTC且fair恶化，会触发恐慌对冲。';
+      explainerEl.textContent = currentEntrySource + '，' + (s.hedgeLeg1Dir || '--') + '，edge ' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '%，风险' + riskLabel + '。panic=双确认。';
     } else {
-      explainerEl.textContent = '当前无持仓。策略=时间桶+动量定方向，错价EV优先入场；薄错价会启用反向赌赢，高风险段由恐慌对冲接管。';
+      explainerEl.textContent = '无持仓：时间桶+动量定方向，优先错价EV，次选反向赌赢。';
     }
   }
   if (s.hedgeLeg1Price>0) {
@@ -802,7 +802,7 @@ function render(s) {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '错价≥3%；反向赌赢需4%/7%且价格≤0.72；panic触发: BTC逆0.07%或M60逆0.06%或fair恶化';
+  xEl.textContent = '错价≥3%｜反向≥4%/7%(≤0.72)｜panic双确认(顺风更严)';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -878,7 +878,7 @@ function render(s) {
     const dualAskEl = document.getElementById('p-dual-ask');
     if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
     document.getElementById('p-max-ask').textContent = '≤$'+s.rtMaxEntryAsk.toFixed(2);
-    document.getElementById('p-edge-rule').textContent = '错价≥3% · 反向≥4%/7% · panic自动';
+    document.getElementById('p-edge-rule').textContent = '错价≥3% · 反向≥4%/7% · panic双确认(顺风更严)';
     document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }

@@ -102,6 +102,21 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
   next();
 }
 
+function setDownloadHeaders(
+  res: express.Response,
+  contentType: string,
+  asciiFileName: string,
+  utf8FileName?: string,
+): void {
+  const safeAscii = asciiFileName.replace(/[^\x20-\x7E]/g, "_");
+  let disposition = `attachment; filename="${safeAscii}"`;
+  if (utf8FileName) {
+    disposition += `; filename*=UTF-8''${encodeURIComponent(utf8FileName)}`;
+  }
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Disposition", disposition);
+}
+
 // --- Bot ---
 const bot = new Hedge15mEngine();
 
@@ -276,8 +291,12 @@ app.get("/api/download-all", auth, (_req, res) => {
     ``,
   ].join("\n");
 
-  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="时间桶-15m-report-${ts}.md"`);
+  setDownloadHeaders(
+    res,
+    "text/markdown; charset=utf-8",
+    `time-bucket-15m-report-${ts}.md`,
+    `时间桶-15m-report-${ts}.md`,
+  );
   res.send(md);
 });
 
@@ -290,8 +309,7 @@ app.get("/api/download-logs", auth, (_req, res) => {
   const raw = fs.readFileSync(logPath, "utf-8");
   const lines = raw.split("\n");
   const tail = lines.slice(-1000).join("\n");
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(logPath)}"`);
+  setDownloadHeaders(res, "text/plain; charset=utf-8", path.basename(logPath));
   res.send(tail);
 });
 
@@ -301,8 +319,7 @@ app.get("/api/download-history", auth, (_req, res) => {
     res.redirect("/api/download-all");
     return;
   }
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(historyPath)}"`);
+  setDownloadHeaders(res, "application/json; charset=utf-8", path.basename(historyPath));
   res.send(fs.readFileSync(historyPath, "utf8"));
 });
 
@@ -312,8 +329,7 @@ app.get("/api/download-decision-audit", auth, (_req, res) => {
     res.status(404).json({ error: "审计日志文件未找到" });
     return;
   }
-  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(auditPath)}"`);
+  setDownloadHeaders(res, "application/x-ndjson; charset=utf-8", path.basename(auditPath));
   res.send(fs.readFileSync(auditPath, "utf8"));
 });
 
