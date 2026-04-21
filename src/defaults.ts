@@ -33,6 +33,7 @@ export const defaultSettings: Settings = {
   panicHedgeEnabled: true,
   panicLossCents: 18,
   hedgeSizeRatio: 0.5,
+  minHedgeImprovementPct: 25,
   maxHedgePrice: 0.6,
   maxHedgeSlippageCents: 5,
   paperBalance: 10000,

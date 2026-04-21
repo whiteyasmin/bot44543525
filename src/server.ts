@@ -183,7 +183,7 @@ const labels = {
  maxEntryPrice:'最高买入价', maxPositionUsdc:'固定仓位 USDC', kellyEnabled:'启用 1/2 Kelly', kellyFraction:'Kelly 系数', kellyLookbackTrades:'Kelly 回看交易数', kellyMinTrades:'Kelly 最小样本', kellyFallbackPct:'样本不足仓位 %', kellyMaxPct:'Kelly 最大仓位 %', maxShares:'最大份额', depthUsageRatio:'使用盘口比例', goodSpreadCents:'好价差 cents', okSpreadCents:'可接受价差 cents', minDepthToKellyRatio:'最小深度/Kelly', thinDepthMultiplier:'薄盘口折扣', okDepthMultiplier:'一般盘口折扣', minOrderUsdc:'最小订单 USDC',
  maxEntrySlippageCents:'入场滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
  panicHedgeEnabled:'启用 panic hedge', panicLossCents:'panic 亏损 cents',
- hedgeSizeRatio:'对冲比例', maxHedgePrice:'最高对冲价', maxHedgeSlippageCents:'对冲滑点 cents', paperBalance:'模拟余额 USDC',
+  hedgeSizeRatio:'最大对冲比例', minHedgeImprovementPct:'最小对冲改善 %', maxHedgePrice:'最高对冲价', maxHedgeSlippageCents:'对冲滑点 cents', paperBalance:'模拟余额 USDC',
  feeBps:'手续费 bps', enableSnapshots:'记录快照', snapshotIntervalMs:'快照间隔毫秒', enableOrderbookLogs:'记录盘口', keepMaxLogMb:'最大日志 MB'
 };
 const detailLabels = {
@@ -193,6 +193,8 @@ const detailLabels = {
  bid:'买一', entryAvgPrice:'入场均价', profitCents:'浮盈 cents', elapsedSeconds:'持仓秒', hedgeSide:'对冲方向',
   panicLoss:'达到 panic 亏损', severePanicLoss:'极端亏损', adverseRegime:'指标逆风', confirmedAdverseTrend:'反向趋势确认',
   hedgeAgeOk:'持仓时间足够', panicIndicator:'对冲触发确认', severePanic:'极端对冲兜底',
+  hedgeAsk:'对冲卖一', hedgeRatio:'动态对冲比例', hedgeCost:'对冲成本', unhedgedWorstLoss:'不对冲最坏亏损',
+  hedgedWorstLoss:'对冲后最坏亏损', hedgeImprovementPct:'对冲改善 %', minHedgeImprovementPct:'最小对冲改善 %',
   trendAtEntry:'入场指标', tailwind:'顺风', entryPriceBucket:'入场价格段',
  secondsLeftAtEntry:'入场剩余秒', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
  resolvePrice:'结算 BTC', pnl:'盈亏'
@@ -204,7 +206,7 @@ const advancedFields = [
  ['entryStartSeconds','number'],['entryEndSeconds','number'],['minBtcMoveBps','number'],['velocityLookbackSeconds','number'],['minBtcVelocityBps','number'],
  ['maxEntryPrice','number'],['kellyEnabled','checkbox'],['kellyFraction','number'],['kellyLookbackTrades','number'],['kellyMinTrades','number'],['kellyFallbackPct','number'],['kellyMaxPct','number'],['maxPositionUsdc','number'],['maxShares','number'],['depthUsageRatio','number'],['goodSpreadCents','number'],['okSpreadCents','number'],['minDepthToKellyRatio','number'],['thinDepthMultiplier','number'],['okDepthMultiplier','number'],['minOrderUsdc','number'],
  ['maxEntrySlippageCents','number'],['maxSpreadCents','number'],['repriceIntervalMs','number'],
- ['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['hedgeSizeRatio','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number'],
+ ['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['hedgeSizeRatio','number'],['minHedgeImprovementPct','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number'],
  ['paperBalance','number'],['feeBps','number'],['enableSnapshots','checkbox'],['snapshotIntervalMs','number'],['enableOrderbookLogs','checkbox'],['keepMaxLogMb','number']
 ];
 function fmt(n,d=2){return typeof n==='number'&&isFinite(n)?n.toFixed(d):'-'}

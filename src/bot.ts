@@ -417,10 +417,35 @@ export class Bot {
     const hedgeBook = bookForSide(hedgeSide, upBook, downBook);
     const ask = bestAsk(hedgeBook);
     if (ask == null || ask > settings.maxHedgePrice) return this.action("panic_hedge_skipped_price");
-    const targetShares = position.shares * settings.hedgeSizeRatio;
+    const hedgeRatio = dynamicHedgeRatio(settings.hedgeSizeRatio, ask);
+    const targetShares = position.shares * hedgeRatio;
     const targetUsdc = targetShares * ask;
     const hedgeFill = simulateBuy(hedgeBook, targetUsdc, settings.maxHedgeSlippageCents);
     if (!hedgeFill.avgPrice || hedgeFill.shares <= 0) return this.action("panic_hedge_unfilled");
+    const hedgeEffect = hedgeImprovement(position, hedgeFill.value, hedgeFill.shares, settings.feeBps);
+    if (hedgeEffect.improvementPct < settings.minHedgeImprovementPct) {
+      this.decide("hold", position.side, "对冲改善不足，跳过贵对冲", {
+        hedgeSide,
+        hedgeAsk: ask,
+        hedgeRatio,
+        hedgeShares: hedgeFill.shares,
+        hedgeCost: hedgeFill.value,
+        unhedgedWorstLoss: hedgeEffect.unhedgedWorstLoss,
+        hedgedWorstLoss: hedgeEffect.hedgedWorstLoss,
+        hedgeImprovementPct: hedgeEffect.improvementPct,
+        minHedgeImprovementPct: settings.minHedgeImprovementPct
+      });
+      await recordEvent("panic_hedge_skipped_inefficient", {
+        marketSlug: market.slug,
+        hedgeSide,
+        ask,
+        hedgeRatio,
+        hedgeFill,
+        hedgeEffect,
+        minHedgeImprovementPct: settings.minHedgeImprovementPct
+      });
+      return this.action("panic_hedge_skipped_inefficient");
+    }
 
     position.status = "hedged";
     position.hedgeSide = hedgeSide;
@@ -433,10 +458,14 @@ export class Bot {
     this.decide("hedged", hedgeSide, `已模拟买入 ${hedgeSide} 对冲`, {
       hedgeShares: hedgeFill.shares,
       hedgeAvgPrice: hedgeFill.avgPrice,
-      hedgeCost: hedgeFill.value
+      hedgeCost: hedgeFill.value,
+      hedgeRatio,
+      unhedgedWorstLoss: hedgeEffect.unhedgedWorstLoss,
+      hedgedWorstLoss: hedgeEffect.hedgedWorstLoss,
+      hedgeImprovementPct: hedgeEffect.improvementPct
     });
     await this.persist();
-    await recordEvent("panic_hedge_triggered", { marketSlug: market.slug, hedgeSide, hedgeFill, exitAttempt });
+    await recordEvent("panic_hedge_triggered", { marketSlug: market.slug, hedgeSide, hedgeRatio, hedgeFill, hedgeEffect, exitAttempt });
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: hedgeSide, reason: "panic_hedge", bids: hedgeBook.bids, asks: hedgeBook.asks });
   }
 
@@ -731,6 +760,30 @@ function direction(value: number, threshold: number): BtcRegime["moveDirection"]
   if (value >= threshold) return "up";
   if (value <= -threshold) return "down";
   return "flat";
+}
+
+function dynamicHedgeRatio(baseRatio: number, ask: number) {
+  if (ask <= 0.45) return baseRatio;
+  if (ask <= 0.55) return baseRatio * 0.75;
+  return baseRatio * 0.5;
+}
+
+function hedgeImprovement(position: Position, hedgeCost: number, hedgeShares: number, feeBps: number) {
+  const unhedgedWorstLoss = position.entryCost;
+  const totalCost = position.entryCost + hedgeCost;
+  const mainWinFees = (totalCost + position.shares) * feeBps / 10000;
+  const hedgeWinFees = (totalCost + hedgeShares) * feeBps / 10000;
+  const mainWinsPnl = position.shares - totalCost - mainWinFees;
+  const hedgeWinsPnl = hedgeShares - totalCost - hedgeWinFees;
+  const hedgedWorstLoss = Math.max(0, -mainWinsPnl, -hedgeWinsPnl);
+  const improvementPct = unhedgedWorstLoss > 0 ? (unhedgedWorstLoss - hedgedWorstLoss) / unhedgedWorstLoss * 100 : 0;
+  return {
+    unhedgedWorstLoss,
+    hedgedWorstLoss,
+    improvementPct,
+    mainWinsPnl,
+    hedgeWinsPnl
+  };
 }
 
 function isAdverseRegime(side: Side, regime: BtcRegime, profitCents: number) {

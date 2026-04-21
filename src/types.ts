@@ -34,6 +34,7 @@ export interface Settings {
   panicHedgeEnabled: boolean;
   panicLossCents: number;
   hedgeSizeRatio: number;
+  minHedgeImprovementPct: number;
   maxHedgePrice: number;
   maxHedgeSlippageCents: number;
   paperBalance: number;
