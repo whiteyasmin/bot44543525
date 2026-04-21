@@ -351,20 +351,20 @@ export class Bot {
     const isUp = position.side === "UP";
     const reversal = isUp ? moveBps <= settings.reversalExitBps : moveBps >= -settings.reversalExitBps;
     const nearResolve = secondInBucket >= 300 - settings.exitBeforeResolveSeconds;
+    const hardStop = profitCents <= -settings.stopLossCents || reversal;
 
     let reason: string | null = null;
-    if (profitCents >= settings.takeProfitCents) reason = "take_profit";
-    if (profitCents <= -settings.stopLossCents) reason = "stop_loss";
-    if (reversal) reason = "btc_reversal";
-    if (elapsed >= settings.maxHoldSeconds) reason = "max_hold";
-    if (nearResolve) reason = "exit_before_resolve";
+    if (hardStop && profitCents <= -settings.stopLossCents) reason = "stop_loss";
+    else if (hardStop && reversal) reason = "btc_reversal";
+    else if (elapsed >= settings.maxHoldSeconds) reason = "max_hold";
+    else if (nearResolve) reason = "exit_before_resolve";
 
-    const panic = settings.panicHedgeEnabled && (
+    const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
       profitCents <= -settings.panicLossCents ||
       (isUp ? moveBps <= settings.panicBtcReversalBps : moveBps >= -settings.panicBtcReversalBps)
     );
 
-    if (!reason && !panic) {
+    if (!reason && !shouldHedge) {
       this.decide("hold", position.side, "继续持仓，未触发退出条件", {
         bid,
         entryAvgPrice: position.entryAvgPrice,
@@ -375,21 +375,26 @@ export class Bot {
       return this.action("hold");
     }
 
+    if (shouldHedge) {
+      this.decide("panic_hedge", position.side, "先用反方向仓位对冲风险，尽量保留原单到结算的机会", {
+        bid,
+        profitCents,
+        moveBps,
+        elapsedSeconds: elapsed
+      });
+      await this.panicHedge(settings, market, position, position.side === "UP" ? "DOWN" : "UP", upBook, downBook, null);
+      return;
+    }
+
     const sell = simulateSell(book, position.shares, settings.maxExitSlippageCents);
     if (sell.avgPrice && sell.fillRatio >= settings.minExitFillRatio) {
-      this.decide("exiting", position.side, `触发 ${reason ?? "panic_exit"}，模拟退出成交`, { sell });
-      await this.closePosition(position, market, btc, moveBps, sell, reason ?? "panic_exit", book, settings);
+      this.decide("exiting", position.side, `触发 ${reason ?? "forced_exit"}，模拟退出成交`, { sell });
+      await this.closePosition(position, market, btc, moveBps, sell, reason ?? "forced_exit", book, settings);
       return;
     }
 
-    if (panic && position.status !== "hedged") {
-      this.decide("panic_hedge", position.side, "退出成交不足，准备买入反方向做 panic hedge", { sell });
-      await this.panicHedge(settings, market, position, position.side === "UP" ? "DOWN" : "UP", upBook, downBook, sell);
-      return;
-    }
-
-    this.state.lastAction = `exit_failed_${reason ?? "panic"}`;
-    this.decide("exit_failed", position.side, "触发退出但盘口成交不足，且未执行新的 hedge", { reason, sell });
+    this.state.lastAction = `exit_failed_${reason ?? "forced"}`;
+    this.decide("exit_failed", position.side, "需要退出，但当前盘口成交不足；继续持仓等待下一次处理", { reason, sell });
   }
 
   private async panicHedge(settings: Settings, market: MarketInfo, position: Position, hedgeSide: Side, upBook: OrderBook, downBook: OrderBook, exitAttempt: unknown) {
