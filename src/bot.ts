@@ -356,7 +356,6 @@ export class Bot {
     let reason: string | null = null;
     if (hardStop && profitCents <= -settings.stopLossCents) reason = "stop_loss";
     else if (hardStop && reversal) reason = "btc_reversal";
-    else if (elapsed >= settings.maxHoldSeconds) reason = "max_hold";
     else if (nearResolve) reason = "exit_before_resolve";
 
     const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
