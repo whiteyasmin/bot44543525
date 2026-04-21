@@ -85,7 +85,8 @@ export async function buildMarkdownReport() {
         ["\u5bf9\u51b2\u6bd4\u4f8b", `${num(n(settings.hedgeSizeRatio) * 100)}%`],
         ["\u6700\u5c0f\u5bf9\u51b2\u6539\u5584", `${num(settings.minHedgeImprovementPct)}%`],
         ["\u6700\u9ad8\u5bf9\u51b2\u4ef7", num(settings.maxHedgePrice, 3)],
-        ["\u624b\u7eed\u8d39", `${num(settings.feeBps)} bps`]
+        ["crypto \u52a8\u6001\u624b\u7eed\u8d39", "\u5b98\u65b9\u516c\u5f0f"],
+        ["\u989d\u5916\u8d39\u7528\u7f13\u51b2", `${num(settings.feeBps)} bps`]
       ]
     ),
     "",

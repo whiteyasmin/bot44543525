@@ -35,8 +35,16 @@ interface EntrySizing {
   spreadCents: number;
   depthToKellyRatio: number;
   qualityMultiplier: number;
+  entryTierMultiplier: number;
   limitedBy: string;
   kelly: KellySizing;
+}
+
+interface EntrySignal {
+  side: Side;
+  tier: string;
+  multiplier: number;
+  reason: string;
 }
 
 export class Bot {
@@ -245,27 +253,35 @@ export class Bot {
       return;
     }
 
-    const side = this.signal(btcRegime);
-    if (!side) {
+    const upAsk = bestAsk(upBook);
+    const downAsk = bestAsk(downBook);
+    const entrySignal = this.entrySignal(settings, moveBps, velocityBps, upAsk, downAsk);
+    if (!entrySignal) {
       this.state.lastAction = "no_signal";
-      this.decide("wait_signal", null, "动量或速度未达到入场阈值", {
+      this.decide("wait_signal", null, "价格分层信号未满足", {
         moveBps,
         minBtcMoveBps: settings.minBtcMoveBps,
         velocityBps,
         minBtcVelocityBps: settings.minBtcVelocityBps,
-        btcRegime
+        btcRegime,
+        upAsk,
+        downAsk
       });
       return;
     }
-    this.decide("signal", side, `出现 ${side} 信号，检查盘口和仓位`, { moveBps, velocityBps, btcRegime });
-    await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, side, bookForSide(side, upBook, downBook));
+    this.decide("signal", entrySignal.side, `出现 ${entrySignal.side} ${entrySignal.tier} 信号，检查盘口和仓位`, { moveBps, velocityBps, btcRegime, entrySignal, upAsk, downAsk });
+    await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, entrySignal, bookForSide(entrySignal.side, upBook, downBook));
   }
 
-  private signal(btcRegime: BtcRegime): Side | null {
-    return btcRegime.entrySide;
+  private entrySignal(settings: Settings, moveBps: number, velocityBps: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
+    const up = tierForSide(settings, "UP", upAsk, moveBps, velocityBps);
+    const down = tierForSide(settings, "DOWN", downAsk, moveBps, velocityBps);
+    if (up && down) return (upAsk ?? 1) <= (downAsk ?? 1) ? up : down;
+    return up ?? down;
   }
 
-  private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, side: Side, book: OrderBook) {
+  private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, signal: EntrySignal, book: OrderBook) {
+    const side = signal.side;
     const ask = bestAsk(book);
     if (ask == null) {
       this.decide("skip", side, "目标方向没有卖盘，无法买入", {});
@@ -281,7 +297,7 @@ export class Bot {
       return this.action("entry_skipped_spread");
     }
 
-    const sizing = await this.entrySizing(settings, book, ask, spread);
+    const sizing = await this.entrySizing(settings, book, ask, spread, signal.multiplier);
     if (sizing.targetUsdc < sizing.effectiveMinOrderUsdc) {
       this.decide("skip", side, "Kelly 仓位或盘口深度低于最小订单", {
         ...sizing,
@@ -321,6 +337,8 @@ export class Bot {
       tailwind,
       btcRegime,
       entryPriceBucket,
+      entrySignalTier: signal.tier,
+      entrySignalMultiplier: signal.multiplier,
       secondsLeftAtEntry,
       kellyPct: sizing.kelly.kellyPct,
       kellySource: sizing.kelly.source
@@ -337,6 +355,8 @@ export class Bot {
       tailwind,
       btcRegime,
       entryPriceBucket,
+      entrySignalTier: signal.tier,
+      entrySignalMultiplier: signal.multiplier,
       secondsLeftAtEntry,
       sizing
     });
@@ -422,7 +442,7 @@ export class Bot {
     const targetUsdc = targetShares * ask;
     const hedgeFill = simulateBuy(hedgeBook, targetUsdc, settings.maxHedgeSlippageCents);
     if (!hedgeFill.avgPrice || hedgeFill.shares <= 0) return this.action("panic_hedge_unfilled");
-    const hedgeEffect = hedgeImprovement(position, hedgeFill.value, hedgeFill.shares, settings.feeBps);
+    const hedgeEffect = hedgeImprovement(settings, position, hedgeFill.value, hedgeFill.shares, hedgeFill.avgPrice);
     if (hedgeEffect.improvementPct < settings.minHedgeImprovementPct) {
       this.decide("hold", position.side, "对冲改善不足，跳过贵对冲", {
         hedgeSide,
@@ -482,7 +502,8 @@ export class Bot {
     const hedgeValue = winner === position.hedgeSide ? (position.hedgeShares ?? 0) : 0;
     const totalValue = mainValue + hedgeValue;
     const totalCost = position.entryCost + (position.hedgeCost ?? 0);
-    const fees = (totalCost + totalValue) * settings.feeBps / 10000;
+    const fees = tradeFee(settings, position.shares, position.entryAvgPrice) +
+      (position.hedgeShares && position.hedgeAvgPrice ? tradeFee(settings, position.hedgeShares, position.hedgeAvgPrice) : 0);
     const grossPnl = totalValue - totalCost;
     const pnl = grossPnl - fees;
     const duplicateSettlement = (await readAllJsonl<{ tradeId?: string; exitReason?: string }>(paths.trades))
@@ -500,7 +521,7 @@ export class Bot {
       return;
     }
 
-    this.state.paperBalance += totalValue;
+    this.state.paperBalance += totalValue - fees;
     this.state.realizedPnl += pnl;
     this.state.position = null;
     this.state.lastAction = `settled_${winner}`;
@@ -525,6 +546,8 @@ export class Bot {
       tailwind: position.tailwind ?? null,
       btcRegimeAtEntry: position.btcRegime ?? null,
       entryPriceBucket: position.entryPriceBucket ?? null,
+      entrySignalTier: position.entrySignalTier ?? null,
+      entrySignalMultiplier: position.entrySignalMultiplier ?? null,
       secondsLeft: position.secondsLeftAtEntry ?? null,
       entryAvgPrice: position.entryAvgPrice,
       entryShares: position.shares,
@@ -549,13 +572,16 @@ export class Bot {
   private async snapshot(market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, upBook: OrderBook, downBook: OrderBook) {
     const settings = await readSettings();
     const kelly = await this.kellySizing(settings);
-    const signalSide = this.signal(btcRegime);
+    const upAsk = bestAsk(upBook);
+    const downAsk = bestAsk(downBook);
+    const signal = this.entrySignal(settings, moveBps, velocityBps, upAsk, downAsk);
+    const signalSide = signal?.side ?? null;
     const trendAtEntry = btcRegime.label;
     const signalBook = signalSide ? bookForSide(signalSide, upBook, downBook) : null;
     const signalAsk = signalBook ? bestAsk(signalBook) : null;
     const signalSpread = signalBook ? spreadCents(signalBook) : null;
     const sizing = signalBook && signalAsk != null && signalSpread != null
-      ? await this.entrySizing(settings, signalBook, signalAsk, signalSpread)
+      ? await this.entrySizing(settings, signalBook, signalAsk, signalSpread, signal?.multiplier ?? 1)
       : null;
     await recordSnapshot({
       marketSlug: market.slug,
@@ -593,6 +619,8 @@ export class Bot {
       tailwind: signalSide ? btcRegime.entrySide === signalSide : null,
       secondsLeft: 300 - secondInBucket,
       entryPriceBucket: signalAsk != null ? priceBucket(signalAsk) : null,
+      entrySignalTier: signal?.tier ?? null,
+      entrySignalMultiplier: signal?.multiplier ?? null,
       depthQualityTargetUsdc: sizing?.targetUsdc ?? null,
       depthCapUsdc: sizing?.depthCapUsdc ?? null,
       depthToKellyRatio: sizing?.depthToKellyRatio ?? null,
@@ -653,7 +681,7 @@ export class Bot {
     };
   }
 
-  private async entrySizing(settings: Settings, book: OrderBook, ask: number, spread: number): Promise<EntrySizing> {
+  private async entrySizing(settings: Settings, book: OrderBook, ask: number, spread: number, entryTierMultiplier = 1): Promise<EntrySizing> {
     const maxPrice = ask + settings.maxEntrySlippageCents / 100;
     const depthRawUsdc = askDepthUsdc(book, maxPrice);
     const depthCapUsdc = depthRawUsdc * settings.depthUsageRatio;
@@ -662,8 +690,8 @@ export class Bot {
     const qualityMultiplier = this.qualityMultiplier(settings, spread, depthToKellyRatio);
     const maxShareUsdc = settings.maxShares * ask;
     const preQualityTarget = Math.min(kelly.targetUsdc, depthCapUsdc, maxShareUsdc, this.state.paperBalance);
-    const targetUsdc = preQualityTarget * qualityMultiplier;
-    const effectiveMinOrderUsdc = this.effectiveMinOrderUsdc(settings, kelly.targetUsdc);
+    const targetUsdc = preQualityTarget * qualityMultiplier * entryTierMultiplier;
+    const effectiveMinOrderUsdc = this.effectiveMinOrderUsdc(settings, kelly.targetUsdc * entryTierMultiplier);
     const caps = [
       ["kelly", kelly.targetUsdc],
       ["depth", depthCapUsdc],
@@ -681,6 +709,7 @@ export class Bot {
       spreadCents: spread,
       depthToKellyRatio,
       qualityMultiplier,
+      entryTierMultiplier,
       limitedBy,
       kelly
     };
@@ -736,6 +765,43 @@ function priceBucket(price: number) {
   return ">0.80";
 }
 
+function tierForSide(settings: Settings, side: Side, ask: number | null, moveBps: number, velocityBps: number): EntrySignal | null {
+  if (ask == null || ask > settings.maxEntryPrice) return null;
+  const directionSign = side === "UP" ? 1 : -1;
+  const move = moveBps * directionSign;
+  const velocity = velocityBps * directionSign;
+
+  if (ask <= 0.58 && (move >= 2 || velocity >= settings.minBtcVelocityBps) && move > -1) {
+    const fullSignal = move >= settings.minBtcMoveBps && velocity >= settings.minBtcVelocityBps;
+    return {
+      side,
+      tier: fullSignal ? "cheap_confirmed" : "cheap_probe",
+      multiplier: fullSignal ? 1 : 0.5,
+      reason: fullSignal ? "低价且动量确认" : "低价提前试仓"
+    };
+  }
+
+  if (ask <= 0.68 && move >= settings.minBtcMoveBps && velocity >= settings.minBtcVelocityBps) {
+    return {
+      side,
+      tier: "standard",
+      multiplier: 1,
+      reason: "正常顺风入场"
+    };
+  }
+
+  if (ask <= 0.75 && move >= settings.minBtcMoveBps * 2 && velocity >= settings.minBtcVelocityBps * 2.5) {
+    return {
+      side,
+      tier: "strong_chase",
+      multiplier: 0.5,
+      reason: "强势追单减仓"
+    };
+  }
+
+  return null;
+}
+
 function classifyBtcRegime(settings: Settings, moveBps: number, velocityBps: number): BtcRegime {
   const moveDirection = direction(moveBps, settings.minBtcMoveBps);
   const velocityDirection = direction(velocityBps, settings.minBtcVelocityBps);
@@ -768,13 +834,14 @@ function dynamicHedgeRatio(baseRatio: number, ask: number) {
   return baseRatio * 0.5;
 }
 
-function hedgeImprovement(position: Position, hedgeCost: number, hedgeShares: number, feeBps: number) {
-  const unhedgedWorstLoss = position.entryCost;
+function hedgeImprovement(settings: Settings, position: Position, hedgeCost: number, hedgeShares: number, hedgeAvgPrice: number) {
+  const entryFee = tradeFee(settings, position.shares, position.entryAvgPrice);
+  const hedgeFee = tradeFee(settings, hedgeShares, hedgeAvgPrice);
+  const unhedgedWorstLoss = position.entryCost + entryFee;
   const totalCost = position.entryCost + hedgeCost;
-  const mainWinFees = (totalCost + position.shares) * feeBps / 10000;
-  const hedgeWinFees = (totalCost + hedgeShares) * feeBps / 10000;
-  const mainWinsPnl = position.shares - totalCost - mainWinFees;
-  const hedgeWinsPnl = hedgeShares - totalCost - hedgeWinFees;
+  const fees = entryFee + hedgeFee;
+  const mainWinsPnl = position.shares - totalCost - fees;
+  const hedgeWinsPnl = hedgeShares - totalCost - fees;
   const hedgedWorstLoss = Math.max(0, -mainWinsPnl, -hedgeWinsPnl);
   const improvementPct = unhedgedWorstLoss > 0 ? (unhedgedWorstLoss - hedgedWorstLoss) / unhedgedWorstLoss * 100 : 0;
   return {
@@ -782,8 +849,16 @@ function hedgeImprovement(position: Position, hedgeCost: number, hedgeShares: nu
     hedgedWorstLoss,
     improvementPct,
     mainWinsPnl,
-    hedgeWinsPnl
+    hedgeWinsPnl,
+    entryFee,
+    hedgeFee
   };
+}
+
+function tradeFee(settings: Settings, shares: number, price: number) {
+  const cryptoFee = shares * 0.072 * price * (1 - price);
+  const extraBuffer = shares * price * settings.feeBps / 10000;
+  return cryptoFee + extraBuffer;
 }
 
 function isAdverseRegime(side: Side, regime: BtcRegime, profitCents: number) {

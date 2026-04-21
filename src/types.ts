@@ -12,7 +12,6 @@ export interface Settings {
   velocityLookbackSeconds: number;
   minBtcVelocityBps: number;
   maxEntryPrice: number;
-  minEdgeBps: number;
   maxPositionUsdc: number;
   kellyEnabled: boolean;
   kellyFraction: number;
@@ -97,6 +96,8 @@ export interface Position {
   tailwind?: boolean;
   btcRegime?: BtcRegime;
   entryPriceBucket?: string;
+  entrySignalTier?: string;
+  entrySignalMultiplier?: number;
   secondsLeftAtEntry?: number;
   kellyPct?: number;
   kellySource?: string;

@@ -69,6 +69,7 @@ function sanitizeSettings(input: Settings): Settings {
   s.minOrderUsdc = clamp(s.minOrderUsdc, 0.01, 100000);
   s.maxEntrySlippageCents = clamp(s.maxEntrySlippageCents, 0, 50);
   s.hedgeSizeRatio = clamp(s.hedgeSizeRatio, 0, 2);
+  s.minHedgeImprovementPct = clamp(s.minHedgeImprovementPct, 0, 100);
   s.maxHedgeSlippageCents = clamp(s.maxHedgeSlippageCents, 0, 100);
   s.feeBps = clamp(s.feeBps, 0, 1000);
   s.paperBalance = clamp(s.paperBalance, 0, 1_000_000_000);

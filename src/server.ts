@@ -184,7 +184,7 @@ const labels = {
  maxEntrySlippageCents:'入场滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
  panicHedgeEnabled:'启用 panic hedge', panicLossCents:'panic 亏损 cents',
   hedgeSizeRatio:'最大对冲比例', minHedgeImprovementPct:'最小对冲改善 %', maxHedgePrice:'最高对冲价', maxHedgeSlippageCents:'对冲滑点 cents', paperBalance:'模拟余额 USDC',
- feeBps:'手续费 bps', enableSnapshots:'记录快照', snapshotIntervalMs:'快照间隔毫秒', enableOrderbookLogs:'记录盘口', keepMaxLogMb:'最大日志 MB'
+  feeBps:'额外费用缓冲 bps', enableSnapshots:'记录快照', snapshotIntervalMs:'快照间隔毫秒', enableOrderbookLogs:'记录盘口', keepMaxLogMb:'最大日志 MB'
 };
 const detailLabels = {
  market:'市场', secondInBucket:'局内秒', moveBps:'局内动量', velocityBps:'短线速度', btcPrice:'BTC 价格', btcSource:'BTC 数据源',
@@ -196,6 +196,7 @@ const detailLabels = {
   hedgeAsk:'对冲卖一', hedgeRatio:'动态对冲比例', hedgeCost:'对冲成本', unhedgedWorstLoss:'不对冲最坏亏损',
   hedgedWorstLoss:'对冲后最坏亏损', hedgeImprovementPct:'对冲改善 %', minHedgeImprovementPct:'最小对冲改善 %',
   trendAtEntry:'入场指标', tailwind:'顺风', entryPriceBucket:'入场价格段',
+  entrySignal:'入场信号', entrySignalTier:'入场分层', entrySignalMultiplier:'入场仓位倍率', upAsk:'UP 卖一', downAsk:'DOWN 卖一',
  secondsLeftAtEntry:'入场剩余秒', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
  resolvePrice:'结算 BTC', pnl:'盈亏'
 };
