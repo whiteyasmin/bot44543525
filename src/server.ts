@@ -24,8 +24,8 @@ app.use(cookieParser());
 
 app.get("/login", (_req, res) => res.type("html").send(loginHtml()));
 app.post("/api/login", (req, res) => {
-  if (!adminPassword) return res.status(500).json({ error: "ADMIN_PASSWORD is not configured" });
-  if (req.body?.password !== adminPassword) return res.status(401).json({ error: "Invalid password" });
+  if (!adminPassword) return res.status(500).json({ error: "ADMIN_PASSWORD 未配置" });
+  if (req.body?.password !== adminPassword) return res.status(401).json({ error: "密码错误" });
   const token = crypto.randomBytes(32).toString("hex");
   sessions.add(token);
   res.cookie("session", token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 7 * 86400_000 });
@@ -115,7 +115,7 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
   if (!adminPassword) return res.redirect("/login");
   const token = req.cookies.session;
   if (token && sessions.has(token)) return next();
-  if (req.path.startsWith("/api/")) return res.status(401).json({ error: "Unauthorized" });
+  if (req.path.startsWith("/api/")) return res.status(401).json({ error: "未登录" });
   return res.redirect("/login");
 }
 
@@ -171,7 +171,7 @@ function appHtml() {
   <section class="decision-panel"><h2>当前决策</h2><div id="decision">等待数据...</div></section>
   <section class="main-grid"><div><h2>UP 盘口</h2><div id="up" class="book">-</div></div><div><h2>DOWN 盘口</h2><div id="down" class="book">-</div></div><div><h2>当前仓位</h2><div id="pos" class="position">-</div></div></section>
   <section class="trade-grid"><div><h2>最近交易</h2><div id="trades" class="trades">暂无交易</div></div><div><h2>最近事件</h2><div id="events" class="events">暂无事件</div></div></section>
-  <section><h2>你只需要填这里</h2><p class="hint">仓位、止盈、止损、入场阈值先交给我用日志回测后调整。你现在只填模拟余额。</p><form id="quickSettings" class="quick-settings single"></form><button id="saveQuick">保存余额</button></section>
+  <section><h2>你只需要填这里</h2><p class="hint">仓位、入场阈值、对冲阈值先交给我用日志回测后调整。你现在只填模拟余额。</p><form id="quickSettings" class="quick-settings single"></form><button id="saveQuick">保存余额</button></section>
   <section class="live-note"><h2>实盘</h2><p>当前版本只跑模拟盘，不会真实下单。钱包私钥和 Polymarket API 凭证不放 UI；以后接实盘时应放 Railway 环境变量，避免进入浏览器、日志和 Markdown 报告。</p></section>
   <details><summary>高级参数</summary><section><form id="advancedSettings" class="settings"></form><button id="saveAdvanced">保存全部参数</button></section></details>
   <section class="logs-panel"><h2>日志</h2><div id="logs" class="logs"></div><button id="clear" class="danger">清空日志</button></section>
@@ -186,9 +186,18 @@ const labels = {
  hedgeSizeRatio:'对冲比例', maxHedgePrice:'最高对冲价', maxHedgeSlippageCents:'对冲滑点 cents', paperBalance:'模拟余额 USDC',
  feeBps:'手续费 bps', enableSnapshots:'记录快照', snapshotIntervalMs:'快照间隔毫秒', enableOrderbookLogs:'记录盘口', keepMaxLogMb:'最大日志 MB'
 };
-const quickFields = [
- ['paperBalance','number']
-];
+const detailLabels = {
+ market:'市场', secondInBucket:'局内秒', moveBps:'局内动量', velocityBps:'短线速度', btcPrice:'BTC 价格', btcSource:'BTC 数据源',
+ minBtcMoveBps:'动量阈值', minBtcVelocityBps:'速度阈值', btcRegime:'BTC 指标', ask:'卖一', maxEntryPrice:'最高买入价',
+ spreadCents:'价差 cents', maxSpreadCents:'最大价差 cents', shares:'份额', avgPrice:'均价', cost:'成本',
+ bid:'买一', entryAvgPrice:'入场均价', profitCents:'浮盈 cents', elapsedSeconds:'持仓秒', hedgeSide:'对冲方向',
+ panicLoss:'亏损触发', panicIndicator:'指标触发', trendAtEntry:'入场指标', tailwind:'顺风', entryPriceBucket:'入场价格段',
+ secondsLeftAtEntry:'入场剩余秒', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
+ resolvePrice:'结算 BTC', pnl:'盈亏'
+};
+const regimeMap={uptrend:'上行顺风',downtrend:'下行顺风',up_reversal:'上涨转弱',down_reversal:'下跌转强',chop:'震荡'};
+const directionMap={up:'向上',down:'向下',flat:'横盘'};
+const quickFields = [['paperBalance','number']];
 const advancedFields = [
  ['entryStartSeconds','number'],['entryEndSeconds','number'],['minBtcMoveBps','number'],['velocityLookbackSeconds','number'],['minBtcVelocityBps','number'],
  ['maxEntryPrice','number'],['kellyEnabled','checkbox'],['kellyFraction','number'],['kellyLookbackTrades','number'],['kellyMinTrades','number'],['kellyFallbackPct','number'],['kellyMaxPct','number'],['maxPositionUsdc','number'],['maxShares','number'],['depthUsageRatio','number'],['goodSpreadCents','number'],['okSpreadCents','number'],['minDepthToKellyRatio','number'],['thinDepthMultiplier','number'],['okDepthMultiplier','number'],['minOrderUsdc','number'],
@@ -197,21 +206,26 @@ const advancedFields = [
  ['paperBalance','number'],['feeBps','number'],['enableSnapshots','checkbox'],['snapshotIntervalMs','number'],['enableOrderbookLogs','checkbox'],['keepMaxLogMb','number']
 ];
 function fmt(n,d=2){return typeof n==='number'&&isFinite(n)?n.toFixed(d):'-'}
-const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',no_signal:'等待信号',hold:'持仓中',hold_hedged:'已对冲持有',one_trade_per_bucket:'本桶已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
+const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',no_signal:'等待信号',hold:'持仓中',hold_hedged:'已对冲持有',one_trade_per_bucket:'本局已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
 const eventMap={error:'错误',market_discovered:'发现当前市场',entry_filled:'模拟买入成交',panic_hedge_triggered:'触发 panic hedge',settings_updated:'参数已更新',paper_balance_reset:'模拟余额已重置',bot_started:'机器人已启动',logs_cleared:'日志已清空'};
 const statusMap={settled:'已结算',closed:'已平仓',open:'持仓中',hedged:'已对冲'};
 const reasonMap={settlement:'到期结算'};
 function actionText(a){return actionMap[a]||a||'-'}
 function bookHtml(b,t){if(!b)return '-';const rows=[];for(let i=0;i<5;i++){rows.push('<tr><td>'+(b.bids?.[i]?.price??'-')+'</td><td>'+(b.bids?.[i]?.size??'-')+'</td><td>'+(b.asks?.[i]?.price??'-')+'</td><td>'+(b.asks?.[i]?.size??'-')+'</td></tr>')}return '<div class="fresh">盘口 '+fresh(t)+'</div><div class="quote"><b>买一 '+(b.bids?.[0]?.price??'-')+'</b><b>卖一 '+(b.asks?.[0]?.price??'-')+'</b></div><table><thead><tr><th>买价</th><th>量</th><th>卖价</th><th>量</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>'}
-function posHtml(p){if(!p)return '<span class="muted">无仓位</span>';return '<div class="posline"><b>'+p.side+'</b><b>'+fmt(p.shares,2)+' 份</b></div><div>均价 '+fmt(p.entryAvgPrice,3)+' / 成本 '+fmt(p.entryCost,2)+'</div><div>状态 '+p.status+' / 入场第 '+p.entrySecond+' 秒</div>'+(p.hedgeSide?'<div>对冲 '+p.hedgeSide+' '+fmt(p.hedgeShares,2)+' 份 @ '+fmt(p.hedgeAvgPrice,3)+'</div>':'')}
-function decisionHtml(d){if(!d)return '<span class="muted">等待决策</span>';const side=d.side?'<b>'+d.side+'</b> ':'';return '<div class="decision-head">'+side+d.reason+'</div><div class="fresh">检查 '+fresh(d.checkedAt)+' / 状态 '+d.status+'</div>'+detailList(d.details)}
-function detailList(obj){if(!obj)return '';return '<div class="detail-grid">'+Object.entries(obj).slice(0,12).map(([k,v])=>'<div><span>'+k+'</span><b>'+valueText(v)+'</b></div>').join('')+'</div>'}
-function valueText(v){if(v==null)return '-';if(typeof v==='number')return Number.isInteger(v)?String(v):fmt(v,4);if(typeof v==='object')return JSON.stringify(v).slice(0,80);return String(v)}
+function posHtml(p){if(!p)return '<span class="muted">无仓位</span>';return '<div class="posline"><b>'+p.side+'</b><b>'+fmt(p.shares,2)+' 份</b></div><div>均价 '+fmt(p.entryAvgPrice,3)+' / 成本 '+fmt(p.entryCost,2)+'</div><div>状态 '+text(statusMap,p.status)+' / 入场第 '+p.entrySecond+' 秒</div>'+(p.hedgeSide?'<div>对冲 '+p.hedgeSide+' '+fmt(p.hedgeShares,2)+' 份 @ '+fmt(p.hedgeAvgPrice,3)+'</div>':'')}
+function decisionHtml(d){if(!d)return '<span class="muted">等待决策</span>';const side=d.side?'<b>'+d.side+'</b> ':'';return '<div class="decision-head">'+side+reasonText(d.reason)+'</div><div class="fresh">检查 '+fresh(d.checkedAt)+' / 状态 '+statusText(d.status)+'</div>'+detailList(d.details)}
+function detailList(obj){if(!obj)return '';return '<div class="detail-grid">'+Object.entries(obj).slice(0,12).map(([k,v])=>'<div><span>'+fieldText(k)+'</span><b>'+valueText(k,v)+'</b></div>').join('')+'</div>'}
+function fieldText(k){return detailLabels[k]||labels[k]||k}
+function valueText(k,v){if(v==null)return '-';if(k==='btcRegime'&&typeof v==='object')return regimeText(v);if(typeof v==='boolean')return v?'是':'否';if(typeof v==='number')return Number.isInteger(v)?String(v):fmt(v,4);if(typeof v==='object')return compactObject(v);if(typeof v==='string')return regimeMap[v]||directionMap[v]||v;return String(v)}
+function regimeText(r){return (regimeMap[r.label]||r.label||'-')+' / 动量 '+(directionMap[r.moveDirection]||r.moveDirection||'-')+' / 速度 '+(directionMap[r.velocityDirection]||r.velocityDirection||'-')}
+function compactObject(v){const entries=Object.entries(v).slice(0,4).map(([k,val])=>fieldText(k)+':'+valueText(k,val));return entries.join('，')}
+function reasonText(r){const map={'Strategy is paused; enable bot to make decisions':'策略已暂停，启动后才会决策','Checking entry and position conditions':'正在检查入场和持仓条件','Previous market ended; settling paper position':'上一局已结束，正在模拟结算','Open position: checking panic hedge, then holding to settlement':'已有仓位，检查是否需要 panic hedge，然后持有到结算','This 5m market was already traded; waiting for next market':'当前 5 分钟市场已交易，等待下一局','Momentum or velocity has not reached entry threshold':'动量或速度未达到入场阈值','Target side has no ask; cannot buy':'目标方向没有卖盘，无法买入','Target side price is above max entry price':'目标方向价格高于最高买入价','Spread is too wide':'盘口价差过大','Kelly size or book depth is below effective minimum order':'Kelly 仓位或盘口深度低于最小订单','Simulated fill is below effective minimum order':'模拟成交低于最小订单','No bid on held side; still holding to settlement':'持仓方向没有买盘，继续持有到结算','Panic hedge triggered; buy opposite side and keep main position to settlement':'触发 panic hedge，买入反方向保护成本，主仓持有到结算','Hedged; holding to settlement':'已对冲，继续持有到结算','Holding to settlement; hedge not triggered':'继续持有到结算，未触发对冲'};if(r&&r.startsWith('Signal '))return r.replace('Signal UP; checking book and sizing','出现 UP 信号，检查盘口和仓位').replace('Signal DOWN; checking book and sizing','出现 DOWN 信号，检查盘口和仓位');if(r&&r.startsWith('Paper bought '))return r.replace('Paper bought UP as panic hedge','已模拟买入 UP 对冲').replace('Paper bought DOWN as panic hedge','已模拟买入 DOWN 对冲').replace('Paper bought UP','已模拟买入 UP').replace('Paper bought DOWN','已模拟买入 DOWN');if(r&&r.startsWith('Market settled; winner '))return r.replace('Market settled; winner UP','市场已结算，结果 UP').replace('Market settled; winner DOWN','市场已结算，结果 DOWN');return map[r]||r||'-'}
+function statusText(s){const map={starting:'启动中',paused:'已暂停',checking:'检查中',settling:'结算中',managing_position:'管理仓位',skip:'跳过',wait_signal:'等待信号',signal:'出现信号',entered:'已入场',hold:'持有',panic_hedge:'准备对冲',hedged:'已对冲',settled:'已结算',error:'错误'};return map[s]||s||'-'}
 function renderForm(form, fields, s){form.innerHTML='';for(const [k,t] of fields){const wrap=document.createElement('label');wrap.textContent=labels[k]||k;const i=document.createElement('input');i.name=k;i.type=t;if(t==='checkbox')i.checked=!!s[k];else{i.value=s[k]??''; if(t==='number')i.step='any'}wrap.appendChild(i);form.appendChild(wrap)}}
 async function loadSettings(){const s=await (await fetch('/api/settings')).json();renderForm(quickSettings,quickFields,s);renderForm(advancedSettings,advancedFields,s)}
 function collect(form, fields){const body={};for(const [k,t] of fields){const el=form.elements[k];body[k]=t==='checkbox'?el.checked:(t==='number'?Number(el.value):el.value)}return body}
 async function saveForm(form, fields){const r=await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collect(form,fields))});if(!r.ok){alert((await r.json()).error||'保存失败')}await loadSettings();await loadDashboard()}
-async function loadDashboard(){const d=await (await fetch('/api/dashboard')).json();const s=d.state, cfg=d.settings;status.textContent=s.lastError?'错误':(cfg.botEnabled?'策略运行':'策略暂停');statusCard.className=cfg.botEnabled?'on':'off';action.textContent=s.lastError||actionText(s.lastAction);btc.textContent=s.btc?fmt(s.btc.price,2):'-';move.textContent='动量 '+fmt(s.moveBps,2)+' bps / 速度 '+fmt(s.velocityBps,2)+' / 指标 '+(s.btcRegime?.label||'-')+' / '+(s.btc?.source||'无数据源');market.textContent=s.currentMarket?s.currentMarket.slug.replace('btc-updown-5m-',''):'-';sec.textContent='第 '+s.secondInBucket+' 秒 / 剩余 '+Math.max(0,300-s.secondInBucket)+' 秒 / '+fresh(s.bookUpdatedAt);bal.textContent=fmt(s.paperBalance,2)+' USDC';pnl.textContent='PnL '+fmt(s.realizedPnl,2);decision.innerHTML=decisionHtml(s.decision);up.innerHTML=bookHtml(s.upBook,s.bookUpdatedAt);down.innerHTML=bookHtml(s.downBook,s.bookUpdatedAt);pos.innerHTML=posHtml(s.position);trades.innerHTML=tradeRows(d.recentTrades);events.innerHTML=eventRows(d.recentEvents)}
+async function loadDashboard(){const d=await (await fetch('/api/dashboard')).json();const s=d.state, cfg=d.settings;status.textContent=s.lastError?'错误':(cfg.botEnabled?'策略运行':'策略暂停');statusCard.className=cfg.botEnabled?'on':'off';action.textContent=s.lastError||actionText(s.lastAction);btc.textContent=s.btc?fmt(s.btc.price,2):'-';move.textContent='动量 '+fmt(s.moveBps,2)+' bps / 速度 '+fmt(s.velocityBps,2)+' / 指标 '+(s.btcRegime?regimeText(s.btcRegime):'-')+' / '+(s.btc?.source||'无数据源');market.textContent=s.currentMarket?s.currentMarket.slug.replace('btc-updown-5m-',''):'-';sec.textContent='第 '+s.secondInBucket+' 秒 / 剩余 '+Math.max(0,300-s.secondInBucket)+' 秒 / '+fresh(s.bookUpdatedAt);bal.textContent=fmt(s.paperBalance,2)+' USDC';pnl.textContent='PnL '+fmt(s.realizedPnl,2);decision.innerHTML=decisionHtml(s.decision);up.innerHTML=bookHtml(s.upBook,s.bookUpdatedAt);down.innerHTML=bookHtml(s.downBook,s.bookUpdatedAt);pos.innerHTML=posHtml(s.position);trades.innerHTML=tradeRows(d.recentTrades);events.innerHTML=eventRows(d.recentEvents)}
 function tradeRows(rows){if(!rows.length)return '<span class="muted">暂无交易</span>';return '<table><thead><tr><th>时间</th><th>方向</th><th>结果</th><th>PnL</th><th>原因</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+shortTime(r.exitTime||r.entryTime)+'</td><td>'+sideText(r.side)+'</td><td>'+text(statusMap,r.status)+'</td><td>'+fmt(r.netPnl,2)+'</td><td>'+text(reasonMap,r.exitReason)+'</td></tr>').join('')+'</tbody></table>'}
 function eventRows(rows){if(!rows.length)return '<span class="muted">暂无事件</span>';return rows.slice(0,6).map(r=>'<div class="event"><b>'+shortTime(r.timestamp)+'</b> '+text(eventMap,r.type)+'</div>').join('')}
 function text(map,key){return map[key]||key||'-'}

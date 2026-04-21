@@ -66,7 +66,7 @@ export class Bot {
       enabled: false,
       status: "starting",
       side: null,
-      reason: "鏈哄櫒浜哄惎鍔ㄤ腑",
+      reason: "机器人启动中",
       details: {}
     }
   };
@@ -157,7 +157,7 @@ export class Bot {
         await this.evaluate(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook);
       } else {
         this.state.lastAction = "bot_disabled";
-        this.decide("paused", null, "Strategy is paused; enable bot to make decisions", { secondInBucket });
+        this.decide("paused", null, "策略已暂停，启动后才会决策", { secondInBucket });
       }
 
       if (settings.enableSnapshots && nowMs - this.lastSnapshotAt >= settings.snapshotIntervalMs) {
@@ -206,7 +206,7 @@ export class Bot {
     downBook: OrderBook
   ) {
     const position = this.state.position;
-    this.decide("checking", null, "Checking entry and position conditions", {
+    this.decide("checking", null, "正在检查入场和持仓条件", {
       market: market.slug,
       secondInBucket,
       moveBps,
@@ -216,13 +216,13 @@ export class Bot {
       btcSource: btc.source
     });
     if (position && position.marketSlug !== market.slug) {
-      this.decide("settling", position.side, "Previous market ended; settling paper position", { positionMarket: position.marketSlug, currentMarket: market.slug });
+      this.decide("settling", position.side, "上一局已结束，正在模拟结算", { positionMarket: position.marketSlug, currentMarket: market.slug });
       await this.settleExpired(position, btc.price);
       return;
     }
 
     if (position) {
-      this.decide("managing_position", position.side, "Open position: checking panic hedge, then holding to settlement", {
+      this.decide("managing_position", position.side, "已有仓位，检查是否需要 panic hedge，然后持有到结算", {
         shares: position.shares,
         entryAvgPrice: position.entryAvgPrice
       });
@@ -232,12 +232,12 @@ export class Bot {
 
     if (this.lastBucketAction === market.slug) {
       this.state.lastAction = "one_trade_per_bucket";
-      this.decide("skip", null, "This 5m market was already traded; waiting for next market", { market: market.slug });
+      this.decide("skip", null, "当前 5 分钟市场已交易，等待下一局", { market: market.slug });
       return;
     }
     if (secondInBucket < settings.entryStartSeconds || secondInBucket > settings.entryEndSeconds) {
       this.state.lastAction = "outside_entry_window";
-      this.decide("skip", null, "涓嶅湪鍏佽鍏ュ満鏃堕棿绐楀彛", {
+      this.decide("skip", null, "不在允许入场时间窗口", {
         secondInBucket,
         entryStartSeconds: settings.entryStartSeconds,
         entryEndSeconds: settings.entryEndSeconds
@@ -248,7 +248,7 @@ export class Bot {
     const side = this.signal(btcRegime);
     if (!side) {
       this.state.lastAction = "no_signal";
-      this.decide("wait_signal", null, "Momentum or velocity has not reached entry threshold", {
+      this.decide("wait_signal", null, "动量或速度未达到入场阈值", {
         moveBps,
         minBtcMoveBps: settings.minBtcMoveBps,
         velocityBps,
@@ -257,7 +257,7 @@ export class Bot {
       });
       return;
     }
-    this.decide("signal", side, `Signal ${side}; checking book and sizing`, { moveBps, velocityBps, btcRegime });
+    this.decide("signal", side, `出现 ${side} 信号，检查盘口和仓位`, { moveBps, velocityBps, btcRegime });
     await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, side, bookForSide(side, upBook, downBook));
   }
 
@@ -268,22 +268,22 @@ export class Bot {
   private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, side: Side, book: OrderBook) {
     const ask = bestAsk(book);
     if (ask == null) {
-      this.decide("skip", side, "Target side has no ask; cannot buy", {});
+      this.decide("skip", side, "目标方向没有卖盘，无法买入", {});
       return this.action("entry_skipped_no_ask");
     }
     if (ask > settings.maxEntryPrice) {
-      this.decide("skip", side, "Target side price is above max entry price", { ask, maxEntryPrice: settings.maxEntryPrice });
+      this.decide("skip", side, "目标方向价格高于最高买入价", { ask, maxEntryPrice: settings.maxEntryPrice });
       return this.action("entry_skipped_price");
     }
     const spread = spreadCents(book);
     if (spread > settings.maxSpreadCents) {
-      this.decide("skip", side, "Spread is too wide", { spreadCents: spread, maxSpreadCents: settings.maxSpreadCents });
+      this.decide("skip", side, "盘口价差过大", { spreadCents: spread, maxSpreadCents: settings.maxSpreadCents });
       return this.action("entry_skipped_spread");
     }
 
     const sizing = await this.entrySizing(settings, book, ask, spread);
     if (sizing.targetUsdc < sizing.effectiveMinOrderUsdc) {
-      this.decide("skip", side, "Kelly size or book depth is below effective minimum order", {
+      this.decide("skip", side, "Kelly 仓位或盘口深度低于最小订单", {
         ...sizing,
         kelly: undefined
       });
@@ -292,7 +292,7 @@ export class Bot {
 
     const fill = simulateBuy(book, sizing.targetUsdc, settings.maxEntrySlippageCents);
     if (!fill.avgPrice || fill.value < sizing.effectiveMinOrderUsdc) {
-      this.decide("skip", side, "Simulated fill is below effective minimum order", { sizing, fill });
+      this.decide("skip", side, "模拟成交低于最小订单", { sizing, fill });
       return this.action("entry_unfilled");
     }
 
@@ -329,7 +329,7 @@ export class Bot {
     this.state.position = position;
     this.lastBucketAction = market.slug;
     this.state.lastAction = `entered_${side}`;
-    this.decide("entered", side, `Paper bought ${side}`, {
+    this.decide("entered", side, `已模拟买入 ${side}`, {
       shares: fill.shares,
       avgPrice: fill.avgPrice,
       cost: fill.value,
@@ -349,7 +349,7 @@ export class Bot {
     const book = bookForSide(position.side, upBook, downBook);
     const bid = bestBid(book);
     if (bid == null) {
-      this.decide("hold", position.side, "No bid on held side; still holding to settlement", { shares: position.shares });
+      this.decide("hold", position.side, "持仓方向没有买盘，继续持有到结算", { shares: position.shares });
       return this.action("hold_no_bid");
     }
 
@@ -364,7 +364,7 @@ export class Bot {
     );
 
     if (shouldHedge) {
-      this.decide("panic_hedge", position.side, "Panic hedge triggered; buy opposite side and keep main position to settlement", {
+      this.decide("panic_hedge", position.side, "触发 panic hedge，买入反方向保护成本，主仓持有到结算", {
         bid,
         entryAvgPrice: position.entryAvgPrice,
         profitCents,
@@ -380,7 +380,7 @@ export class Bot {
       return;
     }
 
-    this.decide("hold", position.side, position.hedgeSide ? "Hedged; holding to settlement" : "Holding to settlement; hedge not triggered", {
+    this.decide("hold", position.side, position.hedgeSide ? "已对冲，继续持有到结算" : "继续持有到结算，未触发对冲", {
       bid,
       entryAvgPrice: position.entryAvgPrice,
       profitCents,
@@ -412,7 +412,7 @@ export class Bot {
     this.state.paperBalance -= hedgeFill.value;
     this.state.position = position;
     this.state.lastAction = `panic_hedged_${hedgeSide}`;
-    this.decide("hedged", hedgeSide, `Paper bought ${hedgeSide} as panic hedge`, {
+    this.decide("hedged", hedgeSide, `已模拟买入 ${hedgeSide} 对冲`, {
       hedgeShares: hedgeFill.shares,
       hedgeAvgPrice: hedgeFill.avgPrice,
       hedgeCost: hedgeFill.value
@@ -442,7 +442,7 @@ export class Bot {
     this.state.realizedPnl += pnl;
     this.state.position = null;
     this.state.lastAction = `settled_${winner}`;
-    this.decide("settled", winner, `Market settled; winner ${winner}`, { resolvePrice, pnl });
+    this.decide("settled", winner, `市场已结算，结果 ${winner}`, { resolvePrice, pnl });
     await this.persist();
     await recordTrade({
       tradeId: position.id,
@@ -694,6 +694,8 @@ function direction(value: number, threshold: number): BtcRegime["moveDirection"]
 }
 
 function isAdverseRegime(side: Side, regime: BtcRegime, profitCents: number) {
+  if (profitCents >= 0) return false;
+
   if (side === "UP") {
     if (regime.label === "downtrend") return true;
     if (regime.label === "up_reversal" && profitCents < 0) return true;
