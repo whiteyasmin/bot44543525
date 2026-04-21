@@ -100,6 +100,10 @@ export interface Position {
   btcEntry: number;
   entryMoveBps: number;
   entryVelocityBps: number;
+  trendAtEntry?: string;
+  tailwind?: boolean;
+  entryPriceBucket?: string;
+  secondsLeftAtEntry?: number;
   kellyPct?: number;
   kellySource?: string;
   hedgeSide?: Side;

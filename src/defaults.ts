@@ -5,7 +5,7 @@ export const defaultSettings: Settings = {
   paperMode: true,
   autoDiscoverMarket: true,
   manualMarketUrl: "",
-  entryStartSeconds: 15,
+  entryStartSeconds: 30,
   entryEndSeconds: 220,
   minBtcMoveBps: 3,
   velocityLookbackSeconds: 15,

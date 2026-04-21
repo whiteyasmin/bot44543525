@@ -43,9 +43,34 @@ function sanitizeSettings(input: Settings): Settings {
   s.paperMode = true;
   s.repriceIntervalMs = clamp(s.repriceIntervalMs, 500, 10000);
   s.snapshotIntervalMs = clamp(s.snapshotIntervalMs, 500, 60000);
+  s.entryStartSeconds = clamp(s.entryStartSeconds, 0, 260);
+  s.entryEndSeconds = clamp(s.entryEndSeconds, s.entryStartSeconds, 260);
+  s.exitBeforeResolveSeconds = clamp(s.exitBeforeResolveSeconds, 5, 120);
+  s.maxHoldSeconds = clamp(s.maxHoldSeconds, 5, 260);
+  s.minBtcMoveBps = clamp(s.minBtcMoveBps, 0, 100);
+  s.minBtcVelocityBps = clamp(s.minBtcVelocityBps, 0, 100);
+  s.maxEntryPrice = clamp(s.maxEntryPrice, 0.01, 0.99);
+  s.maxHedgePrice = clamp(s.maxHedgePrice, 0.01, 0.99);
+  s.kellyFraction = clamp(s.kellyFraction, 0, 1);
+  s.kellyLookbackTrades = Math.round(clamp(s.kellyLookbackTrades, 1, 1000));
+  s.kellyMinTrades = Math.round(clamp(s.kellyMinTrades, 1, s.kellyLookbackTrades));
+  s.kellyMaxPct = clamp(s.kellyMaxPct, 0.1, 100);
+  s.kellyFallbackPct = clamp(s.kellyFallbackPct, 0.1, s.kellyMaxPct);
   s.depthUsageRatio = clamp(s.depthUsageRatio, 0.01, 1);
+  s.goodSpreadCents = clamp(s.goodSpreadCents, 0, 20);
+  s.okSpreadCents = clamp(s.okSpreadCents, s.goodSpreadCents, 50);
+  s.maxSpreadCents = clamp(s.maxSpreadCents, s.okSpreadCents, 100);
+  s.minDepthToKellyRatio = clamp(s.minDepthToKellyRatio, 0, 10);
+  s.thinDepthMultiplier = clamp(s.thinDepthMultiplier, 0, 1);
+  s.okDepthMultiplier = clamp(s.okDepthMultiplier, s.thinDepthMultiplier, 1);
+  s.minOrderUsdc = clamp(s.minOrderUsdc, 0.01, 100000);
+  s.maxEntrySlippageCents = clamp(s.maxEntrySlippageCents, 0, 50);
+  s.maxExitSlippageCents = clamp(s.maxExitSlippageCents, 0, 100);
   s.minExitFillRatio = clamp(s.minExitFillRatio, 0, 1);
   s.hedgeSizeRatio = clamp(s.hedgeSizeRatio, 0, 2);
+  s.maxHedgeSlippageCents = clamp(s.maxHedgeSlippageCents, 0, 100);
+  s.feeBps = clamp(s.feeBps, 0, 1000);
+  s.paperBalance = clamp(s.paperBalance, 0, 1_000_000_000);
   return s;
 }
 

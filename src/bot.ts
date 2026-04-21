@@ -27,6 +27,7 @@ interface KellySizing {
 
 interface EntrySizing {
   targetUsdc: number;
+  effectiveMinOrderUsdc: number;
   kellyTargetUsdc: number;
   depthCapUsdc: number;
   depthRawUsdc: number;
@@ -276,20 +277,24 @@ export class Bot {
     }
 
     const sizing = await this.entrySizing(settings, book, ask, spread);
-    if (sizing.targetUsdc < settings.minOrderUsdc) {
+    if (sizing.targetUsdc < sizing.effectiveMinOrderUsdc) {
       this.decide("skip", side, "Kelly 仓位或盘口深度低于最小订单", {
         ...sizing,
-        minOrderUsdc: settings.minOrderUsdc,
         kelly: undefined
       });
       return this.action("entry_skipped_depth");
     }
 
     const fill = simulateBuy(book, sizing.targetUsdc, settings.maxEntrySlippageCents);
-    if (!fill.avgPrice || fill.value < settings.minOrderUsdc) {
+    if (!fill.avgPrice || fill.value < sizing.effectiveMinOrderUsdc) {
       this.decide("skip", side, "模拟撮合未达到最小成交", { sizing, fill });
       return this.action("entry_unfilled");
     }
+
+    const trendAtEntry = trendFromMove(moveBps, settings.minBtcMoveBps);
+    const tailwind = isTailwind(side, trendAtEntry);
+    const entryPriceBucket = priceBucket(fill.avgPrice);
+    const secondsLeftAtEntry = 300 - secondInBucket;
 
     const position: Position = {
       id: `${new Date().toISOString()}-${market.slug}-${side}`,
@@ -307,6 +312,10 @@ export class Bot {
       btcEntry: btc.price,
       entryMoveBps: moveBps,
       entryVelocityBps: velocityBps,
+      trendAtEntry,
+      tailwind,
+      entryPriceBucket,
+      secondsLeftAtEntry,
       kellyPct: sizing.kelly.kellyPct,
       kellySource: sizing.kelly.source
     };
@@ -318,6 +327,10 @@ export class Bot {
       shares: fill.shares,
       avgPrice: fill.avgPrice,
       cost: fill.value,
+      trendAtEntry,
+      tailwind,
+      entryPriceBucket,
+      secondsLeftAtEntry,
       sizing
     });
     await this.persist();
@@ -437,6 +450,10 @@ export class Bot {
       btcExit: btc.price,
       entryMoveBps: position.entryMoveBps,
       entryVelocityBps: position.entryVelocityBps,
+      trendAtEntry: position.trendAtEntry ?? null,
+      tailwind: position.tailwind ?? null,
+      entryPriceBucket: position.entryPriceBucket ?? null,
+      secondsLeft: position.secondsLeftAtEntry ?? null,
       kellyPct: position.kellyPct ?? null,
       kellySource: position.kellySource ?? null,
       exitMoveBps: moveBps,
@@ -496,6 +513,11 @@ export class Bot {
       bucketEnd: position.bucketEnd,
       btcOpen: position.btcOpen,
       btcResolve: resolvePrice,
+      entrySecond: position.entrySecond,
+      trendAtEntry: position.trendAtEntry ?? null,
+      tailwind: position.tailwind ?? null,
+      entryPriceBucket: position.entryPriceBucket ?? null,
+      secondsLeft: position.secondsLeftAtEntry ?? null,
       entryAvgPrice: position.entryAvgPrice,
       entryShares: position.shares,
       entryCost: position.entryCost,
@@ -516,6 +538,7 @@ export class Bot {
     const settings = await readSettings();
     const kelly = await this.kellySizing(settings);
     const signalSide = this.signal(settings, moveBps, velocityBps);
+    const trendAtEntry = trendFromMove(moveBps, settings.minBtcMoveBps);
     const signalBook = signalSide ? bookForSide(signalSide, upBook, downBook) : null;
     const signalAsk = signalBook ? bestAsk(signalBook) : null;
     const signalSpread = signalBook ? spreadCents(signalBook) : null;
@@ -549,6 +572,10 @@ export class Bot {
       kellySampleSize: kelly.sampleSize,
       kellySource: kelly.source,
       signalSide,
+      trendAtEntry,
+      tailwind: signalSide ? isTailwind(signalSide, trendAtEntry) : null,
+      secondsLeft: 300 - secondInBucket,
+      entryPriceBucket: signalAsk != null ? priceBucket(signalAsk) : null,
       depthQualityTargetUsdc: sizing?.targetUsdc ?? null,
       depthCapUsdc: sizing?.depthCapUsdc ?? null,
       depthToKellyRatio: sizing?.depthToKellyRatio ?? null,
@@ -619,6 +646,7 @@ export class Bot {
     const maxShareUsdc = settings.maxShares * ask;
     const preQualityTarget = Math.min(kelly.targetUsdc, depthCapUsdc, maxShareUsdc, this.state.paperBalance);
     const targetUsdc = preQualityTarget * qualityMultiplier;
+    const effectiveMinOrderUsdc = this.effectiveMinOrderUsdc(settings, kelly.targetUsdc);
     const caps = [
       ["kelly", kelly.targetUsdc],
       ["depth", depthCapUsdc],
@@ -629,6 +657,7 @@ export class Bot {
 
     return {
       targetUsdc,
+      effectiveMinOrderUsdc,
       kellyTargetUsdc: kelly.targetUsdc,
       depthCapUsdc,
       depthRawUsdc,
@@ -650,6 +679,10 @@ export class Bot {
     else if (depthToKellyRatio < 1) depthMultiplier = settings.okDepthMultiplier;
 
     return clamp(spreadMultiplier * depthMultiplier, 0, 1);
+  }
+
+  private effectiveMinOrderUsdc(settings: Settings, kellyTargetUsdc: number) {
+    return Math.max(1, Math.min(settings.minOrderUsdc, Math.max(kellyTargetUsdc, 0)));
   }
 
   private action(action: string) {
@@ -675,4 +708,23 @@ function average(values: number[]) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Number(value) || 0));
+}
+
+function trendFromMove(moveBps: number, thresholdBps: number) {
+  if (moveBps >= thresholdBps) return "up";
+  if (moveBps <= -thresholdBps) return "down";
+  return "flat";
+}
+
+function isTailwind(side: Side, trend: string) {
+  return (side === "UP" && trend === "up") || (side === "DOWN" && trend === "down");
+}
+
+function priceBucket(price: number) {
+  if (price <= 0.35) return "<=0.35";
+  if (price <= 0.50) return "0.36-0.50";
+  if (price <= 0.60) return "0.51-0.60";
+  if (price <= 0.70) return "0.61-0.70";
+  if (price <= 0.80) return "0.71-0.80";
+  return ">0.80";
 }
