@@ -23,6 +23,11 @@ export interface Settings {
   kellyMaxPct: number;
   maxShares: number;
   depthUsageRatio: number;
+  goodSpreadCents: number;
+  okSpreadCents: number;
+  minDepthToKellyRatio: number;
+  thinDepthMultiplier: number;
+  okDepthMultiplier: number;
   minOrderUsdc: number;
   maxEntrySlippageCents: number;
   maxExitSlippageCents: number;

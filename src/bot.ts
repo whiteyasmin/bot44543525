@@ -25,6 +25,18 @@ interface KellySizing {
   source: "fallback" | "kelly" | "disabled";
 }
 
+interface EntrySizing {
+  targetUsdc: number;
+  kellyTargetUsdc: number;
+  depthCapUsdc: number;
+  depthRawUsdc: number;
+  spreadCents: number;
+  depthToKellyRatio: number;
+  qualityMultiplier: number;
+  limitedBy: string;
+  kelly: KellySizing;
+}
+
 export class Bot {
   private timer: NodeJS.Timeout | null = null;
   private priceHistory: BtcTick[] = [];
@@ -263,25 +275,19 @@ export class Bot {
       return this.action("entry_skipped_spread");
     }
 
-    const maxPrice = ask + settings.maxEntrySlippageCents / 100;
-    const depthLimitedUsdc = askDepthUsdc(book, maxPrice) * settings.depthUsageRatio;
-    const kelly = await this.kellySizing(settings);
-    const targetUsdc = Math.min(kelly.targetUsdc, depthLimitedUsdc, settings.maxShares * ask, this.state.paperBalance);
-    if (targetUsdc < settings.minOrderUsdc) {
+    const sizing = await this.entrySizing(settings, book, ask, spread);
+    if (sizing.targetUsdc < settings.minOrderUsdc) {
       this.decide("skip", side, "Kelly 仓位或盘口深度低于最小订单", {
-        targetUsdc,
+        ...sizing,
         minOrderUsdc: settings.minOrderUsdc,
-        kellyTargetUsdc: kelly.targetUsdc,
-        kellyPct: kelly.kellyPct,
-        kellySource: kelly.source,
-        depthLimitedUsdc
+        kelly: undefined
       });
       return this.action("entry_skipped_depth");
     }
 
-    const fill = simulateBuy(book, targetUsdc, settings.maxEntrySlippageCents);
+    const fill = simulateBuy(book, sizing.targetUsdc, settings.maxEntrySlippageCents);
     if (!fill.avgPrice || fill.value < settings.minOrderUsdc) {
-      this.decide("skip", side, "模拟撮合未达到最小成交", { targetUsdc, fill });
+      this.decide("skip", side, "模拟撮合未达到最小成交", { sizing, fill });
       return this.action("entry_unfilled");
     }
 
@@ -301,8 +307,8 @@ export class Bot {
       btcEntry: btc.price,
       entryMoveBps: moveBps,
       entryVelocityBps: velocityBps,
-      kellyPct: kelly.kellyPct,
-      kellySource: kelly.source
+      kellyPct: sizing.kelly.kellyPct,
+      kellySource: sizing.kelly.source
     };
     this.state.paperBalance -= fill.value;
     this.state.position = position;
@@ -312,11 +318,10 @@ export class Bot {
       shares: fill.shares,
       avgPrice: fill.avgPrice,
       cost: fill.value,
-      kellyPct: kelly.kellyPct,
-      kellySource: kelly.source
+      sizing
     });
     await this.persist();
-    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill, kelly });
+    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill, sizing });
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: side, reason: "entry", bids: book.bids, asks: book.asks });
   }
 
@@ -459,6 +464,7 @@ export class Bot {
   }
 
   private async settleExpired(position: Position, btcPrice: number) {
+    const settings = await readSettings();
     let resolvePrice = btcPrice;
     try {
       resolvePrice = await getBtcCloseForBucket(position.bucketStart);
@@ -470,7 +476,9 @@ export class Bot {
     const hedgeValue = winner === position.hedgeSide ? (position.hedgeShares ?? 0) : 0;
     const totalValue = mainValue + hedgeValue;
     const totalCost = position.entryCost + (position.hedgeCost ?? 0);
-    const pnl = totalValue - totalCost;
+    const fees = (totalCost + totalValue) * settings.feeBps / 10000;
+    const grossPnl = totalValue - totalCost;
+    const pnl = grossPnl - fees;
     this.state.paperBalance += totalValue;
     this.state.realizedPnl += pnl;
     this.state.position = null;
@@ -495,8 +503,8 @@ export class Bot {
       hedgeSide: position.hedgeSide ?? null,
       hedgeShares: position.hedgeShares ?? 0,
       hedgeCost: position.hedgeCost ?? 0,
-      grossPnl: pnl,
-      fees: 0,
+      grossPnl,
+      fees,
       netPnl: pnl,
       roiPct: totalCost > 0 ? pnl / totalCost * 100 : 0,
       exitReason: "settlement",
@@ -507,6 +515,13 @@ export class Bot {
   private async snapshot(market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, secondInBucket: number, upBook: OrderBook, downBook: OrderBook) {
     const settings = await readSettings();
     const kelly = await this.kellySizing(settings);
+    const signalSide = this.signal(settings, moveBps, velocityBps);
+    const signalBook = signalSide ? bookForSide(signalSide, upBook, downBook) : null;
+    const signalAsk = signalBook ? bestAsk(signalBook) : null;
+    const signalSpread = signalBook ? spreadCents(signalBook) : null;
+    const sizing = signalBook && signalAsk != null && signalSpread != null
+      ? await this.entrySizing(settings, signalBook, signalAsk, signalSpread)
+      : null;
     await recordSnapshot({
       marketSlug: market.slug,
       secondInBucket,
@@ -532,7 +547,13 @@ export class Bot {
       kellyPct: kelly.kellyPct,
       kellyTargetUsdc: kelly.targetUsdc,
       kellySampleSize: kelly.sampleSize,
-      kellySource: kelly.source
+      kellySource: kelly.source,
+      signalSide,
+      depthQualityTargetUsdc: sizing?.targetUsdc ?? null,
+      depthCapUsdc: sizing?.depthCapUsdc ?? null,
+      depthToKellyRatio: sizing?.depthToKellyRatio ?? null,
+      qualityMultiplier: sizing?.qualityMultiplier ?? null,
+      sizeLimitedBy: sizing?.limitedBy ?? null
     });
   }
 
@@ -586,6 +607,49 @@ export class Bot {
       sampleSize: trades.length,
       source: "kelly"
     };
+  }
+
+  private async entrySizing(settings: Settings, book: OrderBook, ask: number, spread: number): Promise<EntrySizing> {
+    const maxPrice = ask + settings.maxEntrySlippageCents / 100;
+    const depthRawUsdc = askDepthUsdc(book, maxPrice);
+    const depthCapUsdc = depthRawUsdc * settings.depthUsageRatio;
+    const kelly = await this.kellySizing(settings);
+    const depthToKellyRatio = kelly.targetUsdc > 0 ? depthCapUsdc / kelly.targetUsdc : 0;
+    const qualityMultiplier = this.qualityMultiplier(settings, spread, depthToKellyRatio);
+    const maxShareUsdc = settings.maxShares * ask;
+    const preQualityTarget = Math.min(kelly.targetUsdc, depthCapUsdc, maxShareUsdc, this.state.paperBalance);
+    const targetUsdc = preQualityTarget * qualityMultiplier;
+    const caps = [
+      ["kelly", kelly.targetUsdc],
+      ["depth", depthCapUsdc],
+      ["shares", maxShareUsdc],
+      ["balance", this.state.paperBalance]
+    ] as const;
+    const limitedBy = caps.reduce((best, item) => item[1] < best[1] ? item : best, caps[0])[0];
+
+    return {
+      targetUsdc,
+      kellyTargetUsdc: kelly.targetUsdc,
+      depthCapUsdc,
+      depthRawUsdc,
+      spreadCents: spread,
+      depthToKellyRatio,
+      qualityMultiplier,
+      limitedBy,
+      kelly
+    };
+  }
+
+  private qualityMultiplier(settings: Settings, spread: number, depthToKellyRatio: number) {
+    let spreadMultiplier = 1;
+    if (spread > settings.okSpreadCents) spreadMultiplier = 0;
+    else if (spread > settings.goodSpreadCents) spreadMultiplier = 0.7;
+
+    let depthMultiplier = 1;
+    if (depthToKellyRatio < settings.minDepthToKellyRatio) depthMultiplier = settings.thinDepthMultiplier;
+    else if (depthToKellyRatio < 1) depthMultiplier = settings.okDepthMultiplier;
+
+    return clamp(spreadMultiplier * depthMultiplier, 0, 1);
   }
 
   private action(action: string) {

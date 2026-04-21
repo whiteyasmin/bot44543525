@@ -180,7 +180,7 @@ function appHtml() {
 const labels = {
  autoDiscoverMarket:'自动当前市场', manualMarketUrl:'手动市场 URL', entryStartSeconds:'入场开始秒', entryEndSeconds:'入场结束秒',
  minBtcMoveBps:'BTC 动量 bps', velocityLookbackSeconds:'速度回看秒', minBtcVelocityBps:'BTC 速度 bps', reversalExitBps:'反转退出 bps',
- maxEntryPrice:'最高买入价', maxPositionUsdc:'固定仓位 USDC', kellyEnabled:'启用 1/2 Kelly', kellyFraction:'Kelly 系数', kellyLookbackTrades:'Kelly 回看交易数', kellyMinTrades:'Kelly 最小样本', kellyFallbackPct:'样本不足仓位 %', kellyMaxPct:'Kelly 最大仓位 %', maxShares:'最大份额', depthUsageRatio:'使用盘口比例', minOrderUsdc:'最小订单 USDC',
+ maxEntryPrice:'最高买入价', maxPositionUsdc:'固定仓位 USDC', kellyEnabled:'启用 1/2 Kelly', kellyFraction:'Kelly 系数', kellyLookbackTrades:'Kelly 回看交易数', kellyMinTrades:'Kelly 最小样本', kellyFallbackPct:'样本不足仓位 %', kellyMaxPct:'Kelly 最大仓位 %', maxShares:'最大份额', depthUsageRatio:'使用盘口比例', goodSpreadCents:'好价差 cents', okSpreadCents:'可接受价差 cents', minDepthToKellyRatio:'最小深度/Kelly', thinDepthMultiplier:'薄盘口折扣', okDepthMultiplier:'一般盘口折扣', minOrderUsdc:'最小订单 USDC',
  maxEntrySlippageCents:'入场滑点 cents', maxExitSlippageCents:'退出滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
  takeProfitCents:'止盈 cents', stopLossCents:'止损 cents', maxHoldSeconds:'最长持仓秒', exitBeforeResolveSeconds:'结算前退出秒',
  panicHedgeEnabled:'启用 panic hedge', panicLossCents:'panic 亏损 cents', panicBtcReversalBps:'panic 反转 bps', minExitFillRatio:'最小退出成交率',
@@ -192,7 +192,7 @@ const quickFields = [
 ];
 const advancedFields = [
  ['entryStartSeconds','number'],['entryEndSeconds','number'],['minBtcMoveBps','number'],['velocityLookbackSeconds','number'],['minBtcVelocityBps','number'],['reversalExitBps','number'],
- ['maxEntryPrice','number'],['kellyEnabled','checkbox'],['kellyFraction','number'],['kellyLookbackTrades','number'],['kellyMinTrades','number'],['kellyFallbackPct','number'],['kellyMaxPct','number'],['maxPositionUsdc','number'],['maxShares','number'],['depthUsageRatio','number'],['minOrderUsdc','number'],
+ ['maxEntryPrice','number'],['kellyEnabled','checkbox'],['kellyFraction','number'],['kellyLookbackTrades','number'],['kellyMinTrades','number'],['kellyFallbackPct','number'],['kellyMaxPct','number'],['maxPositionUsdc','number'],['maxShares','number'],['depthUsageRatio','number'],['goodSpreadCents','number'],['okSpreadCents','number'],['minDepthToKellyRatio','number'],['thinDepthMultiplier','number'],['okDepthMultiplier','number'],['minOrderUsdc','number'],
  ['maxEntrySlippageCents','number'],['maxExitSlippageCents','number'],['maxSpreadCents','number'],['repriceIntervalMs','number'],
  ['takeProfitCents','number'],['stopLossCents','number'],['maxHoldSeconds','number'],['exitBeforeResolveSeconds','number'],
  ['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['panicBtcReversalBps','number'],['minExitFillRatio','number'],['hedgeSizeRatio','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number'],
