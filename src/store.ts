@@ -85,3 +85,18 @@ export async function clearLogs() {
   await ensureDataDir();
   await Promise.all([paths.trades, paths.snapshots, paths.events, paths.orderbooks].map((p) => fs.writeFile(p, "")));
 }
+
+export async function readRecentJsonl(file: string, limit = 20): Promise<unknown[]> {
+  await ensureDataDir();
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => JSON.parse(line))
+      .reverse();
+  } catch {
+    return [];
+  }
+}

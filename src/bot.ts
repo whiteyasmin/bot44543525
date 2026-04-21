@@ -58,6 +58,15 @@ export class Bot {
     return this.state;
   }
 
+  async setPaperBalance(amount: number) {
+    if (!Number.isFinite(amount) || amount < 0) throw new Error("Invalid paper balance");
+    if (this.state.position) throw new Error("Cannot reset paper balance while a position is open");
+    this.state.paperBalance = amount;
+    this.state.realizedPnl = 0;
+    await this.persist();
+    await recordEvent("paper_balance_reset", { paperBalance: amount });
+  }
+
   private async persist() {
     await writeJsonFile(paths.state, {
       paperBalance: this.state.paperBalance,
