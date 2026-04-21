@@ -193,7 +193,8 @@ export class Bot {
       secondInBucket,
       moveBps,
       velocityBps,
-      btcPrice: btc.price
+      btcPrice: btc.price,
+      btcSource: btc.source
     });
     if (position && position.marketSlug !== market.slug) {
       this.decide("settling", position.side, "上一个市场已结束，正在模拟结算", { positionMarket: position.marketSlug, currentMarket: market.slug });
@@ -511,6 +512,7 @@ export class Bot {
       secondInBucket,
       btcPrice: btc.price,
       btcOpen: btc.open,
+      btcSource: btc.source,
       moveBps,
       velocityBps,
       upBid: bestBid(upBook),

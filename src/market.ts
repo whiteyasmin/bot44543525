@@ -1,6 +1,13 @@
 import type { BtcTick, MarketInfo, OrderBook, Side } from "./types.js";
 
-const BINANCE = "https://api.binance.com";
+const BINANCE_SPOT_ENDPOINTS = [
+  "https://api.binance.com",
+  "https://api1.binance.com",
+  "https://api2.binance.com",
+  "https://api3.binance.com",
+  "https://data-api.binance.vision"
+];
+const BINANCE_FUTURES = "https://fapi.binance.com";
 const GAMMA = "https://gamma-api.polymarket.com";
 const CLOB = "https://clob.polymarket.com";
 
@@ -24,30 +31,79 @@ export function extractSlug(input: string) {
 }
 
 export async function getBtcTick(): Promise<BtcTick> {
-  const [priceRes, klineRes] = await Promise.all([
-    fetch(`${BINANCE}/api/v3/ticker/price?symbol=BTCUSDT`),
-    fetch(`${BINANCE}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1`)
-  ]);
-  if (!priceRes.ok) throw new Error(`Binance price failed: ${priceRes.status}`);
-  if (!klineRes.ok) throw new Error(`Binance kline failed: ${klineRes.status}`);
-  const priceJson = await priceRes.json() as { price: string };
-  const klines = await klineRes.json() as unknown[][];
-  const k = klines[0];
-  return {
-    timestamp: Date.now(),
-    price: Number(priceJson.price),
-    open: Number(k?.[1] ?? priceJson.price)
-  };
+  const errors: string[] = [];
+  for (const base of BINANCE_SPOT_ENDPOINTS) {
+    try {
+      return await getSpotBtcTick(base);
+    } catch (error) {
+      errors.push(`${base}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  try {
+    return await getFuturesBtcTick();
+  } catch (error) {
+    errors.push(`${BINANCE_FUTURES}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  throw new Error(`Binance BTC data failed: ${errors.join(" | ")}`);
 }
 
 export async function getBtcCloseForBucket(bucketStart: number): Promise<number> {
   const startTime = bucketStart * 1000;
   const endTime = (bucketStart + 300) * 1000 - 1;
-  const res = await fetch(`${BINANCE}/api/v3/klines?symbol=BTCUSDT&interval=5m&startTime=${startTime}&endTime=${endTime}&limit=1`);
-  if (!res.ok) throw new Error(`Binance settlement kline failed: ${res.status}`);
+  const errors: string[] = [];
+  for (const base of BINANCE_SPOT_ENDPOINTS) {
+    try {
+      return await getCloseFromKlines(`${base}/api/v3/klines?symbol=BTCUSDT&interval=5m&startTime=${startTime}&endTime=${endTime}&limit=1`, bucketStart);
+    } catch (error) {
+      errors.push(`${base}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  try {
+    return await getCloseFromKlines(`${BINANCE_FUTURES}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&startTime=${startTime}&endTime=${endTime}&limit=1`, bucketStart);
+  } catch (error) {
+    errors.push(`${BINANCE_FUTURES}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  throw new Error(`Binance settlement data failed: ${errors.join(" | ")}`);
+}
+
+async function getSpotBtcTick(base: string): Promise<BtcTick> {
+  const [priceRes, klineRes] = await Promise.all([
+    fetch(`${base}/api/v3/ticker/price?symbol=BTCUSDT`),
+    fetch(`${base}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1`)
+  ]);
+  if (!priceRes.ok) throw new Error(`price ${priceRes.status}`);
+  if (!klineRes.ok) throw new Error(`kline ${klineRes.status}`);
+  const priceJson = await priceRes.json() as { price: string };
+  const klines = await klineRes.json() as unknown[][];
+  const k = klines[0];
+  const price = Number(priceJson.price);
+  const open = Number(k?.[1] ?? priceJson.price);
+  if (!Number.isFinite(price) || !Number.isFinite(open)) throw new Error("invalid spot BTC data");
+  return { timestamp: Date.now(), price, open, source: base.replace("https://", "") };
+}
+
+async function getFuturesBtcTick(): Promise<BtcTick> {
+  const [priceRes, klineRes] = await Promise.all([
+    fetch(`${BINANCE_FUTURES}/fapi/v1/ticker/price?symbol=BTCUSDT`),
+    fetch(`${BINANCE_FUTURES}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1`)
+  ]);
+  if (!priceRes.ok) throw new Error(`price ${priceRes.status}`);
+  if (!klineRes.ok) throw new Error(`kline ${klineRes.status}`);
+  const priceJson = await priceRes.json() as { price: string };
+  const klines = await klineRes.json() as unknown[][];
+  const k = klines[0];
+  const price = Number(priceJson.price);
+  const open = Number(k?.[1] ?? priceJson.price);
+  if (!Number.isFinite(price) || !Number.isFinite(open)) throw new Error("invalid futures BTC data");
+  return { timestamp: Date.now(), price, open, source: "fapi.binance.com" };
+}
+
+async function getCloseFromKlines(url: string, bucketStart: number) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`kline ${res.status}`);
   const klines = await res.json() as unknown[][];
   const close = Number(klines[0]?.[4]);
-  if (!Number.isFinite(close)) throw new Error(`No Binance settlement close for ${bucketStart}`);
+  if (!Number.isFinite(close)) throw new Error(`No close for ${bucketStart}`);
   return close;
 }
 

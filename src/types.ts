@@ -76,6 +76,7 @@ export interface BtcTick {
   timestamp: number;
   price: number;
   open: number;
+  source: string;
 }
 
 export interface Position {
