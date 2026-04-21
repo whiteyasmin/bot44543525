@@ -233,9 +233,9 @@ tr:hover{background:rgba(118,183,255,.03)}
         <h3>持仓 · 盘口</h3>
         <div class="decision-lamp">
           <div class="left">
-            <div class="eyebrow">时间桶 / 动量 / EV</div>
+            <div class="eyebrow">时间桶 / 方向 / EV</div>
             <div class="headline" id="hero-decision">--</div>
-            <div class="sub" id="hero-decision-sub">等待错价...</div>
+            <div class="sub" id="hero-decision-sub">等待反向赌赢...</div>
           </div>
           <div id="hero-source-pill" class="pill pill-idle">待机</div>
         </div>
@@ -257,17 +257,17 @@ tr:hover{background:rgba(118,183,255,.03)}
           <div class="r"><span class="k">入场约束</span><span class="v" id="h-expected">--</span></div>
           <div class="r"><span class="k">Sum/确认</span><span class="v" id="h-sum-confirm">--</span></div>
           <div class="r"><span class="k">趋势与信号</span><span class="v" id="h-signal-strength">--</span></div>
-          <div class="r"><span class="k">分型(参考)</span><span class="v" id="h-counter-regime">--</span></div>
+          <div class="r"><span class="k">时间桶</span><span class="v" id="h-counter-regime">--</span></div>
           <div class="r"><span class="k">盘口异常</span><span class="v" id="h-dump">--</span></div>
           <div class="r"><span class="k">最近BSM拒绝</span><span class="v" id="h-bsm-reject">--</span></div>
         </div>
         <div class="panel-note">
           <div class="title">当前入场解释</div>
-          <div id="entry-explainer">等待错价...</div>
+          <div id="entry-explainer">等待反向赌赢...</div>
         </div>
         <div style="margin-top:8px;padding:8px;border-radius:6px;background:rgba(8,15,24,.6);font-size:11px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span style="color:var(--muted);font-weight:600">错价监控</span>
+            <span style="color:var(--muted);font-weight:600">盘口监控</span>
             <span id="dump-status" style="font-family:var(--mono)">--</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;color:var(--muted)">
@@ -321,7 +321,7 @@ tr:hover{background:rgba(118,183,255,.03)}
             <label>仿真余额</label>
             <input type="number" id="cfg-paper-balance" placeholder="100" value="100" min="10" step="10">
           </div>
-          <div style="grid-column: span 3; font-size:12px; color:var(--muted); margin-top:8px;">运行参数由后台策略生成（时间桶/错价/反向赌赢/恐慌对冲）</div>
+          <div style="grid-column: span 3; font-size:12px; color:var(--muted); margin-top:8px;">运行参数由后台策略生成（时间桶/反向赌赢/恐慌对冲）</div>
           <div>
             <label>资金地址</label>
             <input type="text" id="cfg-fa" placeholder="0x..." autocomplete="off">
@@ -339,8 +339,8 @@ tr:hover{background:rgba(118,183,255,.03)}
         <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px" id="params-bar">
           <span style="color:var(--muted)">仓位 <b id="p-kelly" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">反应价格上限 <b id="p-max-ask" style="color:var(--text)">--</b></span>
-          <span style="color:var(--muted)">净edge门槛 <b id="p-edge-rule" style="color:var(--text)">错价≥3%</b></span>
-          <span style="color:var(--muted)">错价确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
+          <span style="color:var(--muted)">净edge门槛 <b id="p-edge-rule" style="color:var(--text)">反向≥3%</b></span>
+          <span style="color:var(--muted)">信号确认 <b id="p-dump-confirm" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">窗口 <b id="p-window" style="color:var(--text)">--</b></span>
           <span style="color:var(--muted)">费用 <b style="color:var(--green)">maker 0%</b></span>
         </div>
@@ -380,7 +380,7 @@ let latestState = null;
 
 function formatEntrySource(source) {
   if (source === 'directional-reactive') return '旧趋势单';
-  if (source === 'reactive-mispricing') return '错价入场';
+  if (source === 'reactive-mispricing') return '旧错价(停用)';
   if (source === 'counter-win') return '反向赌赢';
   if (source === 'dual-side-preorder') return '预挂入场';
   return source || '--';
@@ -388,7 +388,7 @@ function formatEntrySource(source) {
 
 function formatStrategyMode(mode) {
   if (mode === 'trend') return '已停用';
-  if (mode === 'mispricing') return '错价优先';
+  if (mode === 'mispricing') return '已停用';
   if (mode === 'counter-win') return '反向赌赢';
   if (mode === 'none') return '待机';
   return mode || '--';
@@ -404,7 +404,7 @@ function compactDumpText(raw) {
 
 function sourcePillClass(source) {
   if (source === '旧趋势单') return 'pill pill-idle';
-  if (source === '错价入场') return 'pill pill-dump';
+  if (source === '旧错价(停用)') return 'pill pill-idle';
   if (source === '反向赌赢') return 'pill pill-trend';
   if (source === '预挂入场') return 'pill pill-pre';
   return 'pill pill-idle';
@@ -658,10 +658,10 @@ function render(s) {
   stEl.textContent = s.status || stMap[s.hedgeState] || s.hedgeState;
   stEl.style.color = (s.status||'').includes('跳过')?'#f4c96b':'';
   document.getElementById('h-mode').textContent = s.tradingMode==='paper'?'仿真'+(s.paperSessionMode==='persistent'?'/累计':'/单次'):'实盘';
-  const strategyLabel = s.hedgeState === 'watching' ? '错价+反向赌赢' : formatStrategyMode(s.activeStrategyMode);
+  const strategyLabel = s.hedgeState === 'watching' ? '反向赌赢+时间桶' : formatStrategyMode(s.activeStrategyMode);
   const strEl = document.getElementById('h-strategy-mode');
   strEl.textContent = strategyLabel;
-  strEl.style.color = s.activeStrategyMode==='mispricing'?'#42d392':s.activeStrategyMode==='counter-win'?'#f4c96b':'';
+  strEl.style.color = s.activeStrategyMode==='counter-win'?'#f4c96b':'#8ea0b8';
   const trendText = {flat:'中性',up:'▲涨',down:'▼跌'}[s.trendBias]||'--';
   const trendColor = s.trendBias==='up'?'#42d392':s.trendBias==='down'?'#ff6b6b':'#8ea0b8';
   const trEl = document.getElementById('h-trend-bias');
@@ -671,7 +671,7 @@ function render(s) {
   }
   const currentEntrySource = formatEntrySource(s.hedgeState === 'leg1_filled' ? s.leg1EntrySource : '');
   const srcEl = document.getElementById('h-entry-source');
-  const sourceColor = currentEntrySource==='错价入场'?'#42d392':currentEntrySource==='反向赌赢'?'#f4c96b':currentEntrySource==='预挂入场'?'#f4c96b':'#8ea0b8';
+  const sourceColor = currentEntrySource==='反向赌赢'?'#f4c96b':currentEntrySource==='预挂入场'?'#f4c96b':'#8ea0b8';
   if (srcEl) {
     srcEl.textContent = currentEntrySource;
     srcEl.style.color = sourceColor;
@@ -709,15 +709,15 @@ function render(s) {
   } else if (bestEdgePct != null && bestEdgePct >= 3) {
     decisionEl.textContent = 'EV 已过线';
     decisionEl.style.color = '#42d392';
-    decisionSubEl.textContent = '错价优先 · 净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%';
+    decisionSubEl.textContent = '时间桶优先方向 · 净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%';
   } else if (bestEdgePct != null && bestEdgePct >= 0) {
-    decisionEl.textContent = '等更厚错价';
+    decisionEl.textContent = '等更好EV';
     decisionEl.style.color = '#f4c96b';
-    decisionSubEl.textContent = '净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%，未到 3%';
+    decisionSubEl.textContent = '净edge ' + (bestEdgePct>=0?'+':'') + bestEdgePct.toFixed(1) + '%，未到反向阈值';
   } else {
-    decisionEl.textContent = '等待错价';
+    decisionEl.textContent = '等待反向赌赢';
     decisionEl.style.color = '#8ea0b8';
-    decisionSubEl.textContent = '错价优先，薄错价可反向赌赢';
+    decisionSubEl.textContent = '时间桶 + 方向 + EV 共振后入场';
   }
   document.getElementById('h-btc').textContent = s.btcPrice>0?'\$'+s.btcPrice.toLocaleString('en-US',{minimumFractionDigits:2}):'--';
   // UP/DN asks with BS net-edge
@@ -775,13 +775,19 @@ function render(s) {
   }
   const regimeEl = document.getElementById('h-counter-regime');
   if (regimeEl) {
-    const regime = s.counterWinRegime || '--';
-    const regimeText = regime === 'trend' ? '趋势延续'
-      : regime === 'mean-revert' ? '震荡回归'
-      : regime === 'shock' ? '冲击风险'
-      : regime;
-    regimeEl.textContent = regimeText;
-    regimeEl.style.color = regime === 'trend' ? '#42d392' : regime === 'mean-revert' ? '#f4c96b' : regime === 'shock' ? '#ff6b6b' : '#8ea0b8';
+    const elapsedSec = Number(s.roundElapsed || 0);
+    const bucket = elapsedSec < 60 ? 'warmup'
+      : elapsedSec < 240 ? 'early'
+      : elapsedSec < 660 ? 'main'
+      : elapsedSec < 780 ? 'late'
+      : 'final';
+    const bucketText = bucket === 'warmup' ? '预热'
+      : bucket === 'early' ? '早段'
+      : bucket === 'main' ? '主段'
+      : bucket === 'late' ? '尾段'
+      : '末段';
+    regimeEl.textContent = bucketText;
+    regimeEl.style.color = bucket === 'main' ? '#42d392' : (bucket === 'early' || bucket === 'late') ? '#f4c96b' : '#8ea0b8';
   }
   // 持仓策略: net-edge显示
   const meEl = document.getElementById('h-mid-exit');
@@ -800,7 +806,7 @@ function render(s) {
       const edge = Number(s.leg1EffectiveEdge || 0);
       explainerEl.textContent = currentEntrySource + ' · ' + (s.hedgeLeg1Dir || '--') + ' · edge ' + (edge>=0?'+':'') + (edge*100).toFixed(1) + '% · ' + riskLabel;
     } else {
-      explainerEl.textContent = '无持仓：优先错价EV，次选反向赌赢。';
+      explainerEl.textContent = '无持仓：仅反向赌赢，按时间桶和EV入场。';
     }
   }
   if (s.hedgeLeg1Price>0) {
@@ -810,7 +816,7 @@ function render(s) {
     document.getElementById('h-leg1').textContent='--';
   }
   const xEl = document.getElementById('h-expected');
-  xEl.textContent = '错价3%｜反向3/6%(≤0.78, 高价缩仓)｜panic双确认';
+  xEl.textContent = '反向3/5%(桶内)｜高价缩仓(>0.72)｜panic成本止损';
   xEl.style.color = '#42d392';
   const scEl = document.getElementById('h-sum-confirm');
   if (scEl) {
@@ -885,9 +891,9 @@ function render(s) {
     document.getElementById('p-kelly').textContent = kMap[s.rtKellyFraction] || (s.rtKellyFraction*100).toFixed(0)+'% Kelly';
     const dualAskEl = document.getElementById('p-dual-ask');
     if (dualAskEl) dualAskEl.textContent = '≤$'+s.rtDualSideMaxAsk.toFixed(2);
-    document.getElementById('p-max-ask').textContent = '错价≤$'+s.rtMaxEntryAsk.toFixed(2)+' / 趋势≤$0.58~0.72';
-    document.getElementById('p-edge-rule').textContent = '错价3% · 反向3/6%(≤0.78) · 分型仅参考';
-    document.getElementById('p-dump-confirm').textContent = s.rtDumpConfirmCycles+'cycle';
+    document.getElementById('p-max-ask').textContent = '反向≤$0.78（主段可放宽）';
+    document.getElementById('p-edge-rule').textContent = '仅反向赌赢 · 时间桶3/5% · panic按成本止损';
+    document.getElementById('p-dump-confirm').textContent = s.dumpConfirmCount+'/'+s.rtDumpConfirmCycles;
     document.getElementById('p-window').textContent = s.rtEntryWindowS+'s / min'+s.rtMinEntrySecs+'s';
   }
 

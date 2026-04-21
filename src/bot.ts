@@ -26,40 +26,15 @@ import {
 } from "./strategyEngine";
 import { Trader, type TraderDiagnostics } from "./trader";
 
-const DIRECTIONAL_REACTIVE_ENABLED = false;
 const DISABLE_DUAL_SIDE_PREORDER = true;
-const DIRECTIONAL_MIN_POSITIVE_EDGE = 0.01;
-const DIRECTIONAL_SMALL_EDGE = 0.03;
-const DIRECTIONAL_MEDIUM_EDGE = 0.05;
-const DIRECTIONAL_SMALL_BUDGET_SCALE = 0.35;
-const DIRECTIONAL_MEDIUM_BUDGET_SCALE = 0.60;
-const DIRECTIONAL_CHASE_MOMENTUM = 0.0012;
-const DIRECTIONAL_TREND_MIN_BTC_MOVE = 0.0008;
-const DIRECTIONAL_TREND_MIN_EDGE = 0.02;
-const DIRECTIONAL_TREND_MAX_ASK = 0.72;
-const DIRECTIONAL_TREND_PULLBACK_MAX_ASK = 0.58;
-const MISPRICING_MIN_EDGE = 0.03;
-const MISPRICING_STRONG_DROP = 0.12;
-const MISPRICING_LOW_PRICE = 0.22;
-const MISPRICING_STRONG_CONTRA_SCORE = -3;
-const MISPRICING_CONTRA_EDGE_OVERRIDE = 0.12;
-const MISPRICING_NORMAL_EDGE = 0.08;
-const MISPRICING_FAST_LANE_EDGE = 0.12;
-const MISPRICING_LOW_TICKET_EDGE = 0.12;
-const MISPRICING_ABSOLUTE_MIN_ASK = 0.06;
-const MISPRICING_COUNTER_BTC_MOVE = 0.0005;
-const MISPRICING_COUNTER_BTC_MIN_EDGE = MISPRICING_NORMAL_EDGE;
-const MISPRICING_STRONG_COUNTER_MIN_EDGE = 0.18;
-const MISPRICING_STRONG_COUNTER_MAX_ASK = 0.15;
-const MISPRICING_UNFAVORED_FAIR = 0.30;
-const MISPRICING_DEEP_UNFAVORED_FAIR = 0.25;
-const MISPRICING_DEEP_UNFAVORED_MIN_EDGE = MISPRICING_FAST_LANE_EDGE;
+const COUNTER_SIGNAL_STRONG_EDGE = 0.12;
 const COUNTER_WIN_ENABLED = true;
 const COUNTER_WIN_MIN_EDGE = 0.03;
 const COUNTER_WIN_STRONG_EDGE = 0.06;
 const COUNTER_WIN_MIN_ASK = 0.55;
 const COUNTER_WIN_MAX_ASK = 0.78;
 const COUNTER_WIN_MAX_BUDGET_PCT = 0.12;
+const COUNTER_WIN_STRONG_BONUS_MAX_ASK = 0.82;
 const COUNTER_WIN_MAIN_MAX_ASK = 0.80;
 const COUNTER_WIN_EARLY_LATE_MAX_ASK = 0.78;
 const COUNTER_WIN_WARMUP_FINAL_MAX_ASK = 0.72;
@@ -67,25 +42,25 @@ const COUNTER_WIN_HIGH_ASK_SOFT = 0.72;
 const COUNTER_WIN_HIGH_ASK_HARD = 0.76;
 const COUNTER_WIN_HIGH_ASK_SOFT_SIZE_SCALE = 0.70;
 const COUNTER_WIN_HIGH_ASK_HARD_SIZE_SCALE = 0.55;
+const COUNTER_WIN_BUCKET_FALLBACK_EDGE = 0.05;
+const COUNTER_WIN_BUCKET_SPREAD_EDGE = 0.015;
 const COUNTER_WIN_STREAK_WIN_BOOST = 0.08;
 const COUNTER_WIN_STREAK_WIN_CAP = 1.24;
 const COUNTER_WIN_STREAK_LOSS_CUT = 0.12;
 const COUNTER_WIN_STREAK_LOSS_FLOOR = 0.65;
+const COUNTER_TREND_FOLLOW_EDGE_RELAX = 0.01;
+const COUNTER_ANTI_TREND_EDGE_PENALTY = 0.03;
+const COUNTER_ANTI_TREND_LEAD_NEED = COUNTER_WIN_BUCKET_SPREAD_EDGE + 0.04;
+const COUNTER_TREND_SIZE_BOOST = 1.06;
+const COUNTER_ANTI_TREND_SIZE_SCALE = 0.72;
 const MOMENTUM_BIAS_MIN_60 = 0.0006;
 const MOMENTUM_BIAS_MIN_180 = 0.0012;
-const TIME_BUCKET_TREND_MIN_EDGE = 0.02;
 const DOJI_LN_MONEYNESS = 0.0001;
 const NEAR_DOJI_LN_MONEYNESS = 0.0003;
 const DOJI_MAX_BUDGET_PCT = 0.08;
 const NEAR_DOJI_MAX_BUDGET_PCT = 0.12;
 const DOJI_HIGH_ASK_CUTOFF = 0.20;
 const DOJI_HIGH_ASK_MAX_BUDGET_PCT = 0.08;
-const EARLY_DOJI_SECS_LEFT = 600;
-const EARLY_DOJI_MIN_DROP = 0.15;
-const EARLY_DOJI_MAX_BUDGET_PCT = 0.05;
-const EARLY_SMALL_EDGE_SECS_LEFT = 780;
-const EARLY_SMALL_EDGE_MIN_EDGE = MISPRICING_NORMAL_EDGE;
-const EARLY_COUNTER_MOMENTUM_MIN_EDGE = MISPRICING_FAST_LANE_EDGE;
 
 // ── 15分钟对冲机器人参数 (延迟相关参数由 getDynamicParams() 提供) ──
 const MIN_SHARES      = 3;        // 最少3份, 低于此不开仓 (从5降低, 避免小余额死循环)
@@ -125,7 +100,6 @@ const DUAL_SIDE_MAX_ASK = 0.35;            // 挂单价上限 (≤0.35保证EV+$
 
 const DUAL_SIDE_MIN_DRIFT = 0.04;          // 价格偏移>此值才重挂 (降低更新频率)
 const DUAL_SIDE_MIN_VOL = 0.0012;          // 5分钟BTC波动率下限 (0.12%), 低于此视为微行情不挂单
-const REACTIVE_MIN_VOL = 0.0010;           // reactive路径波动率门槛: 低于0.10%视为噪声, 不追dump
 const DUMP_LOG_THROTTLE_MS = 2000;         // 重复dump日志节流: 同key至少间隔2s
 
 const LIQUIDITY_FILTER_SUM = 1.10;          // UP+DOWN best ask之和>此值 说明spread太大无edge, 不挂预挂单
@@ -142,8 +116,8 @@ const NON_FLAT_MIN_NET_EDGE = 0.08;         // 非flat也提高到10%, 过滤边
 const FLAT_MIN_NET_EDGE = 0.10;             // flat行情抬高到12%, 降低噪声入场
 const REACTIVE_MIN_ALIGNMENT_SCORE = 1;     // 盘口信号质量门槛: aligned-contra >= 1
 const REACTIVE_ALIGNMENT_EDGE_OVERRIDE = 0.20; // edge≥20%时允许越过信号门槛
-const MID_NET_EDGE = MISPRICING_NORMAL_EDGE;
-const HIGH_NET_EDGE = MISPRICING_FAST_LANE_EDGE;
+const MID_NET_EDGE = 0.08;
+const HIGH_NET_EDGE = 0.12;
 const BALANCE_ESTIMATE_MIN_PCT = 0.70;
 const BALANCE_ESTIMATE_MAX_PCT = 1.15;
 
@@ -157,30 +131,29 @@ const PANIC_HEDGE_MOMENTUM60_ADVERSE = 0.0009;
 const PANIC_HEDGE_FAIR_DROP = 0.16;
 const PANIC_HEDGE_FAIR_FLOOR = 0.38;
 const PANIC_HEDGE_ENTRY_DROP_RATIO = 0.18;
-const PANIC_HEDGE_MIN_HOLD_MS = 15_000;
+const PANIC_HEDGE_MIN_HOLD_MS = 25_000;
 const PANIC_HEDGE_TREND_MIN_HOLD_MS = 45_000;
 const PANIC_HEDGE_TREND_ADVERSE_SCALE = 1.40;
-const PANIC_HEDGE_BALANCE_PCT = 0.10;
+const PANIC_HEDGE_BALANCE_PCT = 0.16;
 const PANIC_HEDGE_TREND_BALANCE_PCT = 0.06;
-const PANIC_HEDGE_LEG_COST_PCT = 0.90;
+const PANIC_HEDGE_LEG_COST_PCT = 1.00;
+const PANIC_HEDGE_M180_ADVERSE_SCALE = 1.6;
+const PANIC_HEDGE_HARD_STOP_SCALE = 1.9;
+const PANIC_HEDGE_COST_DROP_MAIN = 0.14;
+const PANIC_HEDGE_COST_DROP_EARLY = 0.18;
+const PANIC_HEDGE_COST_DROP_LATE = 0.11;
+const PANIC_HEDGE_FAIR_GAP_MAIN = 0.10;
+const PANIC_HEDGE_FAIR_GAP_EARLY = 0.13;
+const PANIC_HEDGE_FAIR_GAP_LATE = 0.08;
+const PANIC_HEDGE_LOSS_CUT_MAIN = 0.35;
+const PANIC_HEDGE_LOSS_CUT_EARLY = 0.28;
+const PANIC_HEDGE_LOSS_CUT_LATE = 0.45;
+const PANIC_HEDGE_LOSS_CUT_MAX = 0.55;
 const PANIC_HEDGE_MIN_ASK = 0.18;
 const PANIC_HEDGE_MAX_ASK = 0.90;
 const PANIC_HEDGE_MAX_ATTEMPTS = 3;
 const PANIC_HEDGE_RETRY_MS = 4000;
-const REGIME_TREND_M180 = 0.0016;
-const REGIME_SHOCK_M60 = 0.0022;
-const REGIME_SHOCK_VOL5M = 0.0032;
-const REGIME_TREND_BTC_MOVE = 0.0010;
-const REGIME_TREND_M60_CONFIRM = 0.0007;
-const REGIME_SHOCK_SUM = 1.10;
-const REGIME_SHOCK_SUM_M60 = 0.0014;
-const REGIME_SWITCH_CONFIRM_STREAK = 3;
-const REGIME_SWITCH_COOLDOWN_MS = 20_000;
-const COUNTER_WIN_TREND_ASK_BONUS = 0.04;
-const COUNTER_WIN_TREND_MAX_ASK_HARD = 0.80;
-
 type TimeBucketName = "warmup" | "early" | "main" | "late" | "final";
-type CounterWinRegime = "trend" | "mean-revert" | "shock";
 
 interface TimeBucketRule {
   name: TimeBucketName;
@@ -193,9 +166,9 @@ interface TimeBucketRule {
 
 const TIME_BUCKET_RULES: TimeBucketRule[] = [
   { name: "warmup", elapsedStart: 0, elapsedEnd: 60, allowEntry: false, maxBudgetPct: 0.05, counterMinEdge: 0.18 },
-  { name: "early", elapsedStart: 60, elapsedEnd: 240, allowEntry: true, maxBudgetPct: 0.10, counterMinEdge: 0.18 },
-  { name: "main", elapsedStart: 240, elapsedEnd: 660, allowEntry: true, maxBudgetPct: 0.22, counterMinEdge: 0.12 },
-  { name: "late", elapsedStart: 660, elapsedEnd: 780, allowEntry: true, maxBudgetPct: 0.10, counterMinEdge: 0.18 },
+  { name: "early", elapsedStart: 60, elapsedEnd: 240, allowEntry: true, maxBudgetPct: 0.11, counterMinEdge: 0.05 },
+  { name: "main", elapsedStart: 240, elapsedEnd: 660, allowEntry: true, maxBudgetPct: 0.22, counterMinEdge: 0.03 },
+  { name: "late", elapsedStart: 660, elapsedEnd: 780, allowEntry: true, maxBudgetPct: 0.12, counterMinEdge: 0.05 },
   { name: "final", elapsedStart: 780, elapsedEnd: ROUND_DURATION + 1, allowEntry: false, maxBudgetPct: 0.06, counterMinEdge: 0.18 },
 ];
 
@@ -378,7 +351,7 @@ export interface HedgeHistoryEntry {
   orderId?: string;         // 关联订单ID (截取前12位)
   estimated?: boolean;      // 是否含估算数据
   profitBreakdown?: string; // 盈亏计算明细
-  entrySource?: string;     // dual-side-preorder | reactive-mispricing
+  entrySource?: string;     // dual-side-preorder | counter-win
   entryTrendBias?: string;  // up | down | flat
   entrySecondsLeft?: number; // 入场时回合剩余秒数
   entryWinRate?: number;    // 入场时动态胜率
@@ -487,12 +460,8 @@ export class Hedge15mEngine {
   private roundMomentumRejects = 0;
   private roundEntryAskRejects = 0;
   private loopRunId = 0;
-  private activeStrategyMode: "none" | "mispricing" | "trend" | "counter-win" = "none";
+  private activeStrategyMode: "none" | "counter-win" = "none";
   private currentTrendBias: "up" | "down" | "flat" = "flat";
-  private counterRegimeStable: CounterWinRegime = "mean-revert";
-  private counterRegimeCandidate: CounterWinRegime = "mean-revert";
-  private counterRegimeCandidateStreak = 0;
-  private counterRegimeLastSwitchAt = 0;
   private currentDumpDrop = 0;               // 当前dump跌幅(用于limit race offset)
   private currentDumpVelocity: "fast" | "normal" | "slow" = "normal"; // dump速度
   private leg1MakerFill = false;             // Leg1是否maker成交
@@ -684,63 +653,6 @@ export class Hedge15mEngine {
     if (bucket.name === "main") return COUNTER_WIN_MAIN_MAX_ASK;
     if (bucket.name === "early" || bucket.name === "late") return COUNTER_WIN_EARLY_LATE_MAX_ASK;
     return COUNTER_WIN_WARMUP_FINAL_MAX_ASK;
-  }
-
-  private getCounterWinRegime(counterDir: "up" | "down"): CounterWinRegime {
-    const m60 = getRecentMomentum(MOMENTUM_WINDOW_SEC);
-    const m180 = getRecentMomentum(TREND_WINDOW_SEC);
-    const btcMove = getBtcMovePct();
-    const vol5m = getRecentVolatility(300);
-    const sum = this.upAsk + this.downAsk;
-
-    const trendAligned = this.currentTrendBias === counterDir;
-    const dirSign = counterDir === "up" ? 1 : -1;
-    const dirM60 = m60 * dirSign;
-    const dirM180 = m180 * dirSign;
-    const dirBtcMove = btcMove * dirSign;
-
-    const trendStrong =
-      dirM180 >= REGIME_TREND_M180 &&
-      dirBtcMove >= REGIME_TREND_BTC_MOVE &&
-      dirM60 >= REGIME_TREND_M60_CONFIRM;
-    const shockLike =
-      vol5m >= REGIME_SHOCK_VOL5M ||
-      Math.abs(m60) >= REGIME_SHOCK_M60 ||
-      (sum >= REGIME_SHOCK_SUM && Math.abs(m60) >= REGIME_SHOCK_SUM_M60);
-
-    const rawRegime: CounterWinRegime = shockLike ? "shock" : (trendAligned && trendStrong ? "trend" : "mean-revert");
-    if (rawRegime === this.counterRegimeStable) {
-      this.counterRegimeCandidate = rawRegime;
-      this.counterRegimeCandidateStreak = 0;
-      return this.counterRegimeStable;
-    }
-
-    const now = Date.now();
-    if (rawRegime === "shock") {
-      this.counterRegimeStable = "shock";
-      this.counterRegimeCandidate = "shock";
-      this.counterRegimeCandidateStreak = 0;
-      this.counterRegimeLastSwitchAt = now;
-      return this.counterRegimeStable;
-    }
-
-    if (now - this.counterRegimeLastSwitchAt < REGIME_SWITCH_COOLDOWN_MS) {
-      return this.counterRegimeStable;
-    }
-
-    if (this.counterRegimeCandidate === rawRegime) {
-      this.counterRegimeCandidateStreak += 1;
-    } else {
-      this.counterRegimeCandidate = rawRegime;
-      this.counterRegimeCandidateStreak = 1;
-    }
-
-    if (this.counterRegimeCandidateStreak >= REGIME_SWITCH_CONFIRM_STREAK) {
-      this.counterRegimeStable = rawRegime;
-      this.counterRegimeCandidateStreak = 0;
-      this.counterRegimeLastSwitchAt = now;
-    }
-    return this.counterRegimeStable;
   }
 
   private getDerivativesBias(dir: "up" | "down"): {
@@ -958,7 +870,7 @@ export class Hedge15mEngine {
     dir: string,
     quotedPrice: number,
     secsLeft: number,
-    mode: "reactive" | "dual-side" | "trend" | "mispricing" | "counter-win",
+    mode: "reactive" | "dual-side" | "counter-win",
     readonly_ = false,
   ): {
     allowed: boolean;
@@ -976,17 +888,11 @@ export class Hedge15mEngine {
     const effectiveCost = quotedPrice + takerFeeBuffer + slippageBuffer;
     const effectiveEdge = fairRaw - effectiveCost;
 
-    let dynamicMinEdge = mode === "trend"
-      ? DIRECTIONAL_MIN_POSITIVE_EDGE
-      : mode === "mispricing"
-        ? MISPRICING_MIN_EDGE
-        : mode === "counter-win"
-          ? COUNTER_WIN_MIN_EDGE
-          : MIN_NET_EDGE;
+    let dynamicMinEdge = mode === "counter-win" ? COUNTER_WIN_MIN_EDGE : MIN_NET_EDGE;
     if (secsLeft < 300) {
       dynamicMinEdge = Math.max(0.01, dynamicMinEdge - 0.02); 
     } else if (secsLeft > 600) {
-      dynamicMinEdge = dynamicMinEdge + (mode === "trend" ? 0.01 : mode === "mispricing" || mode === "counter-win" ? 0.01 : 0.02); 
+      dynamicMinEdge = dynamicMinEdge + (mode === "counter-win" ? 0.01 : 0.02); 
     }
     if (effectiveEdge < dynamicMinEdge) {
       return { allowed: false, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: `net-edge<${(dynamicMinEdge*100).toFixed(0)}%` };
@@ -1006,10 +912,10 @@ export class Hedge15mEngine {
     return { allowed: true, fairRaw, fairKelly, dAbs, lnMoneyness, effectiveCost, effectiveEdge, reason: "ok" };
   }
 
-  private rankMispricingCandidates(candidates: MispricingCandidate[], secsLeft: number): MispricingCandidate[] {
+  private rankCounterCandidates(candidates: MispricingCandidate[], secsLeft: number): MispricingCandidate[] {
     return candidates
       .map(candidate => {
-        const bs = this.evaluateBsEntry(candidate.dir, candidate.askPrice, secsLeft, "mispricing", true);
+        const bs = this.evaluateBsEntry(candidate.dir, candidate.askPrice, secsLeft, "counter-win", true);
         return { candidate, bs };
       })
       .sort((left, right) => {
@@ -1099,12 +1005,7 @@ export class Hedge15mEngine {
     const downBs = this.downAsk > 0 ? this.evaluateBsEntry("down", this.downAsk, secondsLeft, "reactive", true) : null;
     const upTier = upBs ? this.getNetEdgeTier(upBs.effectiveEdge).label : "--";
     const downTier = downBs ? this.getNetEdgeTier(downBs.effectiveEdge).label : "--";
-    const counterDirForUi: "up" | "down" = this.currentTrendBias === "up"
-      ? "down"
-      : this.currentTrendBias === "down"
-        ? "up"
-        : (upBs?.effectiveEdge ?? -1) >= (downBs?.effectiveEdge ?? -1) ? "down" : "up";
-    const counterWinRegime = this.getCounterWinRegime(counterDirForUi);
+    const counterWinRegime = hasRoundClock ? this.getTimeBucket(secondsLeft).name : "off";
     return {
       botRunning: this.running,
       tradingMode: this.tradingMode,
@@ -1422,10 +1323,6 @@ export class Hedge15mEngine {
     this.skips = 0;
     this.consecutiveLosses = 0;
     this.consecutiveWins = 0;
-    this.counterRegimeStable = "mean-revert";
-    this.counterRegimeCandidate = "mean-revert";
-    this.counterRegimeCandidateStreak = 0;
-    this.counterRegimeLastSwitchAt = 0;
     this.totalProfit = 0;
     this.sessionProfit = persistedPaperState && this.tradingMode === "paper" && this.paperSessionMode === "persistent"
       ? persistedPaperState.sessionProfit
@@ -1464,7 +1361,11 @@ export class Hedge15mEngine {
         this.panicHedgeAttempts = Number(pos.panicHedgeAttempts) || 0;
         this.currentConditionId = pos.conditionId;
         this.leg1AttemptedThisRound = true;
-        this.activeStrategyMode = "mispricing";
+        this.activeStrategyMode = pos.entrySource === "counter-win"
+          || pos.entrySource === "directional-reactive"
+          || pos.entrySource === "dual-side-preorder"
+          ? "counter-win"
+          : "none";
         this.status = `恢复持仓: ${pos.leg1Dir.toUpperCase()} @${pos.leg1FillPrice.toFixed(2)} x${pos.leg1Shares}`;
         this.writeRoundAudit("crash-recovery", { position: pos, ageMs });
       } else {
@@ -1722,12 +1623,65 @@ export class Hedge15mEngine {
               const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
               const directionalBias = this.getEntryDirectionalBias();
               this.currentTrendBias = directionalBias;
-              await this.maybeEnterDirectionalLeg1(trader, rnd);
-              if (this.hedgeState !== "watching") {
+
+              // 低价位动态降低dump阈值: ask已经便宜时不需等大跌幅
+              const signalMinAsk = Math.min(this.upAsk, this.downAsk);
+              const signalDumpThreshold = signalMinAsk <= DUMP_LOW_PRICE_CUTOFF ? DUMP_THRESHOLD_LOW_PRICE : DUMP_THRESHOLD;
+              const signalMispricing = evaluateMispricingOpportunity({
+                upAsk: this.upAsk,
+                downAsk: this.downAsk,
+                oldestUpAsk: dumpBaseline.oldest.upAsk,
+                oldestDownAsk: dumpBaseline.oldest.downAsk,
+                upDrop: dumpBaseline.upDrop,
+                downDrop: dumpBaseline.downDrop,
+                upDropMs: dumpBaseline.upDropMs,
+                downDropMs: dumpBaseline.downDropMs,
+                dumpThreshold: signalDumpThreshold,
+                nearThresholdRatio: 0.75,
+                shortMomentum,
+                trendMomentum,
+                momentumContraPct: MOMENTUM_CONTRA_PCT,
+                trendContraPct: TREND_CONTRA_PCT,
+                momentumWindowSec: MOMENTUM_WINDOW_SEC,
+                trendWindowSec: TREND_WINDOW_SEC,
+              });
+              signalMispricing.candidates = this.rankCounterCandidates(signalMispricing.candidates, secs);
+              if (signalMispricing.momentumRejects.length > 0) {
+                const rejectDirKey = signalMispricing.momentumRejects.map((r) => r.replace(/[\d.]+%/g, "").slice(0, 20)).join("||");
+                if (rejectDirKey !== this.lastRepricingRejectKey) {
+                  this.lastRepricingRejectKey = rejectDirKey;
+                  this.roundMomentumRejects += signalMispricing.momentumRejects.length;
+                  for (const rejectMessage of signalMispricing.momentumRejects) {
+                    logger.warn(`HEDGE15M SIGNAL REJECT: ${rejectMessage}`);
+                  }
+                }
+              }
+              const weakCandidate = signalMispricing.candidates[0];
+              if (weakCandidate) {
+                if (weakCandidate.dir === this.lastDumpCandidateDir) this.dumpConfirmCount++;
+                else {
+                  this.dumpConfirmCount = 1;
+                  this.lastDumpCandidateDir = weakCandidate.dir;
+                }
+                this.dumpDetected = weakCandidate.dumpDetected;
+                this.currentDumpDrop = weakCandidate.dir === "up" ? dumpBaseline.upDrop : dumpBaseline.downDrop;
+                this.currentDumpVelocity = weakCandidate.dumpVelocity;
+                const weakBs = this.evaluateBsEntry(weakCandidate.dir, weakCandidate.askPrice, secs, "counter-win", true);
+                const fromWeakSide = await this.maybeEnterCounterWin(trader, rnd, weakCandidate, weakBs);
+                if (fromWeakSide) {
+                  continue;
+                }
+              } else {
+                this.dumpConfirmCount = 0;
+                this.lastDumpCandidateDir = "";
+                this.dumpDetected = "";
+              }
+              const bucketCounterEntered = await this.maybeEnterBucketCounterWin(trader, rnd);
+              if (bucketCounterEntered) {
                 continue;
               }
 
-              // 低价位动态降低dump阈值: ask已经便宜时不需等大跌幅
+              /* legacy mispricing-entry path (disabled)
               const lowestAsk = Math.min(this.upAsk, this.downAsk);
               const effectiveDumpThreshold = lowestAsk <= DUMP_LOW_PRICE_CUTOFF ? DUMP_THRESHOLD_LOW_PRICE : DUMP_THRESHOLD;
 
@@ -1899,6 +1853,7 @@ export class Hedge15mEngine {
                   this.lastDumpCandidateDir = "";
                 }
               }
+              */
             }
             } // end dual-side pre-order guard
           }
@@ -1976,53 +1931,6 @@ export class Hedge15mEngine {
 
   // ── Trading Actions ──
 
-  private async maybeEnterDirectionalLeg1(trader: Trader, rnd: Round15m): Promise<void> {
-    if (!DIRECTIONAL_REACTIVE_ENABLED) return;
-    if (this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound) return;
-
-    const bucket = this.getTimeBucket(rnd.secondsLeft);
-    if (!bucket.allowEntry) return;
-
-    const dir = this.getEntryDirectionalBias();
-    if (dir === "flat") return;
-
-    const askPrice = dir === "up" ? this.upAsk : this.downAsk;
-    const buyToken = dir === "up" ? rnd.upToken : rnd.downToken;
-    if (askPrice <= 0 || !buyToken) return;
-
-    const btcMovePct = getBtcMovePct();
-    const shortMomentum = getRecentMomentum(60);
-    const trendMomentum = getRecentMomentum(TREND_WINDOW_SEC);
-    const isChasingImpulse = (dir === "up" && shortMomentum >= DIRECTIONAL_CHASE_MOMENTUM)
-      || (dir === "down" && shortMomentum <= -DIRECTIONAL_CHASE_MOMENTUM);
-    const maxTrendAsk = isChasingImpulse ? DIRECTIONAL_TREND_PULLBACK_MAX_ASK : DIRECTIONAL_TREND_MAX_ASK;
-    if (btcMovePct < DIRECTIONAL_TREND_MIN_BTC_MOVE) return;
-    if (askPrice > maxTrendAsk) {
-      const skipKey = `dir-ask:${dir}:${askPrice.toFixed(2)}:${isChasingImpulse ? "impulse" : "trend"}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M DIRECTIONAL WAIT: ${dir.toUpperCase()} ask=${askPrice.toFixed(2)} > ${maxTrendAsk.toFixed(2)}${isChasingImpulse ? " (impulse pullback)" : ""}`);
-      }
-      return;
-    }
-
-    const bsEntry = this.evaluateBsEntry(dir, askPrice, rnd.secondsLeft, "trend", true);
-    const minTrendEdge = Math.max(DIRECTIONAL_TREND_MIN_EDGE, TIME_BUCKET_TREND_MIN_EDGE);
-    if (!bsEntry.allowed || bsEntry.effectiveEdge < minTrendEdge) {
-      this.trackRoundRejectReason(`trend-edge: ${(bsEntry.effectiveEdge * 100).toFixed(1)}% < ${(minTrendEdge * 100).toFixed(0)}%`);
-      const skipKey = `dir-edge:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEntry.effectiveEdge * 1000)}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M DIRECTIONAL SKIP: bucket=${bucket.name} ${dir.toUpperCase()} edge ${(bsEntry.effectiveEdge * 100).toFixed(1)}% < ${(minTrendEdge * 100).toFixed(0)}% fair=${bsEntry.fairRaw.toFixed(3)} ask=${askPrice.toFixed(2)}`);
-      }
-      return;
-    }
-
-    logger.info(`HEDGE15M DIRECTIONAL ENTRY: bucket=${bucket.name} ${dir.toUpperCase()} ask=${askPrice.toFixed(2)} edge=${(bsEntry.effectiveEdge * 100).toFixed(1)}% BTCmove=${(btcMovePct * 100).toFixed(3)}% m60=${(shortMomentum * 100).toFixed(3)}% m180=${(trendMomentum * 100).toFixed(3)}%`);
-
-    await this.buyLeg1(trader, rnd, dir, askPrice, buyToken, "trend", "directional-reactive");
-  }
-
   private async maybeEnterCounterWin(
     trader: Trader,
     rnd: Round15m,
@@ -2031,52 +1939,147 @@ export class Hedge15mEngine {
   ): Promise<boolean> {
     if (!COUNTER_WIN_ENABLED) return false;
     if (this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound) return false;
-    if (weakCandidateBs.effectiveEdge >= MISPRICING_NORMAL_EDGE) return false;
+    if (weakCandidateBs.effectiveEdge >= COUNTER_SIGNAL_STRONG_EDGE) return false;
 
     const bucket = this.getTimeBucket(rnd.secondsLeft);
     if (!bucket.allowEntry) return false;
+    const directionalBias = this.getEntryDirectionalBias();
+    this.currentTrendBias = directionalBias;
+    const trendCoreBucket = bucket.name === "early" || bucket.name === "main";
 
     const counterDir: "up" | "down" = weakCandidate.dir === "up" ? "down" : "up";
     const counterAsk = counterDir === "up" ? this.upAsk : this.downAsk;
     const counterToken = counterDir === "up" ? rnd.upToken : rnd.downToken;
-    const regime = this.getCounterWinRegime(counterDir);
     const bucketMaxAsk = Math.min(COUNTER_WIN_MAX_ASK, this.getCounterWinMaxAskByBucket(bucket));
-    const regimeAskCap = regime === "trend"
-      ? Math.min(COUNTER_WIN_TREND_MAX_ASK_HARD, bucketMaxAsk + COUNTER_WIN_TREND_ASK_BONUS)
-      : bucketMaxAsk;
-    if (!counterToken || counterAsk < COUNTER_WIN_MIN_ASK || counterAsk > regimeAskCap) return false;
+    const strongAskBonus = weakCandidateBs.effectiveEdge >= COUNTER_WIN_STRONG_EDGE + 0.03 ? 0.02 : 0;
+    const askCap = Math.min(COUNTER_WIN_STRONG_BONUS_MAX_ASK, bucketMaxAsk + strongAskBonus);
+    if (!counterToken || counterAsk < COUNTER_WIN_MIN_ASK || counterAsk > askCap) return false;
 
     const weakScore = this.dirAlignedCount - this.dirContraCount;
-    const trendSupportsCounter = this.currentTrendBias === counterDir;
-    const signalsRejectWeakSide = weakScore <= 0;
-    if (!trendSupportsCounter && !signalsRejectWeakSide) return false;
+    const trendSupportsCounter = directionalBias === counterDir;
+    const signalsRejectWeakSide = weakScore <= 1;
+    if (!trendSupportsCounter && !signalsRejectWeakSide && weakCandidateBs.effectiveEdge > -0.01) return false;
 
     const counterBs = this.evaluateBsEntry(counterDir, counterAsk, rnd.secondsLeft, "counter-win", true);
     if (!counterBs.allowed) {
       this.logBsReject("counter-win", counterDir, counterAsk, counterBs);
       return false;
     }
-    const regimeMinEdge = regime === "shock"
-      ? COUNTER_WIN_STRONG_EDGE + 0.02
-      : regime === "trend"
-        ? COUNTER_WIN_MIN_EDGE
-        : COUNTER_WIN_STRONG_EDGE;
-    if (counterBs.effectiveEdge < regimeMinEdge) {
-      this.trackRoundRejectReason(`counter-regime-edge: ${regime} ${(counterBs.effectiveEdge * 100).toFixed(1)}% < ${(regimeMinEdge * 100).toFixed(0)}%`);
+    let requiredEdge = Math.max(bucket.counterMinEdge, COUNTER_WIN_MIN_EDGE);
+    if (directionalBias !== "flat" && directionalBias !== counterDir) {
+      requiredEdge = Math.max(requiredEdge, COUNTER_WIN_STRONG_EDGE);
+    }
+    if (trendCoreBucket && directionalBias === counterDir) {
+      requiredEdge = Math.max(COUNTER_WIN_MIN_EDGE, requiredEdge - COUNTER_TREND_FOLLOW_EDGE_RELAX);
+    } else if (trendCoreBucket && directionalBias !== "flat" && directionalBias !== counterDir) {
+      requiredEdge += COUNTER_ANTI_TREND_EDGE_PENALTY;
+    }
+    if (counterAsk > COUNTER_WIN_HIGH_ASK_HARD) requiredEdge += 0.02;
+    else if (counterAsk > COUNTER_WIN_HIGH_ASK_SOFT) requiredEdge += 0.01;
+    if (counterBs.effectiveEdge < requiredEdge) {
+      this.trackRoundRejectReason(`counter-bucket-edge: ${bucket.name} ${(counterBs.effectiveEdge * 100).toFixed(1)}% < ${(requiredEdge * 100).toFixed(0)}%`);
       return false;
     }
 
     const deriv = this.getDerivativesBias(counterDir);
-    if (deriv.contra >= 2 && deriv.aligned === 0 && counterBs.effectiveEdge < COUNTER_WIN_STRONG_EDGE + 0.02) {
+    if (deriv.contra >= 3 && deriv.aligned === 0 && counterBs.effectiveEdge < requiredEdge + 0.03) {
       this.trackRoundRejectReason(`counter-deriv-contra: edge=${(counterBs.effectiveEdge * 100).toFixed(1)}%`);
       return false;
     }
 
     logger.info(
-      `HEDGE15M COUNTER-WIN: regime=${regime} bucket=${bucket.name} ${counterDir.toUpperCase()} @${counterAsk.toFixed(2)} edge=${(counterBs.effectiveEdge * 100).toFixed(1)}% vs weak ${weakCandidate.dir.toUpperCase()} edge=${(weakCandidateBs.effectiveEdge * 100).toFixed(1)}% trend=${this.currentTrendBias} score=${weakScore} askCap=${regimeAskCap.toFixed(2)}`,
+      `HEDGE15M COUNTER-WIN: bucket=${bucket.name} ${counterDir.toUpperCase()} @${counterAsk.toFixed(2)} edge=${(counterBs.effectiveEdge * 100).toFixed(1)}% vs weak ${weakCandidate.dir.toUpperCase()} edge=${(weakCandidateBs.effectiveEdge * 100).toFixed(1)}% trend=${this.currentTrendBias} score=${weakScore} askCap=${askCap.toFixed(2)}`,
     );
-    await this.buyLeg1(trader, rnd, counterDir, counterAsk, counterToken, "counter-win", "counter-win");
+    await this.buyLeg1(trader, rnd, counterDir, counterAsk, counterToken, "counter-win");
     return this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound;
+  }
+
+  private async maybeEnterBucketCounterWin(
+    trader: Trader,
+    rnd: Round15m,
+  ): Promise<boolean> {
+    if (!COUNTER_WIN_ENABLED) return false;
+    if (this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound) return false;
+
+    const bucket = this.getTimeBucket(rnd.secondsLeft);
+    if (!bucket.allowEntry) return false;
+
+    const directionalBias = this.getEntryDirectionalBias();
+    this.currentTrendBias = directionalBias;
+    const trendCoreBucket = bucket.name === "early" || bucket.name === "main";
+
+    const upBs = this.evaluateBsEntry("up", this.upAsk, rnd.secondsLeft, "counter-win", true);
+    const downBs = this.evaluateBsEntry("down", this.downAsk, rnd.secondsLeft, "counter-win", true);
+    const upEdge = upBs.allowed ? upBs.effectiveEdge : -999;
+    const downEdge = downBs.allowed ? downBs.effectiveEdge : -999;
+
+    const preferredDir: "up" | "down" = directionalBias === "up"
+      ? "up"
+      : directionalBias === "down"
+        ? "down"
+        : upEdge >= downEdge ? "up" : "down";
+    const dirs: Array<"up" | "down"> = preferredDir === "up" ? ["up", "down"] : ["down", "up"];
+
+    for (const dir of dirs) {
+      const ask = dir === "up" ? this.upAsk : this.downAsk;
+      const token = dir === "up" ? rnd.upToken : rnd.downToken;
+      const bs = dir === "up" ? upBs : downBs;
+      const oppEdge = dir === "up" ? downEdge : upEdge;
+      if (!token || ask <= 0 || ask < COUNTER_WIN_MIN_ASK) continue;
+      if (!bs.allowed) continue;
+
+      const bucketMaxAsk = Math.min(COUNTER_WIN_MAX_ASK, this.getCounterWinMaxAskByBucket(bucket));
+      const askBonus = bs.effectiveEdge >= COUNTER_WIN_STRONG_EDGE + 0.03 ? 0.02 : 0;
+      const askCap = Math.min(COUNTER_WIN_STRONG_BONUS_MAX_ASK, bucketMaxAsk + askBonus);
+      if (ask > askCap) {
+        this.trackRoundRejectReason(`counter-ask-cap: ${dir} ${ask.toFixed(2)} > ${askCap.toFixed(2)}`);
+        continue;
+      }
+
+      let requiredEdge = Math.max(bucket.counterMinEdge, COUNTER_WIN_MIN_EDGE);
+      const antiTrendDir = directionalBias !== "flat" && directionalBias !== dir;
+      const trendFollowDir = directionalBias !== "flat" && directionalBias === dir;
+      if (directionalBias === "flat") {
+        requiredEdge = Math.max(requiredEdge, COUNTER_WIN_BUCKET_FALLBACK_EDGE);
+      } else if (antiTrendDir) {
+        requiredEdge = Math.max(requiredEdge, COUNTER_WIN_STRONG_EDGE);
+      }
+      if (trendCoreBucket && trendFollowDir) {
+        requiredEdge = Math.max(COUNTER_WIN_MIN_EDGE, requiredEdge - COUNTER_TREND_FOLLOW_EDGE_RELAX);
+      } else if (trendCoreBucket && antiTrendDir) {
+        requiredEdge += COUNTER_ANTI_TREND_EDGE_PENALTY;
+      }
+      if (ask > COUNTER_WIN_HIGH_ASK_HARD) requiredEdge += 0.02;
+      else if (ask > COUNTER_WIN_HIGH_ASK_SOFT) requiredEdge += 0.01;
+      if (bs.effectiveEdge < requiredEdge) {
+        this.trackRoundRejectReason(`counter-bucket-edge: ${bucket.name} ${dir} ${(bs.effectiveEdge * 100).toFixed(1)}% < ${(requiredEdge * 100).toFixed(0)}%`);
+        continue;
+      }
+
+      let leadNeed = directionalBias === "flat" ? COUNTER_WIN_BUCKET_SPREAD_EDGE : 0;
+      if (trendCoreBucket && antiTrendDir) {
+        leadNeed = Math.max(leadNeed, COUNTER_ANTI_TREND_LEAD_NEED);
+      }
+      if (bs.effectiveEdge - oppEdge < leadNeed) {
+        this.trackRoundRejectReason(`counter-edge-lead: ${(bs.effectiveEdge * 100).toFixed(1)}% - ${(oppEdge * 100).toFixed(1)}% < ${(leadNeed * 100).toFixed(1)}%`);
+        continue;
+      }
+
+      this.computeSignalAlignment(dir);
+      const alignmentScore = this.dirAlignedCount - this.dirContraCount;
+      if (alignmentScore <= -2 && bs.effectiveEdge < requiredEdge + 0.03) {
+        this.trackRoundRejectReason(`counter-alignment: score=${alignmentScore} edge=${(bs.effectiveEdge * 100).toFixed(1)}%`);
+        continue;
+      }
+
+      logger.info(
+        `HEDGE15M COUNTER-BUCKET: bucket=${bucket.name} dir=${dir.toUpperCase()} ask=${ask.toFixed(2)} edge=${(bs.effectiveEdge * 100).toFixed(1)}% req=${(requiredEdge * 100).toFixed(1)}% trend=${directionalBias} lead=${((bs.effectiveEdge - oppEdge) * 100).toFixed(1)}%`,
+      );
+      await this.buyLeg1(trader, rnd, dir, ask, token, "counter-win");
+      return this.hedgeState !== "watching" || this.leg1EntryInFlight || this.leg1AttemptedThisRound;
+    }
+
+    return false;
   }
 
   private async buyLeg1(
@@ -2085,8 +2088,7 @@ export class Hedge15mEngine {
     dir: string,
     askPrice: number,
     buyToken: string,
-    strategyMode: "mispricing" | "trend" | "counter-win" = "mispricing",
-    entrySource = "reactive-mispricing",
+    entrySource = "counter-win",
   ): Promise<void> {
     if (this.hedgeState !== "watching" || this.leg1EntryInFlight) return;
     if (this.leg1AttemptedThisRound) {
@@ -2097,27 +2099,18 @@ export class Hedge15mEngine {
       logger.warn(`Hedge15m Leg1 skipped: ${this.leg1FailedAttempts} failed attempts this round, giving up`);
       return;
     }
-
     // ── Leg1价格上限: 只接受足够低价的EV+入场, 强信号时动态提升 ──
     const directionalBias = this.getEntryDirectionalBias();
     const timeBucket = this.getTimeBucket(rnd.secondsLeft);
-    const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
-    const trendImpulse = (dir === "up" && shortMomentum >= DIRECTIONAL_CHASE_MOMENTUM)
-      || (dir === "down" && shortMomentum <= -DIRECTIONAL_CHASE_MOMENTUM);
-    const trendMaxEntryAsk = trendImpulse ? DIRECTIONAL_TREND_PULLBACK_MAX_ASK : DIRECTIONAL_TREND_MAX_ASK;
-    const maxEntryAsk = strategyMode === "counter-win"
-      ? Math.min(COUNTER_WIN_MAX_ASK, this.getCounterWinMaxAskByBucket(timeBucket))
-      : strategyMode === "trend"
-        ? trendMaxEntryAsk
-      : this.getDynamicMaxEntryAsk(dir);
+    const maxEntryAsk = Math.min(COUNTER_WIN_STRONG_BONUS_MAX_ASK, this.getCounterWinMaxAskByBucket(timeBucket));
 
     const plan = planHedgeEntry({
       dir: dir as "up" | "down",
       askPrice,
       maxEntryAsk,
-      minEntryAsk: strategyMode === "counter-win" ? COUNTER_WIN_MIN_ASK : strategyMode === "mispricing" ? MISPRICING_ABSOLUTE_MIN_ASK : rnd.secondsLeft > 660 ? 0.20 : rnd.secondsLeft > 480 ? 0.15 : MIN_ENTRY_ASK,
+      minEntryAsk: COUNTER_WIN_MIN_ASK,
       directionalBias,
-      allowDirectionalContra: strategyMode !== "trend",
+      allowDirectionalContra: true,
     });
     if (!plan.allowed) {
       if (plan.reason?.includes("MAX_ENTRY_ASK")) this.roundEntryAskRejects += 1;
@@ -2134,26 +2127,8 @@ export class Hedge15mEngine {
     // ── 统计7源信号对齐度 ──
     this.computeSignalAlignment(dir);
 
-    // ── 低波过滤: reactive在微行情中噪声极高, 直接跳过 ──
-    const reactiveVol = getRecentVolatility(300);
-    const strongMispricing = strategyMode === "mispricing" && (this.currentDumpDrop >= MISPRICING_STRONG_DROP || askPrice <= MISPRICING_LOW_PRICE);
-    if (strategyMode !== "counter-win" && !strongMispricing && reactiveVol < REACTIVE_MIN_VOL) {
-      this.trackRoundRejectReason(`reactive-low-vol: ${(reactiveVol * 100).toFixed(3)}% < ${(REACTIVE_MIN_VOL * 100).toFixed(2)}%`);
-      const skipKey = `reactive-vol:${dir}:${Math.floor(reactiveVol * 100000)}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M REACTIVE SKIP: vol=${(reactiveVol * 100).toFixed(3)}% < ${(REACTIVE_MIN_VOL * 100).toFixed(2)}%`);
-      }
-      return;
-    }
-
     // ── BSM数字期权动态胜率 ──
-    const bsEntry = this.evaluateBsEntry(
-      dir,
-      askPrice,
-      rnd.secondsLeft,
-      strategyMode === "trend" ? "trend" : strategyMode === "counter-win" ? "counter-win" : "mispricing",
-    );
+    const bsEntry = this.evaluateBsEntry(dir, askPrice, rnd.secondsLeft, "counter-win");
     if (!bsEntry.allowed) {
       this.trackRoundRejectReason(`bsm: ${bsEntry.reason}`);
       this.logBsReject("reactive", dir, askPrice, bsEntry);
@@ -2162,107 +2137,19 @@ export class Hedge15mEngine {
     const bsFairRaw = bsEntry.fairRaw;
     const bsWinRate = bsEntry.fairKelly;
     const bsEdgeNet = bsEntry.effectiveEdge;
-    const dojiRegime = bsEntry.lnMoneyness < DOJI_LN_MONEYNESS ? "doji" : bsEntry.lnMoneyness < NEAR_DOJI_LN_MONEYNESS ? "near-doji" : "directional";
-    if (
-      strategyMode === "mispricing" &&
-      dojiRegime === "doji" &&
-      rnd.secondsLeft > EARLY_DOJI_SECS_LEFT &&
-      this.currentDumpDrop < EARLY_DOJI_MIN_DROP
-    ) {
-      this.trackRoundRejectReason(`early-doji-weak-dump: drop ${(this.currentDumpDrop * 100).toFixed(1)}% < ${(EARLY_DOJI_MIN_DROP * 100).toFixed(0)}%`);
-      const skipKey = `early-doji:${dir}:${Math.floor(rnd.secondsLeft)}:${Math.floor(this.currentDumpDrop * 1000)}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M MISPRICING SKIP: early doji ${Math.floor(rnd.secondsLeft)}s drop ${(this.currentDumpDrop * 100).toFixed(1)}% < ${(EARLY_DOJI_MIN_DROP * 100).toFixed(0)}% edge ${(bsEdgeNet * 100).toFixed(1)}%`);
-      }
-      return;
-    }
-
-    if (strategyMode === "mispricing" && !timeBucket.allowEntry) {
-      this.trackRoundRejectReason(`bucket-disabled: ${timeBucket.name}`);
-      const skipKey = `bucket-mispricing:${timeBucket.name}:${dir}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M MISPRICING SKIP: bucket=${timeBucket.name} disabled`);
-      }
-      return;
-    }
-    if (strategyMode === "mispricing" && rnd.secondsLeft > EARLY_SMALL_EDGE_SECS_LEFT) {
-      const shortMomentum = getRecentMomentum(MOMENTUM_WINDOW_SEC);
-      const counterShortMomentum = (dir === "up" && shortMomentum < 0) || (dir === "down" && shortMomentum > 0);
-      const earlyMinEdge = counterShortMomentum ? EARLY_COUNTER_MOMENTUM_MIN_EDGE : EARLY_SMALL_EDGE_MIN_EDGE;
-      if (bsEdgeNet < earlyMinEdge) {
-        this.trackRoundRejectReason(`early-small-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(earlyMinEdge * 100).toFixed(0)}%`);
-        const skipKey = `early-edge:${dir}:${Math.floor(rnd.secondsLeft)}:${Math.floor(bsEdgeNet * 1000)}`;
-        if (skipKey !== this.lastSignalSkipKey) {
-          this.lastSignalSkipKey = skipKey;
-          logger.info(`HEDGE15M MISPRICING SKIP: early ${Math.floor(rnd.secondsLeft)}s edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(earlyMinEdge * 100).toFixed(0)}%${counterShortMomentum ? " (counter-momentum)" : ""}`);
-        }
-        return;
-      }
-    }
-    if (strategyMode === "mispricing") {
-      const btcDir = getBtcDirection();
-      const btcMovePct = getBtcMovePct();
-      const counterBtc = btcMovePct >= MISPRICING_COUNTER_BTC_MOVE && btcDir !== dir;
-      const counterByBucketBias = directionalBias !== "flat" && directionalBias !== dir;
-      const alignmentScore = this.dirAlignedCount - this.dirContraCount;
-      const strongCounterSignal = alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE && counterBtc;
-      const deepUnfavored = bsFairRaw < MISPRICING_DEEP_UNFAVORED_FAIR;
-      const unfavored = bsFairRaw < MISPRICING_UNFAVORED_FAIR;
-      let requiredCounterEdge = deepUnfavored
-        ? MISPRICING_DEEP_UNFAVORED_MIN_EDGE
-        : strongCounterSignal && askPrice > MISPRICING_STRONG_COUNTER_MAX_ASK
-          ? MISPRICING_STRONG_COUNTER_MIN_EDGE
-        : counterBtc || unfavored
-          ? MISPRICING_COUNTER_BTC_MIN_EDGE
-          : 0;
-      if (counterByBucketBias) {
-        requiredCounterEdge = Math.max(requiredCounterEdge, timeBucket.counterMinEdge);
-      }
-      if (counterByBucketBias && askPrice <= MISPRICING_STRONG_COUNTER_MAX_ASK) {
-        requiredCounterEdge = Math.max(requiredCounterEdge, MISPRICING_STRONG_COUNTER_MIN_EDGE);
-      }
-      if (requiredCounterEdge > 0 && bsEdgeNet < requiredCounterEdge) {
-        this.trackRoundRejectReason(`counter-wind: fair=${bsFairRaw.toFixed(3)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(requiredCounterEdge * 100).toFixed(0)}%`);
-        const skipKey = `counter-wind:${dir}:${btcDir}:${Math.floor(btcMovePct * 100000)}:${Math.floor(bsEdgeNet * 1000)}`;
-        if (skipKey !== this.lastSignalSkipKey) {
-          this.lastSignalSkipKey = skipKey;
-          logger.info(`HEDGE15M MISPRICING SKIP: bucket=${timeBucket.name} counter-wind ${dir.toUpperCase()} vs BTC=${btcDir} move=${(btcMovePct * 100).toFixed(3)}% fair=${bsFairRaw.toFixed(3)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(requiredCounterEdge * 100).toFixed(0)}%`);
-        }
-        return;
-      }
-    }
-    if (strategyMode === "mispricing" && askPrice < MIN_ENTRY_ASK && bsEdgeNet < MISPRICING_LOW_TICKET_EDGE) {
-      this.trackRoundRejectReason(`low-ticket-edge: ${(bsEdgeNet * 100).toFixed(1)}% < ${(MISPRICING_LOW_TICKET_EDGE * 100).toFixed(0)}%`);
-      const skipKey = `low-ticket:${dir}:${askPrice.toFixed(2)}:${Math.floor(bsEdgeNet * 1000)}`;
-      if (skipKey !== this.lastSignalSkipKey) {
-        this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M MISPRICING SKIP: low ticket ask=${askPrice.toFixed(2)} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(MISPRICING_LOW_TICKET_EDGE * 100).toFixed(0)}%`);
-      }
-      return;
-    }
-    let minEdgeForRegime = directionalBias === "flat" ? FLAT_MIN_NET_EDGE : NON_FLAT_MIN_NET_EDGE;
-    if (strategyMode === "trend") {
-      if (directionalBias === dir) minEdgeForRegime = DIRECTIONAL_MIN_POSITIVE_EDGE;
-      else if (directionalBias === "flat") minEdgeForRegime = 0.03;
-      else minEdgeForRegime = 0.05;
-    } else if (strategyMode === "counter-win") {
-      if (directionalBias === dir) minEdgeForRegime = COUNTER_WIN_MIN_EDGE;
-      else if (directionalBias === "flat") minEdgeForRegime = 0.05;
-      else minEdgeForRegime = COUNTER_WIN_STRONG_EDGE;
-    } else if (strategyMode === "mispricing") {
-      if (directionalBias === dir) minEdgeForRegime = 0.03;
-      else if (directionalBias === "flat") minEdgeForRegime = 0.04;
-      else minEdgeForRegime = 0.06;
-      if (strongMispricing) {
-        minEdgeForRegime = Math.max(MISPRICING_MIN_EDGE, minEdgeForRegime - 0.02);
-      }
-    } else if (directionalBias === dir) {
-      minEdgeForRegime = Math.max(0.04, minEdgeForRegime - 0.01);
-    } else if (directionalBias !== "flat" && directionalBias !== dir) {
+    const trendCoreBucket = timeBucket.name === "early" || timeBucket.name === "main";
+    const trendFollowDir = directionalBias !== "flat" && directionalBias === dir;
+    const antiTrendDir = directionalBias !== "flat" && directionalBias !== dir;
+    let minEdgeForRegime = Math.max(timeBucket.counterMinEdge, COUNTER_WIN_MIN_EDGE);
+    if (directionalBias === "flat") minEdgeForRegime = Math.max(minEdgeForRegime, COUNTER_WIN_BUCKET_FALLBACK_EDGE);
+    else if (antiTrendDir) minEdgeForRegime = Math.max(minEdgeForRegime, COUNTER_WIN_STRONG_EDGE);
+    if (trendCoreBucket && trendFollowDir) {
+      minEdgeForRegime = Math.max(COUNTER_WIN_MIN_EDGE, minEdgeForRegime - COUNTER_TREND_FOLLOW_EDGE_RELAX);
+    } else if (trendCoreBucket && antiTrendDir) {
       minEdgeForRegime += 0.02;
     }
+    if (askPrice > COUNTER_WIN_HIGH_ASK_HARD) minEdgeForRegime += 0.02;
+    else if (askPrice > COUNTER_WIN_HIGH_ASK_SOFT) minEdgeForRegime += 0.01;
     if (this.secondsLeft < 300) {
       minEdgeForRegime = Math.max(0.02, minEdgeForRegime - 0.03); // 最后5分钟放宽
     } else if (this.secondsLeft > 600) {
@@ -2273,35 +2160,22 @@ export class Hedge15mEngine {
       const skipKey = `regime-edge:${dir}:${directionalBias}:${askPrice.toFixed(2)}:${Math.floor(bsEdgeNet * 1000)}`;
       if (skipKey !== this.lastSignalSkipKey) {
         this.lastSignalSkipKey = skipKey;
-        logger.info(`HEDGE15M REACTIVE SKIP: ${directionalBias} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(minEdgeForRegime * 100).toFixed(0)}%`);
+      logger.info(`HEDGE15M COUNTER SKIP: ${directionalBias} edge ${(bsEdgeNet * 100).toFixed(1)}% < ${(minEdgeForRegime * 100).toFixed(0)}%`);
       }
       return;
     }
 
     const alignmentScore = this.dirAlignedCount - this.dirContraCount;
-    if (strategyMode === "mispricing") {
-      const strongContra = alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE;
-      if (strongContra && bsEdgeNet < MISPRICING_CONTRA_EDGE_OVERRIDE) {
-        this.trackRoundRejectReason(`strong-contra: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
-        const skipKey = `contra:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
-        if (skipKey !== this.lastSignalSkipKey) {
-          this.lastSignalSkipKey = skipKey;
-          logger.info(`HEDGE15M MISPRICING SKIP: strong contra score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
-        }
-        return;
+    const alignmentFloor = directionalBias !== "flat" && directionalBias !== dir ? -1 : REACTIVE_MIN_ALIGNMENT_SCORE;
+    const strongCounterTrendOverride = bsEdgeNet >= (REACTIVE_ALIGNMENT_EDGE_OVERRIDE + 0.05);
+    if (alignmentScore < alignmentFloor && bsEdgeNet < REACTIVE_ALIGNMENT_EDGE_OVERRIDE && !strongCounterTrendOverride) {
+      this.trackRoundRejectReason(`alignment: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
+      const skipKey = `align:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
+      if (skipKey !== this.lastSignalSkipKey) {
+        this.lastSignalSkipKey = skipKey;
+        logger.info(`HEDGE15M COUNTER SKIP: weak signals score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
       }
-    } else {
-      const alignmentFloor = directionalBias !== "flat" && directionalBias !== dir ? 0 : REACTIVE_MIN_ALIGNMENT_SCORE;
-      const strongCounterTrendOverride = bsEdgeNet >= (REACTIVE_ALIGNMENT_EDGE_OVERRIDE + 0.05);
-      if (alignmentScore < alignmentFloor && bsEdgeNet < REACTIVE_ALIGNMENT_EDGE_OVERRIDE && !strongCounterTrendOverride) {
-        this.trackRoundRejectReason(`alignment: score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
-        const skipKey = `align:${dir}:${alignmentScore}:${Math.floor(bsEdgeNet * 1000)}`;
-        if (skipKey !== this.lastSignalSkipKey) {
-          this.lastSignalSkipKey = skipKey;
-          logger.info(`HEDGE15M REACTIVE SKIP: weak signals score=${alignmentScore} edge=${(bsEdgeNet * 100).toFixed(1)}%`);
-        }
-        return;
-      }
+      return;
     }
 
     const netEdgeTier = this.getNetEdgeTier(bsEdgeNet);
@@ -2329,41 +2203,35 @@ export class Hedge15mEngine {
     if (liveSum > 0 && liveSum <= SUM_DIVERGENCE_MIN) {
       budgetPct = Math.min(kellyCapForPrice, budgetPct * 1.15); // 强方向×1.15
     }
-    if (strategyMode === "mispricing") {
-      if (bsEdgeNet >= MISPRICING_FAST_LANE_EDGE) budgetPct *= 1.15;
-      else if (bsEdgeNet >= MISPRICING_NORMAL_EDGE) budgetPct *= 1.05;
-      if (alignmentScore <= MISPRICING_STRONG_CONTRA_SCORE && bsEdgeNet < MISPRICING_FAST_LANE_EDGE) {
-        budgetPct *= 0.75;
-      }
-    } else if (strategyMode === "counter-win") {
-      const counterRegime = this.getCounterWinRegime(dir as "up" | "down");
-      budgetPct *= bsEdgeNet >= COUNTER_WIN_STRONG_EDGE ? 0.90 : 0.70;
-      if (counterRegime === "trend") budgetPct *= 1.10;
-      else if (counterRegime === "mean-revert") budgetPct *= 1.00;
-      else budgetPct *= 0.85;
-      if (askPrice > COUNTER_WIN_HIGH_ASK_HARD) budgetPct *= COUNTER_WIN_HIGH_ASK_HARD_SIZE_SCALE;
-      else if (askPrice > COUNTER_WIN_HIGH_ASK_SOFT) budgetPct *= COUNTER_WIN_HIGH_ASK_SOFT_SIZE_SCALE;
-      const winScale = Math.min(
-        COUNTER_WIN_STREAK_WIN_CAP,
-        1 + this.consecutiveWins * COUNTER_WIN_STREAK_WIN_BOOST,
-      );
-      const lossCutScale = Math.max(
-        COUNTER_WIN_STREAK_LOSS_FLOOR,
-        1 - this.consecutiveLosses * COUNTER_WIN_STREAK_LOSS_CUT,
-      );
-      budgetPct *= winScale * lossCutScale;
-      logger.info(
-        `COUNTER-WIN SIZE: regime=${counterRegime} wins=${this.consecutiveWins} losses=${this.consecutiveLosses} winScale=${winScale.toFixed(2)} lossScale=${lossCutScale.toFixed(2)} pct=${(budgetPct * 100).toFixed(1)}%`,
-      );
-    }
+    budgetPct *= bsEdgeNet >= COUNTER_WIN_STRONG_EDGE ? 0.90 : 0.70;
+    if (timeBucket.name === "main") budgetPct *= 1.05;
+    else if (timeBucket.name === "early" || timeBucket.name === "late") budgetPct *= 0.92;
+    else budgetPct *= 0.80;
+    if (askPrice > COUNTER_WIN_HIGH_ASK_HARD) budgetPct *= COUNTER_WIN_HIGH_ASK_HARD_SIZE_SCALE;
+    else if (askPrice > COUNTER_WIN_HIGH_ASK_SOFT) budgetPct *= COUNTER_WIN_HIGH_ASK_SOFT_SIZE_SCALE;
+    const winScale = Math.min(
+      COUNTER_WIN_STREAK_WIN_CAP,
+      1 + this.consecutiveWins * COUNTER_WIN_STREAK_WIN_BOOST,
+    );
+    const lossCutScale = Math.max(
+      COUNTER_WIN_STREAK_LOSS_FLOOR,
+      1 - this.consecutiveLosses * COUNTER_WIN_STREAK_LOSS_CUT,
+    );
+    budgetPct *= winScale * lossCutScale;
+    logger.info(
+      `COUNTER-WIN SIZE: bucket=${timeBucket.name} wins=${this.consecutiveWins} losses=${this.consecutiveLosses} winScale=${winScale.toFixed(2)} lossScale=${lossCutScale.toFixed(2)} pct=${(budgetPct * 100).toFixed(1)}%`,
+    );
     if (directionalBias === dir) {
       budgetPct += TREND_BUDGET_BOOST; // 趋势一致追加
     } else if (directionalBias === "flat") {
       budgetPct -= TREND_BUDGET_CUT;   // 中性减仓
     }
-    // ── 统一7源信号Kelly调权: aligned多→加仓; mispricing路径不缩仓 ──
-    // 注: mispricing砸盘时BTC方向信号天然逆向(砸盘正是由BTC方向变动引起),
-    // MOMENTUM REJECT已过滤zero-sum重定价, 剩余contra信号不应惩罚仓位
+    // ── 统一7源信号Kelly调权: aligned多→加仓 ──
+    if (trendCoreBucket && trendFollowDir) {
+      budgetPct *= COUNTER_TREND_SIZE_BOOST;
+    } else if (trendCoreBucket && antiTrendDir) {
+      budgetPct *= COUNTER_ANTI_TREND_SIZE_SCALE;
+    }
     if (this.dirAlignedCount >= 3) {
       budgetPct *= 1.0 + (this.dirAlignedCount - 2) * 0.05; // 3→+5%, 4→+10%, 5→+15%...
       logger.info(`KELLY SIG BOOST: aligned=${this.dirAlignedCount} contra=${this.dirContraCount} score=${alignmentScore} pct=${(budgetPct*100).toFixed(1)}% bsFair=${bsFairRaw.toFixed(3)} edgeRaw=${(bsEdgeNet*100).toFixed(1)}% tier=${netEdgeTier.label}`);
@@ -2372,27 +2240,7 @@ export class Hedge15mEngine {
     }
     budgetPct = Math.max(0.08, Math.min(kellyCapForPrice, budgetPct)); // EV+分层硬限 (低价→高上限)
 
-    if (strategyMode === "trend") {
-      if (bsEdgeNet < DIRECTIONAL_SMALL_EDGE) budgetPct *= DIRECTIONAL_SMALL_BUDGET_SCALE;
-      else if (bsEdgeNet < DIRECTIONAL_MEDIUM_EDGE) budgetPct *= DIRECTIONAL_MEDIUM_BUDGET_SCALE;
-      budgetPct = Math.min(0.16, budgetPct);
-    }
-    if (strategyMode === "counter-win") {
-      budgetPct = Math.min(COUNTER_WIN_MAX_BUDGET_PCT, budgetPct);
-    }
-    if (strategyMode === "mispricing" && dojiRegime !== "directional") {
-      let dojiCap = dojiRegime === "doji" ? DOJI_MAX_BUDGET_PCT : NEAR_DOJI_MAX_BUDGET_PCT;
-      if (dojiRegime === "doji" && rnd.secondsLeft > EARLY_DOJI_SECS_LEFT) {
-        dojiCap = Math.min(dojiCap, EARLY_DOJI_MAX_BUDGET_PCT);
-      }
-      if (askPrice > DOJI_HIGH_ASK_CUTOFF) {
-        dojiCap = Math.min(dojiCap, DOJI_HIGH_ASK_MAX_BUDGET_PCT);
-      }
-      if (budgetPct > dojiCap) {
-        logger.info(`DOJI SIZE CAP: ${dojiRegime} ln=${bsEntry.lnMoneyness.toFixed(6)} ask=${askPrice.toFixed(2)} edge=${(bsEdgeNet * 100).toFixed(1)}% pct ${(budgetPct * 100).toFixed(1)}% -> ${(dojiCap * 100).toFixed(1)}%`);
-        budgetPct = dojiCap;
-      }
-    }
+    budgetPct = Math.min(COUNTER_WIN_MAX_BUDGET_PCT, budgetPct);
     if (budgetPct > timeBucket.maxBudgetPct) {
       logger.info(`TIME BUCKET SIZE CAP: bucket=${timeBucket.name} pct ${(budgetPct * 100).toFixed(1)}% -> ${(timeBucket.maxBudgetPct * 100).toFixed(1)}%`);
       budgetPct = timeBucket.maxBudgetPct;
@@ -2404,7 +2252,6 @@ export class Hedge15mEngine {
       askPrice,
       buyToken,
       budgetPct,
-      strategyMode,
       Date.now(),
       entrySource,
       bsEntry,
@@ -2879,7 +2726,7 @@ export class Hedge15mEngine {
     }
 
     this.hedgeState = "leg1_filled";
-    this.activeStrategyMode = "mispricing";
+    this.activeStrategyMode = "counter-win";
     this.leg1Dir = dir;
     this.leg1Price = fillPrice;
     this.leg1FillPrice = fillPrice;
@@ -2908,7 +2755,7 @@ export class Hedge15mEngine {
     this.status = `Leg1预挂成交 ${dir.toUpperCase()} @${fillPrice.toFixed(2)} x${filledShares.toFixed(0)} maker, 等结算`;
     logger.info(`HEDGE15M DUAL SIDE → LEG1: ${dir.toUpperCase()} ${filledShares.toFixed(0)}份 @${fillPrice.toFixed(2)} maker orderId=${orderId.slice(0, 12)} bsFair=${bsEntry.fairRaw.toFixed(3)} netEdge=${(bsEntry.effectiveEdge * 100).toFixed(1)}%`);
     this.writeRoundAudit("leg1-filled", {
-      strategyMode: "mispricing",
+      strategyMode: "counter-win",
       dir,
       entryAsk: fillPrice,
       fillPrice,
@@ -3030,9 +2877,8 @@ export class Hedge15mEngine {
     askPrice: number,
     buyToken: string,
     budgetPct: number,
-    strategyMode: "mispricing" | "trend" | "counter-win",
     signalDetectedAt = Date.now(),
-    entrySource = "reactive-mispricing",
+    entrySource = "counter-win",
     bsEntry?: {
       fairRaw: number;
       fairKelly: number;
@@ -3041,6 +2887,7 @@ export class Hedge15mEngine {
       effectiveEdge: number;
     },
   ): Promise<void> {
+    const strategyMode = "counter-win" as const;
     const budget = this.balance * budgetPct;
     const shares = Math.min(MAX_SHARES, Math.floor(budget / askPrice));
     if (shares < MIN_SHARES) {
@@ -3133,7 +2980,7 @@ export class Hedge15mEngine {
 
       this.hedgeState = "leg1_filled";
       this.leg1AttemptedThisRound = true; // 真正成交后才锁定, FAK失败可重试
-      this.activeStrategyMode = "mispricing";
+      this.activeStrategyMode = "counter-win";
       this.leg1Dir = dir;
       this.leg1Price = entryAsk;
       this.leg1FillPrice = realFillPrice;
@@ -3142,7 +2989,7 @@ export class Hedge15mEngine {
       this.leg1Shares = filledShares;
       this.leg1Token = buyToken;
       this.leg1MakerFill = isMaker;
-      this.activeStrategyMode = strategyMode;
+      this.activeStrategyMode = "counter-win";
       this.leg1EntrySource = entrySource;
       const feeBuffer = isMaker ? 0 : realFillPrice * TAKER_FEE;
       const slippageBuffer = isMaker ? 0 : 0.005;
@@ -3189,68 +3036,98 @@ export class Hedge15mEngine {
     if (this.panicHedgeAttempts >= PANIC_HEDGE_MAX_ATTEMPTS) return;
 
     const now = Date.now();
-    if (this.panicHedgeLastAttemptAt > 0 && now - this.panicHedgeLastAttemptAt < PANIC_HEDGE_RETRY_MS) return;
-    if (this.leg1FilledAt > 0 && now - this.leg1FilledAt < PANIC_HEDGE_MIN_HOLD_MS) return;
-    const trendEntry = this.leg1EntrySource === "directional-reactive";
-    if (trendEntry && this.leg1FilledAt > 0 && now - this.leg1FilledAt < PANIC_HEDGE_TREND_MIN_HOLD_MS) return;
-
     const leg1Dir = this.leg1Dir === "down" ? "down" : "up";
+    const trendAligned = this.currentTrendBias === leg1Dir;
+    const minHoldMs = trendAligned ? PANIC_HEDGE_TREND_MIN_HOLD_MS : PANIC_HEDGE_MIN_HOLD_MS;
+    if (this.panicHedgeLastAttemptAt > 0 && now - this.panicHedgeLastAttemptAt < PANIC_HEDGE_RETRY_MS) return;
+    if (this.leg1FilledAt > 0 && now - this.leg1FilledAt < minHoldMs) return;
+
     const hedgeDir: "up" | "down" = leg1Dir === "up" ? "down" : "up";
     const hedgeToken = hedgeDir === "up" ? rnd.upToken : rnd.downToken;
     const hedgeAsk = hedgeDir === "up" ? this.upAsk : this.downAsk;
     if (!hedgeToken || hedgeAsk < PANIC_HEDGE_MIN_ASK || hedgeAsk > PANIC_HEDGE_MAX_ASK) return;
+    const bucket = this.getTimeBucket(rnd.secondsLeft);
 
     const btcMove = getBtcMovePct();
     const m60 = getRecentMomentum(MOMENTUM_WINDOW_SEC);
+    const m180 = getRecentMomentum(TREND_WINDOW_SEC);
     const adverseBtc = leg1Dir === "up" ? btcMove <= -PANIC_HEDGE_BTC_ADVERSE_MOVE : btcMove >= PANIC_HEDGE_BTC_ADVERSE_MOVE;
     const adverseM60 = leg1Dir === "up" ? m60 <= -PANIC_HEDGE_MOMENTUM60_ADVERSE : m60 >= PANIC_HEDGE_MOMENTUM60_ADVERSE;
+    const adverseM180 = leg1Dir === "up"
+      ? m180 <= -(PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_M180_ADVERSE_SCALE)
+      : m180 >= (PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_M180_ADVERSE_SCALE);
 
     const leg1NowAsk = leg1Dir === "up" ? this.upAsk : this.downAsk;
     if (leg1NowAsk <= 0) return;
-    const leg1NowBs = this.evaluateBsEntry(leg1Dir, leg1NowAsk, rnd.secondsLeft, "mispricing", true);
+    const leg1NowBs = this.evaluateBsEntry(leg1Dir, leg1NowAsk, rnd.secondsLeft, "counter-win", true);
     const fairNow = leg1NowBs.fairRaw;
     const fairDrop = this.leg1BsFair > 0 ? this.leg1BsFair - fairNow : 0;
     const adverseFair = fairDrop >= PANIC_HEDGE_FAIR_DROP || fairNow <= PANIC_HEDGE_FAIR_FLOOR;
     const adverseEntryDrop = this.leg1FillPrice > 0
       ? leg1NowAsk <= this.leg1FillPrice * (1 - PANIC_HEDGE_ENTRY_DROP_RATIO)
       : false;
-    const momentumConfirmed = adverseBtc && adverseM60;
-    const pricingDeteriorated = adverseFair || adverseEntryDrop;
-    const mixedConfirmed = pricingDeteriorated && (adverseBtc || adverseM60);
-    const leg1Regime = this.getCounterWinRegime(leg1Dir);
-    const trendProtected = leg1Regime === "trend" && this.currentTrendBias === leg1Dir;
-    const strongAdverseBtc = leg1Dir === "up"
-      ? btcMove <= -(PANIC_HEDGE_BTC_ADVERSE_MOVE * PANIC_HEDGE_TREND_ADVERSE_SCALE)
-      : btcMove >= PANIC_HEDGE_BTC_ADVERSE_MOVE * PANIC_HEDGE_TREND_ADVERSE_SCALE;
-    const strongAdverseM60 = leg1Dir === "up"
-      ? m60 <= -(PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE)
-      : m60 >= PANIC_HEDGE_MOMENTUM60_ADVERSE * PANIC_HEDGE_TREND_ADVERSE_SCALE;
-    const strongMomentumConfirmed = strongAdverseBtc && strongAdverseM60;
-    if (trendEntry) {
-      // 趋势入场的panic只在冲击态启用，避免把正常回撤误判成要对冲
-      if (leg1Regime !== "shock") return;
-      if (!(strongMomentumConfirmed && adverseFair && adverseEntryDrop)) return;
-    } else if (trendProtected) {
-      if (!(strongMomentumConfirmed && pricingDeteriorated)) return;
-    } else {
-      if (!momentumConfirmed && !mixedConfirmed) return;
+
+    const leg1UnitCost = this.leg1Shares > 0
+      ? this.totalCost / this.leg1Shares
+      : this.leg1FillPrice * (1 + TAKER_FEE);
+    const costDropPct = leg1UnitCost > 0 ? Math.max(0, (leg1UnitCost - leg1NowAsk) / leg1UnitCost) : 0;
+    const fairGap = Math.max(0, leg1UnitCost - fairNow);
+
+    const baseCostDrop = bucket.name === "main"
+      ? PANIC_HEDGE_COST_DROP_MAIN
+      : bucket.name === "late"
+        ? PANIC_HEDGE_COST_DROP_LATE
+        : PANIC_HEDGE_COST_DROP_EARLY;
+    const baseFairGap = bucket.name === "main"
+      ? PANIC_HEDGE_FAIR_GAP_MAIN
+      : bucket.name === "late"
+        ? PANIC_HEDGE_FAIR_GAP_LATE
+        : PANIC_HEDGE_FAIR_GAP_EARLY;
+    let targetLossCutPct = bucket.name === "main"
+      ? PANIC_HEDGE_LOSS_CUT_MAIN
+      : bucket.name === "late"
+        ? PANIC_HEDGE_LOSS_CUT_LATE
+        : PANIC_HEDGE_LOSS_CUT_EARLY;
+    let requiredCostDrop = baseCostDrop;
+    let requiredFairGap = baseFairGap;
+    if (trendAligned) {
+      requiredCostDrop *= PANIC_HEDGE_TREND_ADVERSE_SCALE;
+      requiredFairGap *= PANIC_HEDGE_TREND_ADVERSE_SCALE;
+      targetLossCutPct = Math.max(0.16, targetLossCutPct - 0.10);
     }
 
-    const capByBalance = this.balance * (trendEntry ? PANIC_HEDGE_TREND_BALANCE_PCT : PANIC_HEDGE_BALANCE_PCT);
+    const momentumConfirmed = adverseBtc && adverseM60;
+    const costStop = costDropPct >= requiredCostDrop;
+    const fairStop = fairGap >= requiredFairGap || adverseFair || adverseEntryDrop;
+    const hardStop = costDropPct >= requiredCostDrop * PANIC_HEDGE_HARD_STOP_SCALE;
+    const softStop = momentumConfirmed && (costStop || fairStop);
+    const alignedSoftStop = softStop && (adverseM180 || (costStop && fairStop));
+    if (!(hardStop || (trendAligned ? alignedSoftStop : softStop))) return;
+
+    const capByBalance = this.balance * (trendAligned ? PANIC_HEDGE_TREND_BALANCE_PCT : PANIC_HEDGE_BALANCE_PCT);
     const capByLegCost = this.totalCost * PANIC_HEDGE_LEG_COST_PCT;
-    const hedgeBudget = Math.min(capByBalance, capByLegCost);
-    const hedgeShares = Math.min(MAX_SHARES, Math.floor(hedgeBudget / hedgeAsk));
+    const hedgeBudgetCap = Math.min(capByBalance, capByLegCost);
+    const lossCutPerShare = Math.max(0.05, 1 - hedgeAsk * (1 + TAKER_FEE));
+    const targetLossCut = this.totalCost * Math.min(PANIC_HEDGE_LOSS_CUT_MAX, targetLossCutPct);
+    const sharesByCost = Math.ceil(targetLossCut / lossCutPerShare);
+    const sharesByBudget = Math.floor(hedgeBudgetCap / hedgeAsk);
+    const hedgeShares = Math.min(MAX_SHARES, sharesByCost, sharesByBudget);
     if (hedgeShares < MIN_SHARES) return;
+    const hedgeBudget = hedgeShares * hedgeAsk;
 
     this.panicHedgeAttempts += 1;
     this.panicHedgeLastAttemptAt = now;
     const reasons: string[] = [];
+    reasons.push(`bucket=${bucket.name}`);
+    reasons.push(`trend=${trendAligned ? "with" : "against"}`);
+    reasons.push(`costDrop=${(costDropPct * 100).toFixed(1)}%/${(requiredCostDrop * 100).toFixed(1)}%`);
+    reasons.push(`fairGap=${(fairGap * 100).toFixed(1)}%/${(requiredFairGap * 100).toFixed(1)}%`);
     if (adverseBtc) reasons.push(`btc=${(btcMove * 100).toFixed(3)}%`);
     if (adverseM60) reasons.push(`m60=${(m60 * 100).toFixed(3)}%`);
+    if (adverseM180) reasons.push(`m180=${(m180 * 100).toFixed(3)}%`);
     if (adverseFair) reasons.push(`fair=${fairNow.toFixed(3)} drop=${(fairDrop * 100).toFixed(1)}%`);
     if (adverseEntryDrop) reasons.push(`entryDrop=${(Math.max(0, this.leg1FillPrice - leg1NowAsk) * 100).toFixed(1)}c`);
-    if (trendEntry) reasons.push("trend-entry");
-    if (trendProtected) reasons.push("trend-protected");
+    reasons.push(`cut=${(targetLossCutPct * 100).toFixed(0)}%`);
     this.panicHedgeReason = reasons.join(", ");
 
     logger.warn(
@@ -3293,6 +3170,9 @@ export class Hedge15mEngine {
       hedgeCost: this.panicHedgeCost,
       reason: this.panicHedgeReason,
       attempt: this.panicHedgeAttempts,
+      costDropPct,
+      fairGap,
+      targetLossCutPct,
     });
   }
 
