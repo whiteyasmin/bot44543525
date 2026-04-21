@@ -191,7 +191,9 @@ const detailLabels = {
  minBtcMoveBps:'动量阈值', minBtcVelocityBps:'速度阈值', btcRegime:'BTC 指标', ask:'卖一', maxEntryPrice:'最高买入价',
  spreadCents:'价差 cents', maxSpreadCents:'最大价差 cents', shares:'份额', avgPrice:'均价', cost:'成本',
  bid:'买一', entryAvgPrice:'入场均价', profitCents:'浮盈 cents', elapsedSeconds:'持仓秒', hedgeSide:'对冲方向',
- panicLoss:'亏损触发', panicIndicator:'指标触发', trendAtEntry:'入场指标', tailwind:'顺风', entryPriceBucket:'入场价格段',
+  panicLoss:'达到 panic 亏损', severePanicLoss:'极端亏损', adverseRegime:'指标逆风', confirmedAdverseTrend:'反向趋势确认',
+  hedgeAgeOk:'持仓时间足够', panicIndicator:'对冲触发确认', severePanic:'极端对冲兜底',
+  trendAtEntry:'入场指标', tailwind:'顺风', entryPriceBucket:'入场价格段',
  secondsLeftAtEntry:'入场剩余秒', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
  resolvePrice:'结算 BTC', pnl:'盈亏'
 };

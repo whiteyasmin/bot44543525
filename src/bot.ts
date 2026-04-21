@@ -355,15 +355,18 @@ export class Bot {
 
     const elapsed = (Date.now() - Date.parse(position.entryTime)) / 1000;
     const profitCents = (bid - position.entryAvgPrice) * 100;
+    const hedgeSide: Side = position.side === "UP" ? "DOWN" : "UP";
     const panicLoss = profitCents <= -settings.panicLossCents;
+    const severePanicLoss = profitCents <= -settings.panicLossCents * 1.5;
     const adverseRegime = isAdverseRegime(position.side, btcRegime, profitCents);
-    const indicatorLoss = profitCents <= -settings.panicLossCents * 0.75;
-    const hedgeAgeOk = elapsed >= 20;
-    const panicIndicator = adverseRegime && indicatorLoss && hedgeAgeOk;
+    const confirmedAdverseTrend = btcRegime.entrySide === hedgeSide;
+    const hedgeAgeOk = elapsed >= 25;
+    const panicIndicator = panicLoss && confirmedAdverseTrend && hedgeAgeOk;
+    const severePanic = severePanicLoss && adverseRegime && hedgeAgeOk;
 
     const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
-      panicLoss ||
-      panicIndicator
+      panicIndicator ||
+      severePanic
     );
 
     if (shouldHedge) {
@@ -377,12 +380,14 @@ export class Bot {
         secondInBucket,
         elapsedSeconds: elapsed,
         panicLoss,
+        severePanicLoss,
         adverseRegime,
-        indicatorLoss,
+        confirmedAdverseTrend,
         hedgeAgeOk,
-        panicIndicator
+        panicIndicator,
+        severePanic
       });
-      await this.panicHedge(settings, market, position, position.side === "UP" ? "DOWN" : "UP", upBook, downBook, null);
+      await this.panicHedge(settings, market, position, hedgeSide, upBook, downBook, null);
       return;
     }
 
@@ -395,7 +400,14 @@ export class Bot {
       btcRegime,
       secondInBucket,
       elapsedSeconds: elapsed,
-      hedgeSide: position.hedgeSide ?? null
+      hedgeSide: position.hedgeSide ?? null,
+      panicLoss,
+      severePanicLoss,
+      adverseRegime,
+      confirmedAdverseTrend,
+      hedgeAgeOk,
+      panicIndicator,
+      severePanic
     });
     return this.action(position.hedgeSide ? "hold_hedged" : "hold");
 
