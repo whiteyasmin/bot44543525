@@ -444,6 +444,21 @@ export class Bot {
     const fees = (totalCost + totalValue) * settings.feeBps / 10000;
     const grossPnl = totalValue - totalCost;
     const pnl = grossPnl - fees;
+    const duplicateSettlement = (await readAllJsonl<{ tradeId?: string; exitReason?: string }>(paths.trades))
+      .some((trade) => trade.tradeId === position.id && trade.exitReason === "settlement");
+    if (duplicateSettlement) {
+      this.state.position = null;
+      this.state.lastAction = `settlement_duplicate_${winner}`;
+      this.decide("settled", winner, "市场已结算，重复结算记录已跳过", { resolvePrice });
+      await this.persist();
+      await recordEvent("settlement_duplicate_skipped", {
+        tradeId: position.id,
+        marketSlug: position.marketSlug,
+        resolvedWinner: winner
+      });
+      return;
+    }
+
     this.state.paperBalance += totalValue;
     this.state.realizedPnl += pnl;
     this.state.position = null;
@@ -460,8 +475,11 @@ export class Bot {
       bucketStart: position.bucketStart,
       bucketEnd: position.bucketEnd,
       btcOpen: position.btcOpen,
+      btcEntry: position.btcEntry,
       btcResolve: resolvePrice,
       entrySecond: position.entrySecond,
+      entryMoveBps: position.entryMoveBps,
+      entryVelocityBps: position.entryVelocityBps,
       trendAtEntry: position.trendAtEntry ?? null,
       tailwind: position.tailwind ?? null,
       btcRegimeAtEntry: position.btcRegime ?? null,
@@ -473,7 +491,11 @@ export class Bot {
       hedgeActive: position.status === "hedged",
       hedgeSide: position.hedgeSide ?? null,
       hedgeShares: position.hedgeShares ?? 0,
+      hedgeAvgPrice: position.hedgeAvgPrice ?? null,
       hedgeCost: position.hedgeCost ?? 0,
+      mainValue,
+      hedgeValue,
+      totalCost,
       grossPnl,
       fees,
       netPnl: pnl,

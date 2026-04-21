@@ -32,7 +32,7 @@ export const defaultSettings: Settings = {
   repriceIntervalMs: 1000,
   panicHedgeEnabled: true,
   panicLossCents: 18,
-  hedgeSizeRatio: 0.75,
+  hedgeSizeRatio: 0.5,
   maxHedgePrice: 0.66,
   maxHedgeSlippageCents: 5,
   paperBalance: 10000,

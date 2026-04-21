@@ -60,6 +60,7 @@ export async function buildMarkdownReport() {
   ]);
   const signalSnapshots = usefulSnapshots(snapshots);
   const actionEvents = usefulEvents(events);
+  const uniqueTrades = dedupeTrades(trades);
 
   const lines: string[] = [
     "# BTC 5m \u7b56\u7565\u56de\u6d4b\u65e5\u5fd7",
@@ -100,11 +101,11 @@ export async function buildMarkdownReport() {
     "",
     "## \u4ea4\u6613\u6c47\u603b",
     "",
-    summaryTable(trades, actionEvents),
+    summaryTable(uniqueTrades, actionEvents, trades.length - uniqueTrades.length),
     "",
     "## \u5df2\u7ed3\u7b97\u4ea4\u6613",
     "",
-    trades.length ? tradeTable(trades) : "_\u6682\u65e0\u5df2\u7ed3\u7b97\u4ea4\u6613_",
+    uniqueTrades.length ? tradeTable(uniqueTrades) : "_\u6682\u65e0\u5df2\u7ed3\u7b97\u4ea4\u6613_",
     "",
     "## \u6210\u4ea4\u52a8\u4f5c\u6d41\u6c34",
     "",
@@ -151,7 +152,17 @@ async function readJsonlObjects(file: string): Promise<Row[]> {
     });
 }
 
-function summaryTable(trades: Row[], actionEvents: Row[]) {
+function dedupeTrades(trades: Row[]) {
+  const seen = new Set<string>();
+  return trades.filter((trade, index) => {
+    const key = String(trade.tradeId ?? `${trade.marketSlug ?? "unknown"}-${trade.entryTime ?? index}-${trade.exitReason ?? "exit"}`);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function summaryTable(trades: Row[], actionEvents: Row[], duplicateTrades: number) {
   const pnl = trades.map((t) => n(t.netPnl)).filter(Number.isFinite);
   const wins = pnl.filter((v) => v > 0);
   const losses = pnl.filter((v) => v < 0);
@@ -160,6 +171,7 @@ function summaryTable(trades: Row[], actionEvents: Row[]) {
     ["\u6307\u6807", "\u503c"],
     [
       ["\u5df2\u7ed3\u7b97\u4ea4\u6613\u6570", String(trades.length)],
+      ["\u91cd\u590d\u7ed3\u7b97\u5df2\u5ffd\u7565", String(Math.max(0, duplicateTrades))],
       ["\u5165\u573a\u52a8\u4f5c\u6570", String(actionEvents.filter((e) => e.type === "entry_filled").length)],
       ["\u5bf9\u51b2\u52a8\u4f5c\u6570", String(actionEvents.filter((e) => e.type === "panic_hedge_triggered").length)],
       ["\u80dc\u7387", pnl.length ? `${num(wins.length / pnl.length * 100)}%` : "-"],
