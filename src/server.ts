@@ -179,11 +179,10 @@ function appHtml() {
 <script>
 const labels = {
  autoDiscoverMarket:'自动当前市场', manualMarketUrl:'手动市场 URL', entryStartSeconds:'入场开始秒', entryEndSeconds:'入场结束秒',
- minBtcMoveBps:'BTC 动量 bps', velocityLookbackSeconds:'速度回看秒', minBtcVelocityBps:'BTC 速度 bps', reversalExitBps:'反转退出 bps',
+ minBtcMoveBps:'BTC 动量 bps', velocityLookbackSeconds:'速度回看秒', minBtcVelocityBps:'BTC 速度 bps',
  maxEntryPrice:'最高买入价', maxPositionUsdc:'固定仓位 USDC', kellyEnabled:'启用 1/2 Kelly', kellyFraction:'Kelly 系数', kellyLookbackTrades:'Kelly 回看交易数', kellyMinTrades:'Kelly 最小样本', kellyFallbackPct:'样本不足仓位 %', kellyMaxPct:'Kelly 最大仓位 %', maxShares:'最大份额', depthUsageRatio:'使用盘口比例', goodSpreadCents:'好价差 cents', okSpreadCents:'可接受价差 cents', minDepthToKellyRatio:'最小深度/Kelly', thinDepthMultiplier:'薄盘口折扣', okDepthMultiplier:'一般盘口折扣', minOrderUsdc:'最小订单 USDC',
- maxEntrySlippageCents:'入场滑点 cents', maxExitSlippageCents:'退出滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
- takeProfitCents:'止盈 cents', stopLossCents:'止损 cents', maxHoldSeconds:'最长持仓秒', exitBeforeResolveSeconds:'结算前退出秒',
- panicHedgeEnabled:'启用 panic hedge', panicLossCents:'panic 亏损 cents', panicBtcReversalBps:'panic 反转 bps', minExitFillRatio:'最小退出成交率',
+ maxEntrySlippageCents:'入场滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
+ panicHedgeEnabled:'启用 panic hedge', panicLossCents:'panic 亏损 cents',
  hedgeSizeRatio:'对冲比例', maxHedgePrice:'最高对冲价', maxHedgeSlippageCents:'对冲滑点 cents', paperBalance:'模拟余额 USDC',
  feeBps:'手续费 bps', enableSnapshots:'记录快照', snapshotIntervalMs:'快照间隔毫秒', enableOrderbookLogs:'记录盘口', keepMaxLogMb:'最大日志 MB'
 };
@@ -191,18 +190,17 @@ const quickFields = [
  ['paperBalance','number']
 ];
 const advancedFields = [
- ['entryStartSeconds','number'],['entryEndSeconds','number'],['minBtcMoveBps','number'],['velocityLookbackSeconds','number'],['minBtcVelocityBps','number'],['reversalExitBps','number'],
+ ['entryStartSeconds','number'],['entryEndSeconds','number'],['minBtcMoveBps','number'],['velocityLookbackSeconds','number'],['minBtcVelocityBps','number'],
  ['maxEntryPrice','number'],['kellyEnabled','checkbox'],['kellyFraction','number'],['kellyLookbackTrades','number'],['kellyMinTrades','number'],['kellyFallbackPct','number'],['kellyMaxPct','number'],['maxPositionUsdc','number'],['maxShares','number'],['depthUsageRatio','number'],['goodSpreadCents','number'],['okSpreadCents','number'],['minDepthToKellyRatio','number'],['thinDepthMultiplier','number'],['okDepthMultiplier','number'],['minOrderUsdc','number'],
- ['maxEntrySlippageCents','number'],['maxExitSlippageCents','number'],['maxSpreadCents','number'],['repriceIntervalMs','number'],
- ['takeProfitCents','number'],['stopLossCents','number'],['maxHoldSeconds','number'],['exitBeforeResolveSeconds','number'],
- ['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['panicBtcReversalBps','number'],['minExitFillRatio','number'],['hedgeSizeRatio','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number'],
+ ['maxEntrySlippageCents','number'],['maxSpreadCents','number'],['repriceIntervalMs','number'],
+ ['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['hedgeSizeRatio','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number'],
  ['paperBalance','number'],['feeBps','number'],['enableSnapshots','checkbox'],['snapshotIntervalMs','number'],['enableOrderbookLogs','checkbox'],['keepMaxLogMb','number']
 ];
 function fmt(n,d=2){return typeof n==='number'&&isFinite(n)?n.toFixed(d):'-'}
-const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',no_signal:'等待信号',hold:'持仓中',one_trade_per_bucket:'本桶已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
-const eventMap={error:'错误',market_discovered:'发现当前市场',entry_filled:'模拟买入成交',exit_filled:'模拟卖出成交',panic_hedge_triggered:'触发 panic hedge',settings_updated:'参数已更新',paper_balance_reset:'模拟余额已重置',bot_started:'机器人已启动',logs_cleared:'日志已清空'};
+const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',no_signal:'等待信号',hold:'持仓中',hold_hedged:'已对冲持有',one_trade_per_bucket:'本桶已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
+const eventMap={error:'错误',market_discovered:'发现当前市场',entry_filled:'模拟买入成交',panic_hedge_triggered:'触发 panic hedge',settings_updated:'参数已更新',paper_balance_reset:'模拟余额已重置',bot_started:'机器人已启动',logs_cleared:'日志已清空'};
 const statusMap={settled:'已结算',closed:'已平仓',open:'持仓中',hedged:'已对冲'};
-const reasonMap={take_profit:'止盈',stop_loss:'止损',btc_reversal:'BTC 反转',max_hold:'超时退出',settlement:'到期结算',exit_before_resolve:'结算前退出',panic_exit:'panic 退出'};
+const reasonMap={settlement:'到期结算'};
 function actionText(a){return actionMap[a]||a||'-'}
 function bookHtml(b,t){if(!b)return '-';const rows=[];for(let i=0;i<5;i++){rows.push('<tr><td>'+(b.bids?.[i]?.price??'-')+'</td><td>'+(b.bids?.[i]?.size??'-')+'</td><td>'+(b.asks?.[i]?.price??'-')+'</td><td>'+(b.asks?.[i]?.size??'-')+'</td></tr>')}return '<div class="fresh">盘口 '+fresh(t)+'</div><div class="quote"><b>买一 '+(b.bids?.[0]?.price??'-')+'</b><b>卖一 '+(b.asks?.[0]?.price??'-')+'</b></div><table><thead><tr><th>买价</th><th>量</th><th>卖价</th><th>量</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>'}
 function posHtml(p){if(!p)return '<span class="muted">无仓位</span>';return '<div class="posline"><b>'+p.side+'</b><b>'+fmt(p.shares,2)+' 份</b></div><div>均价 '+fmt(p.entryAvgPrice,3)+' / 成本 '+fmt(p.entryCost,2)+'</div><div>状态 '+p.status+' / 入场第 '+p.entrySecond+' 秒</div>'+(p.hedgeSide?'<div>对冲 '+p.hedgeSide+' '+fmt(p.hedgeShares,2)+' 份 @ '+fmt(p.hedgeAvgPrice,3)+'</div>':'')}
@@ -213,7 +211,7 @@ function renderForm(form, fields, s){form.innerHTML='';for(const [k,t] of fields
 async function loadSettings(){const s=await (await fetch('/api/settings')).json();renderForm(quickSettings,quickFields,s);renderForm(advancedSettings,advancedFields,s)}
 function collect(form, fields){const body={};for(const [k,t] of fields){const el=form.elements[k];body[k]=t==='checkbox'?el.checked:(t==='number'?Number(el.value):el.value)}return body}
 async function saveForm(form, fields){const r=await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collect(form,fields))});if(!r.ok){alert((await r.json()).error||'保存失败')}await loadSettings();await loadDashboard()}
-async function loadDashboard(){const d=await (await fetch('/api/dashboard')).json();const s=d.state, cfg=d.settings;status.textContent=s.lastError?'错误':(cfg.botEnabled?'策略运行':'策略暂停');statusCard.className=cfg.botEnabled?'on':'off';action.textContent=s.lastError||actionText(s.lastAction);btc.textContent=s.btc?fmt(s.btc.price,2):'-';move.textContent='动量 '+fmt(s.moveBps,2)+' bps / 速度 '+fmt(s.velocityBps,2)+' / '+(s.btc?.source||'无数据源');market.textContent=s.currentMarket?s.currentMarket.slug.replace('btc-updown-5m-',''):'-';sec.textContent='第 '+s.secondInBucket+' 秒 / 剩余 '+Math.max(0,300-s.secondInBucket)+' 秒 / '+fresh(s.bookUpdatedAt);bal.textContent=fmt(s.paperBalance,2)+' USDC';pnl.textContent='PnL '+fmt(s.realizedPnl,2);decision.innerHTML=decisionHtml(s.decision);up.innerHTML=bookHtml(s.upBook,s.bookUpdatedAt);down.innerHTML=bookHtml(s.downBook,s.bookUpdatedAt);pos.innerHTML=posHtml(s.position);trades.innerHTML=tradeRows(d.recentTrades);events.innerHTML=eventRows(d.recentEvents)}
+async function loadDashboard(){const d=await (await fetch('/api/dashboard')).json();const s=d.state, cfg=d.settings;status.textContent=s.lastError?'错误':(cfg.botEnabled?'策略运行':'策略暂停');statusCard.className=cfg.botEnabled?'on':'off';action.textContent=s.lastError||actionText(s.lastAction);btc.textContent=s.btc?fmt(s.btc.price,2):'-';move.textContent='动量 '+fmt(s.moveBps,2)+' bps / 速度 '+fmt(s.velocityBps,2)+' / 指标 '+(s.btcRegime?.label||'-')+' / '+(s.btc?.source||'无数据源');market.textContent=s.currentMarket?s.currentMarket.slug.replace('btc-updown-5m-',''):'-';sec.textContent='第 '+s.secondInBucket+' 秒 / 剩余 '+Math.max(0,300-s.secondInBucket)+' 秒 / '+fresh(s.bookUpdatedAt);bal.textContent=fmt(s.paperBalance,2)+' USDC';pnl.textContent='PnL '+fmt(s.realizedPnl,2);decision.innerHTML=decisionHtml(s.decision);up.innerHTML=bookHtml(s.upBook,s.bookUpdatedAt);down.innerHTML=bookHtml(s.downBook,s.bookUpdatedAt);pos.innerHTML=posHtml(s.position);trades.innerHTML=tradeRows(d.recentTrades);events.innerHTML=eventRows(d.recentEvents)}
 function tradeRows(rows){if(!rows.length)return '<span class="muted">暂无交易</span>';return '<table><thead><tr><th>时间</th><th>方向</th><th>结果</th><th>PnL</th><th>原因</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+shortTime(r.exitTime||r.entryTime)+'</td><td>'+sideText(r.side)+'</td><td>'+text(statusMap,r.status)+'</td><td>'+fmt(r.netPnl,2)+'</td><td>'+text(reasonMap,r.exitReason)+'</td></tr>').join('')+'</tbody></table>'}
 function eventRows(rows){if(!rows.length)return '<span class="muted">暂无事件</span>';return rows.slice(0,6).map(r=>'<div class="event"><b>'+shortTime(r.timestamp)+'</b> '+text(eventMap,r.type)+'</div>').join('')}
 function text(map,key){return map[key]||key||'-'}

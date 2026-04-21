@@ -11,7 +11,6 @@ export interface Settings {
   minBtcMoveBps: number;
   velocityLookbackSeconds: number;
   minBtcVelocityBps: number;
-  reversalExitBps: number;
   maxEntryPrice: number;
   minEdgeBps: number;
   maxPositionUsdc: number;
@@ -30,17 +29,10 @@ export interface Settings {
   okDepthMultiplier: number;
   minOrderUsdc: number;
   maxEntrySlippageCents: number;
-  maxExitSlippageCents: number;
   maxSpreadCents: number;
   repriceIntervalMs: number;
-  takeProfitCents: number;
-  stopLossCents: number;
-  maxHoldSeconds: number;
-  exitBeforeResolveSeconds: number;
   panicHedgeEnabled: boolean;
   panicLossCents: number;
-  panicBtcReversalBps: number;
-  minExitFillRatio: number;
   hedgeSizeRatio: number;
   maxHedgePrice: number;
   maxHedgeSlippageCents: number;
@@ -102,6 +94,7 @@ export interface Position {
   entryVelocityBps: number;
   trendAtEntry?: string;
   tailwind?: boolean;
+  btcRegime?: BtcRegime;
   entryPriceBucket?: string;
   secondsLeftAtEntry?: number;
   kellyPct?: number;
@@ -128,6 +121,7 @@ export interface RuntimeState {
   btc: BtcTick | null;
   moveBps: number;
   velocityBps: number;
+  btcRegime: BtcRegime | null;
   secondInBucket: number;
   upBook: OrderBook | null;
   downBook: OrderBook | null;
@@ -138,6 +132,14 @@ export interface RuntimeState {
   realizedPnl: number;
   updatedAt: string | null;
   decision: DecisionState;
+}
+
+export interface BtcRegime {
+  label: "uptrend" | "downtrend" | "up_reversal" | "down_reversal" | "chop";
+  moveDirection: "up" | "down" | "flat";
+  velocityDirection: "up" | "down" | "flat";
+  entrySide: Side | null;
+  strength: number;
 }
 
 export interface DecisionState {

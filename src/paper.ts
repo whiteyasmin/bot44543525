@@ -52,33 +52,6 @@ export function simulateBuy(book: OrderBook, targetUsdc: number, maxSlippageCent
   };
 }
 
-export function simulateSell(book: OrderBook, targetShares: number, maxSlippageCents: number): FillResult {
-  const bid = bestBid(book);
-  if (bid == null || targetShares <= 0) return emptyFill(targetShares, bid);
-  const minPrice = bid - maxSlippageCents / 100;
-  let remaining = targetShares;
-  let shares = 0;
-  let value = 0;
-
-  for (const level of book.bids) {
-    if (level.price < minPrice || remaining <= 0) break;
-    const levelShares = Math.min(remaining, level.size);
-    shares += levelShares;
-    value += levelShares * level.price;
-    remaining -= levelShares;
-  }
-
-  const avgPrice = shares > 0 ? value / shares : null;
-  return {
-    shares,
-    value,
-    avgPrice,
-    slippageCents: avgPrice == null ? 0 : (bid - avgPrice) * 100,
-    fillRatio: targetShares > 0 ? shares / targetShares : 0,
-    bestPrice: bid
-  };
-}
-
 function emptyFill(target: number, bestPrice: number | null): FillResult {
   return { shares: 0, value: 0, avgPrice: null, slippageCents: 0, fillRatio: target > 0 ? 0 : 1, bestPrice };
 }

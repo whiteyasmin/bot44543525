@@ -39,14 +39,17 @@ export async function writeSettings(settings: Settings) {
 }
 
 function sanitizeSettings(input: Settings): Settings {
-  const s = { ...defaultSettings, ...input };
+  const s = { ...defaultSettings };
+  for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) {
+    if (key in input) {
+      s[key] = input[key] as never;
+    }
+  }
   s.paperMode = true;
   s.repriceIntervalMs = clamp(s.repriceIntervalMs, 500, 10000);
   s.snapshotIntervalMs = clamp(s.snapshotIntervalMs, 500, 60000);
   s.entryStartSeconds = clamp(s.entryStartSeconds, 0, 260);
   s.entryEndSeconds = clamp(s.entryEndSeconds, s.entryStartSeconds, 260);
-  s.exitBeforeResolveSeconds = clamp(s.exitBeforeResolveSeconds, 5, 120);
-  s.maxHoldSeconds = clamp(s.maxHoldSeconds, 5, 260);
   s.minBtcMoveBps = clamp(s.minBtcMoveBps, 0, 100);
   s.minBtcVelocityBps = clamp(s.minBtcVelocityBps, 0, 100);
   s.maxEntryPrice = clamp(s.maxEntryPrice, 0.01, 0.99);
@@ -65,8 +68,6 @@ function sanitizeSettings(input: Settings): Settings {
   s.okDepthMultiplier = clamp(s.okDepthMultiplier, s.thinDepthMultiplier, 1);
   s.minOrderUsdc = clamp(s.minOrderUsdc, 0.01, 100000);
   s.maxEntrySlippageCents = clamp(s.maxEntrySlippageCents, 0, 50);
-  s.maxExitSlippageCents = clamp(s.maxExitSlippageCents, 0, 100);
-  s.minExitFillRatio = clamp(s.minExitFillRatio, 0, 1);
   s.hedgeSizeRatio = clamp(s.hedgeSizeRatio, 0, 2);
   s.maxHedgeSlippageCents = clamp(s.maxHedgeSlippageCents, 0, 100);
   s.feeBps = clamp(s.feeBps, 0, 1000);

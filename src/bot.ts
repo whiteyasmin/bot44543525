@@ -1,6 +1,7 @@
-import type { BtcTick, MarketInfo, OrderBook, Position, RuntimeState, Settings, Side } from "./types.js";
+﻿import type { BtcTick, MarketInfo, OrderBook, Position, RuntimeState, Settings, Side } from "./types.js";
 import { bookForSide, currentBucketStart, discoverMarket, extractSlug, getBtcCloseForBucket, getBtcTick, getOrderBook, marketSlugForBucket } from "./market.js";
-import { askDepthUsdc, bestAsk, bestBid, bidDepthShares, simulateBuy, simulateSell, spreadCents } from "./paper.js";
+import type { BtcRegime } from "./types.js";
+import { askDepthUsdc, bestAsk, bestBid, bidDepthShares, simulateBuy, spreadCents } from "./paper.js";
 import { paths, readAllJsonl, readJsonFile, readSettings, writeJsonFile } from "./store.js";
 import { recordEvent, recordOrderbook, recordSnapshot, recordTrade } from "./recorder.js";
 
@@ -50,6 +51,7 @@ export class Bot {
     btc: null,
     moveBps: 0,
     velocityBps: 0,
+    btcRegime: null,
     secondInBucket: 0,
     upBook: null,
     downBook: null,
@@ -64,7 +66,7 @@ export class Bot {
       enabled: false,
       status: "starting",
       side: null,
-      reason: "机器人启动中",
+      reason: "鏈哄櫒浜哄惎鍔ㄤ腑",
       details: {}
     }
   };
@@ -127,6 +129,7 @@ export class Bot {
       this.priceHistory = this.priceHistory.filter((p) => p.timestamp >= nowMs - 120000);
       const moveBps = ((btc.price / btc.open) - 1) * 10000;
       const velocityBps = this.velocityBps(settings.velocityLookbackSeconds, btc.price);
+      const btcRegime = classifyBtcRegime(settings, moveBps, velocityBps);
 
       const market = await this.marketFor(slug, bucketStart);
       const [upBook, downBook] = await Promise.all([
@@ -141,6 +144,7 @@ export class Bot {
         btc,
         moveBps,
         velocityBps,
+        btcRegime,
         secondInBucket,
         upBook,
         downBook,
@@ -150,15 +154,15 @@ export class Bot {
       };
 
       if (settings.botEnabled) {
-        await this.evaluate(settings, market, btc, moveBps, velocityBps, secondInBucket, upBook, downBook);
+        await this.evaluate(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook);
       } else {
         this.state.lastAction = "bot_disabled";
-        this.decide("paused", null, "策略已暂停，点击启动策略后才会决策", { secondInBucket });
+        this.decide("paused", null, "Strategy is paused; enable bot to make decisions", { secondInBucket });
       }
 
       if (settings.enableSnapshots && nowMs - this.lastSnapshotAt >= settings.snapshotIntervalMs) {
         this.lastSnapshotAt = nowMs;
-        await this.snapshot(market, btc, moveBps, velocityBps, secondInBucket, upBook, downBook);
+        await this.snapshot(market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -196,42 +200,44 @@ export class Bot {
     btc: BtcTick,
     moveBps: number,
     velocityBps: number,
+    btcRegime: BtcRegime,
     secondInBucket: number,
     upBook: OrderBook,
     downBook: OrderBook
   ) {
     const position = this.state.position;
-    this.decide("checking", null, "正在检查入场/持仓条件", {
+    this.decide("checking", null, "Checking entry and position conditions", {
       market: market.slug,
       secondInBucket,
       moveBps,
       velocityBps,
+      btcRegime,
       btcPrice: btc.price,
       btcSource: btc.source
     });
     if (position && position.marketSlug !== market.slug) {
-      this.decide("settling", position.side, "上一个市场已结束，正在模拟结算", { positionMarket: position.marketSlug, currentMarket: market.slug });
+      this.decide("settling", position.side, "Previous market ended; settling paper position", { positionMarket: position.marketSlug, currentMarket: market.slug });
       await this.settleExpired(position, btc.price);
       return;
     }
 
     if (position) {
-      this.decide("managing_position", position.side, "已有仓位，正在检查止盈/止损/panic hedge", {
+      this.decide("managing_position", position.side, "Open position: checking panic hedge, then holding to settlement", {
         shares: position.shares,
         entryAvgPrice: position.entryAvgPrice
       });
-      await this.managePosition(settings, market, btc, moveBps, secondInBucket, upBook, downBook, position);
+      await this.managePosition(settings, market, btcRegime, moveBps, velocityBps, secondInBucket, upBook, downBook, position);
       return;
     }
 
     if (this.lastBucketAction === market.slug) {
       this.state.lastAction = "one_trade_per_bucket";
-      this.decide("skip", null, "当前 5 分钟市场已经交易过，等待下一个市场", { market: market.slug });
+      this.decide("skip", null, "This 5m market was already traded; waiting for next market", { market: market.slug });
       return;
     }
     if (secondInBucket < settings.entryStartSeconds || secondInBucket > settings.entryEndSeconds) {
       this.state.lastAction = "outside_entry_window";
-      this.decide("skip", null, "不在允许入场时间窗口", {
+      this.decide("skip", null, "涓嶅湪鍏佽鍏ュ満鏃堕棿绐楀彛", {
         secondInBucket,
         entryStartSeconds: settings.entryStartSeconds,
         entryEndSeconds: settings.entryEndSeconds
@@ -239,46 +245,45 @@ export class Bot {
       return;
     }
 
-    const side = this.signal(settings, moveBps, velocityBps);
+    const side = this.signal(btcRegime);
     if (!side) {
       this.state.lastAction = "no_signal";
-      this.decide("wait_signal", null, "动量或速度未达到入场阈值", {
+      this.decide("wait_signal", null, "Momentum or velocity has not reached entry threshold", {
         moveBps,
         minBtcMoveBps: settings.minBtcMoveBps,
         velocityBps,
-        minBtcVelocityBps: settings.minBtcVelocityBps
+        minBtcVelocityBps: settings.minBtcVelocityBps,
+        btcRegime
       });
       return;
     }
-    this.decide("signal", side, `出现 ${side} 信号，检查盘口与仓位`, { moveBps, velocityBps });
-    await this.enter(settings, market, btc, moveBps, velocityBps, secondInBucket, side, bookForSide(side, upBook, downBook));
+    this.decide("signal", side, `Signal ${side}; checking book and sizing`, { moveBps, velocityBps, btcRegime });
+    await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, side, bookForSide(side, upBook, downBook));
   }
 
-  private signal(settings: Settings, moveBps: number, velocityBps: number): Side | null {
-    if (moveBps >= settings.minBtcMoveBps && velocityBps >= settings.minBtcVelocityBps) return "UP";
-    if (moveBps <= -settings.minBtcMoveBps && velocityBps <= -settings.minBtcVelocityBps) return "DOWN";
-    return null;
+  private signal(btcRegime: BtcRegime): Side | null {
+    return btcRegime.entrySide;
   }
 
-  private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, secondInBucket: number, side: Side, book: OrderBook) {
+  private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, side: Side, book: OrderBook) {
     const ask = bestAsk(book);
     if (ask == null) {
-      this.decide("skip", side, "目标方向没有卖盘，无法模拟买入", {});
+      this.decide("skip", side, "Target side has no ask; cannot buy", {});
       return this.action("entry_skipped_no_ask");
     }
     if (ask > settings.maxEntryPrice) {
-      this.decide("skip", side, "目标方向价格高于最高买入价", { ask, maxEntryPrice: settings.maxEntryPrice });
+      this.decide("skip", side, "Target side price is above max entry price", { ask, maxEntryPrice: settings.maxEntryPrice });
       return this.action("entry_skipped_price");
     }
     const spread = spreadCents(book);
     if (spread > settings.maxSpreadCents) {
-      this.decide("skip", side, "盘口价差过大", { spreadCents: spread, maxSpreadCents: settings.maxSpreadCents });
+      this.decide("skip", side, "Spread is too wide", { spreadCents: spread, maxSpreadCents: settings.maxSpreadCents });
       return this.action("entry_skipped_spread");
     }
 
     const sizing = await this.entrySizing(settings, book, ask, spread);
     if (sizing.targetUsdc < sizing.effectiveMinOrderUsdc) {
-      this.decide("skip", side, "Kelly 仓位或盘口深度低于最小订单", {
+      this.decide("skip", side, "Kelly size or book depth is below effective minimum order", {
         ...sizing,
         kelly: undefined
       });
@@ -287,12 +292,12 @@ export class Bot {
 
     const fill = simulateBuy(book, sizing.targetUsdc, settings.maxEntrySlippageCents);
     if (!fill.avgPrice || fill.value < sizing.effectiveMinOrderUsdc) {
-      this.decide("skip", side, "模拟撮合未达到最小成交", { sizing, fill });
+      this.decide("skip", side, "Simulated fill is below effective minimum order", { sizing, fill });
       return this.action("entry_unfilled");
     }
 
-    const trendAtEntry = trendFromMove(moveBps, settings.minBtcMoveBps);
-    const tailwind = isTailwind(side, trendAtEntry);
+    const trendAtEntry = btcRegime.label;
+    const tailwind = btcRegime.entrySide === side;
     const entryPriceBucket = priceBucket(fill.avgPrice);
     const secondsLeftAtEntry = 300 - secondInBucket;
 
@@ -314,6 +319,7 @@ export class Bot {
       entryVelocityBps: velocityBps,
       trendAtEntry,
       tailwind,
+      btcRegime,
       entryPriceBucket,
       secondsLeftAtEntry,
       kellyPct: sizing.kelly.kellyPct,
@@ -323,12 +329,13 @@ export class Bot {
     this.state.position = position;
     this.lastBucketAction = market.slug;
     this.state.lastAction = `entered_${side}`;
-    this.decide("entered", side, `已模拟买入 ${side}`, {
+    this.decide("entered", side, `Paper bought ${side}`, {
       shares: fill.shares,
       avgPrice: fill.avgPrice,
       cost: fill.value,
       trendAtEntry,
       tailwind,
+      btcRegime,
       entryPriceBucket,
       secondsLeftAtEntry,
       sizing
@@ -338,62 +345,54 @@ export class Bot {
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: side, reason: "entry", bids: book.bids, asks: book.asks });
   }
 
-  private async managePosition(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, secondInBucket: number, upBook: OrderBook, downBook: OrderBook, position: Position) {
+  private async managePosition(settings: Settings, market: MarketInfo, btcRegime: BtcRegime, moveBps: number, velocityBps: number, secondInBucket: number, upBook: OrderBook, downBook: OrderBook, position: Position) {
     const book = bookForSide(position.side, upBook, downBook);
     const bid = bestBid(book);
     if (bid == null) {
-      this.decide("hold", position.side, "持仓方向没有买盘，暂时无法退出", { shares: position.shares });
+      this.decide("hold", position.side, "No bid on held side; still holding to settlement", { shares: position.shares });
       return this.action("hold_no_bid");
     }
 
     const elapsed = (Date.now() - Date.parse(position.entryTime)) / 1000;
     const profitCents = (bid - position.entryAvgPrice) * 100;
-    const isUp = position.side === "UP";
-    const reversal = isUp ? moveBps <= settings.reversalExitBps : moveBps >= -settings.reversalExitBps;
-    const nearResolve = secondInBucket >= 300 - settings.exitBeforeResolveSeconds;
-    const hardStop = profitCents <= -settings.stopLossCents || reversal;
-
-    let reason: string | null = null;
-    if (hardStop && profitCents <= -settings.stopLossCents) reason = "stop_loss";
-    else if (hardStop && reversal) reason = "btc_reversal";
-    else if (nearResolve) reason = "exit_before_resolve";
+    const panicLoss = profitCents <= -settings.panicLossCents;
+    const panicIndicator = isAdverseRegime(position.side, btcRegime, profitCents);
 
     const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
-      profitCents <= -settings.panicLossCents ||
-      (isUp ? moveBps <= settings.panicBtcReversalBps : moveBps >= -settings.panicBtcReversalBps)
+      panicLoss ||
+      panicIndicator
     );
 
-    if (!reason && !shouldHedge) {
-      this.decide("hold", position.side, "继续持仓，未触发退出条件", {
+    if (shouldHedge) {
+      this.decide("panic_hedge", position.side, "Panic hedge triggered; buy opposite side and keep main position to settlement", {
         bid,
         entryAvgPrice: position.entryAvgPrice,
         profitCents,
         moveBps,
-        elapsedSeconds: elapsed
-      });
-      return this.action("hold");
-    }
-
-    if (shouldHedge) {
-      this.decide("panic_hedge", position.side, "先用反方向仓位对冲风险，尽量保留原单到结算的机会", {
-        bid,
-        profitCents,
-        moveBps,
-        elapsedSeconds: elapsed
+        velocityBps,
+        btcRegime,
+        secondInBucket,
+        elapsedSeconds: elapsed,
+        panicLoss,
+        panicIndicator
       });
       await this.panicHedge(settings, market, position, position.side === "UP" ? "DOWN" : "UP", upBook, downBook, null);
       return;
     }
 
-    const sell = simulateSell(book, position.shares, settings.maxExitSlippageCents);
-    if (sell.avgPrice && sell.fillRatio >= settings.minExitFillRatio) {
-      this.decide("exiting", position.side, `触发 ${reason ?? "forced_exit"}，模拟退出成交`, { sell });
-      await this.closePosition(position, market, btc, moveBps, sell, reason ?? "forced_exit", book, settings);
-      return;
-    }
+    this.decide("hold", position.side, position.hedgeSide ? "Hedged; holding to settlement" : "Holding to settlement; hedge not triggered", {
+      bid,
+      entryAvgPrice: position.entryAvgPrice,
+      profitCents,
+      moveBps,
+      velocityBps,
+      btcRegime,
+      secondInBucket,
+      elapsedSeconds: elapsed,
+      hedgeSide: position.hedgeSide ?? null
+    });
+    return this.action(position.hedgeSide ? "hold_hedged" : "hold");
 
-    this.state.lastAction = `exit_failed_${reason ?? "forced"}`;
-    this.decide("exit_failed", position.side, "需要退出，但当前盘口成交不足；继续持仓等待下一次处理", { reason, sell });
   }
 
   private async panicHedge(settings: Settings, market: MarketInfo, position: Position, hedgeSide: Side, upBook: OrderBook, downBook: OrderBook, exitAttempt: unknown) {
@@ -413,7 +412,7 @@ export class Bot {
     this.state.paperBalance -= hedgeFill.value;
     this.state.position = position;
     this.state.lastAction = `panic_hedged_${hedgeSide}`;
-    this.decide("hedged", hedgeSide, `已买入 ${hedgeSide} 进行 panic hedge`, {
+    this.decide("hedged", hedgeSide, `Paper bought ${hedgeSide} as panic hedge`, {
       hedgeShares: hedgeFill.shares,
       hedgeAvgPrice: hedgeFill.avgPrice,
       hedgeCost: hedgeFill.value
@@ -421,67 +420,6 @@ export class Bot {
     await this.persist();
     await recordEvent("panic_hedge_triggered", { marketSlug: market.slug, hedgeSide, hedgeFill, exitAttempt });
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: hedgeSide, reason: "panic_hedge", bids: hedgeBook.bids, asks: hedgeBook.asks });
-  }
-
-  private async closePosition(position: Position, market: MarketInfo, btc: BtcTick, moveBps: number, sell: { value: number; shares: number; avgPrice: number | null; slippageCents: number; bestPrice: number | null }, reason: string, book: OrderBook, settings: Settings) {
-    const fees = (position.entryCost + sell.value) * settings.feeBps / 10000;
-    const hedgeCost = position.hedgeCost ?? 0;
-    const pnl = sell.value - position.entryCost - hedgeCost - fees;
-    this.state.paperBalance += sell.value;
-    this.state.realizedPnl += pnl;
-    this.state.position = null;
-    this.state.lastAction = `closed_${reason}`;
-    this.decide("closed", position.side, `仓位已按 ${reason} 退出`, {
-      pnl,
-      exitValue: sell.value,
-      exitAvgPrice: sell.avgPrice
-    });
-    await this.persist();
-    await recordTrade({
-      tradeId: position.id,
-      marketSlug: position.marketSlug,
-      marketUrl: market.url,
-      side: position.side,
-      status: "closed",
-      entryTime: position.entryTime,
-      exitTime: new Date().toISOString(),
-      bucketStart: position.bucketStart,
-      bucketEnd: position.bucketEnd,
-      entrySecond: position.entrySecond,
-      exitSecond: this.state.secondInBucket,
-      btcOpen: position.btcOpen,
-      btcEntry: position.btcEntry,
-      btcExit: btc.price,
-      entryMoveBps: position.entryMoveBps,
-      entryVelocityBps: position.entryVelocityBps,
-      trendAtEntry: position.trendAtEntry ?? null,
-      tailwind: position.tailwind ?? null,
-      entryPriceBucket: position.entryPriceBucket ?? null,
-      secondsLeft: position.secondsLeftAtEntry ?? null,
-      kellyPct: position.kellyPct ?? null,
-      kellySource: position.kellySource ?? null,
-      exitMoveBps: moveBps,
-      entryAvgPrice: position.entryAvgPrice,
-      entryShares: position.shares,
-      entryCost: position.entryCost,
-      exitBid: sell.bestPrice,
-      exitAvgPrice: sell.avgPrice,
-      exitShares: sell.shares,
-      exitValue: sell.value,
-      exitSlippageCents: sell.slippageCents,
-      hedgeActive: position.status === "hedged",
-      hedgeSide: position.hedgeSide ?? null,
-      hedgeShares: position.hedgeShares ?? 0,
-      hedgeCost,
-      hedgeAvgPrice: position.hedgeAvgPrice ?? null,
-      grossPnl: sell.value - position.entryCost - hedgeCost,
-      fees,
-      netPnl: pnl,
-      roiPct: position.entryCost > 0 ? pnl / position.entryCost * 100 : 0,
-      exitReason: reason
-    });
-    await recordEvent("exit_filled", { marketSlug: market.slug, reason, sell, pnl });
-    if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: position.side, reason: "exit", bids: book.bids, asks: book.asks });
   }
 
   private async settleExpired(position: Position, btcPrice: number) {
@@ -504,7 +442,7 @@ export class Bot {
     this.state.realizedPnl += pnl;
     this.state.position = null;
     this.state.lastAction = `settled_${winner}`;
-    this.decide("settled", winner, `市场已结算，结果 ${winner}`, { resolvePrice, pnl });
+    this.decide("settled", winner, `Market settled; winner ${winner}`, { resolvePrice, pnl });
     await this.persist();
     await recordTrade({
       tradeId: position.id,
@@ -520,6 +458,7 @@ export class Bot {
       entrySecond: position.entrySecond,
       trendAtEntry: position.trendAtEntry ?? null,
       tailwind: position.tailwind ?? null,
+      btcRegimeAtEntry: position.btcRegime ?? null,
       entryPriceBucket: position.entryPriceBucket ?? null,
       secondsLeft: position.secondsLeftAtEntry ?? null,
       entryAvgPrice: position.entryAvgPrice,
@@ -538,11 +477,11 @@ export class Bot {
     });
   }
 
-  private async snapshot(market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, secondInBucket: number, upBook: OrderBook, downBook: OrderBook) {
+  private async snapshot(market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, upBook: OrderBook, downBook: OrderBook) {
     const settings = await readSettings();
     const kelly = await this.kellySizing(settings);
-    const signalSide = this.signal(settings, moveBps, velocityBps);
-    const trendAtEntry = trendFromMove(moveBps, settings.minBtcMoveBps);
+    const signalSide = this.signal(btcRegime);
+    const trendAtEntry = btcRegime.label;
     const signalBook = signalSide ? bookForSide(signalSide, upBook, downBook) : null;
     const signalAsk = signalBook ? bestAsk(signalBook) : null;
     const signalSpread = signalBook ? spreadCents(signalBook) : null;
@@ -557,6 +496,11 @@ export class Bot {
       btcSource: btc.source,
       moveBps,
       velocityBps,
+      btcRegime,
+      regimeLabel: btcRegime.label,
+      regimeMoveDirection: btcRegime.moveDirection,
+      regimeVelocityDirection: btcRegime.velocityDirection,
+      regimeStrength: btcRegime.strength,
       upBid: bestBid(upBook),
       upAsk: bestAsk(upBook),
       upSpreadCents: spreadCents(upBook),
@@ -577,7 +521,7 @@ export class Bot {
       kellySource: kelly.source,
       signalSide,
       trendAtEntry,
-      tailwind: signalSide ? isTailwind(signalSide, trendAtEntry) : null,
+      tailwind: signalSide ? btcRegime.entrySide === signalSide : null,
       secondsLeft: 300 - secondInBucket,
       entryPriceBucket: signalAsk != null ? priceBucket(signalAsk) : null,
       depthQualityTargetUsdc: sizing?.targetUsdc ?? null,
@@ -714,16 +658,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Number(value) || 0));
 }
 
-function trendFromMove(moveBps: number, thresholdBps: number) {
-  if (moveBps >= thresholdBps) return "up";
-  if (moveBps <= -thresholdBps) return "down";
-  return "flat";
-}
-
-function isTailwind(side: Side, trend: string) {
-  return (side === "UP" && trend === "up") || (side === "DOWN" && trend === "down");
-}
-
 function priceBucket(price: number) {
   if (price <= 0.35) return "<=0.35";
   if (price <= 0.50) return "0.36-0.50";
@@ -731,4 +665,42 @@ function priceBucket(price: number) {
   if (price <= 0.70) return "0.61-0.70";
   if (price <= 0.80) return "0.71-0.80";
   return ">0.80";
+}
+
+function classifyBtcRegime(settings: Settings, moveBps: number, velocityBps: number): BtcRegime {
+  const moveDirection = direction(moveBps, settings.minBtcMoveBps);
+  const velocityDirection = direction(velocityBps, settings.minBtcVelocityBps);
+  const strength = Math.abs(moveBps) + Math.abs(velocityBps);
+
+  if (moveDirection === "up" && velocityDirection === "up") {
+    return { label: "uptrend", moveDirection, velocityDirection, entrySide: "UP", strength };
+  }
+  if (moveDirection === "down" && velocityDirection === "down") {
+    return { label: "downtrend", moveDirection, velocityDirection, entrySide: "DOWN", strength };
+  }
+  if (moveDirection === "up" && velocityDirection === "down") {
+    return { label: "up_reversal", moveDirection, velocityDirection, entrySide: null, strength };
+  }
+  if (moveDirection === "down" && velocityDirection === "up") {
+    return { label: "down_reversal", moveDirection, velocityDirection, entrySide: null, strength };
+  }
+  return { label: "chop", moveDirection, velocityDirection, entrySide: null, strength };
+}
+
+function direction(value: number, threshold: number): BtcRegime["moveDirection"] {
+  if (value >= threshold) return "up";
+  if (value <= -threshold) return "down";
+  return "flat";
+}
+
+function isAdverseRegime(side: Side, regime: BtcRegime, profitCents: number) {
+  if (side === "UP") {
+    if (regime.label === "downtrend") return true;
+    if (regime.label === "up_reversal" && profitCents < 0) return true;
+    return regime.velocityDirection === "down" && regime.moveDirection !== "up";
+  }
+
+  if (regime.label === "uptrend") return true;
+  if (regime.label === "down_reversal" && profitCents < 0) return true;
+  return regime.velocityDirection === "up" && regime.moveDirection !== "down";
 }
