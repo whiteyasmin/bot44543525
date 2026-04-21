@@ -127,4 +127,14 @@ export interface RuntimeState {
   paperBalance: number;
   realizedPnl: number;
   updatedAt: string | null;
+  decision: DecisionState;
+}
+
+export interface DecisionState {
+  checkedAt: string | null;
+  enabled: boolean;
+  status: string;
+  side: Side | null;
+  reason: string;
+  details: Record<string, unknown>;
 }
