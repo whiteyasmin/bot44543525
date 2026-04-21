@@ -51,62 +51,68 @@ export async function jsonlToCsv(file: string) {
 
 export async function buildMarkdownReport() {
   const generatedAt = new Date().toISOString();
-  const [settings, state, trades, snapshots] = await Promise.all([
+  const [settings, state, trades, snapshots, events] = await Promise.all([
     readJson(paths.settings),
     readJson(paths.state),
     readJsonlObjects(paths.trades),
-    readJsonlObjects(paths.snapshots)
+    readJsonlObjects(paths.snapshots),
+    readJsonlObjects(paths.events)
   ]);
   const signalSnapshots = usefulSnapshots(snapshots);
+  const actionEvents = usefulEvents(events);
 
   const lines: string[] = [
-    "# BTC 5m 策略回测日志",
+    "# BTC 5m \u7b56\u7565\u56de\u6d4b\u65e5\u5fd7",
     "",
-    `生成时间: ${generatedAt}`,
+    `\u751f\u6210\u65f6\u95f4: ${generatedAt}`,
     "",
-    "## 策略参数",
+    "## \u7b56\u7565\u53c2\u6570",
     "",
     table(
-      ["参数", "值"],
+      ["\u53c2\u6570", "\u503c"],
       [
-        ["入场窗口", `${num(settings.entryStartSeconds)}s - ${num(settings.entryEndSeconds)}s`],
-        ["动量阈值", `${num(settings.minBtcMoveBps)} bps`],
-        ["速度回看", `${num(settings.velocityLookbackSeconds)}s`],
-        ["速度阈值", `${num(settings.minBtcVelocityBps)} bps`],
-        ["最高买入价", num(settings.maxEntryPrice, 3)],
-        ["最大价差", `${num(settings.maxSpreadCents)} cents`],
-        ["Kelly 最大仓位", `${num(settings.kellyMaxPct)}%`],
-        ["样本不足仓位", `${num(settings.kellyFallbackPct)}%`],
-        ["盘口使用比例", `${num(n(settings.depthUsageRatio) * 100)}%`],
-        ["panic 浮亏阈值", `${num(settings.panicLossCents)} cents`],
-        ["对冲比例", `${num(n(settings.hedgeSizeRatio) * 100)}%`],
-        ["最高对冲价", num(settings.maxHedgePrice, 3)],
-        ["手续费", `${num(settings.feeBps)} bps`]
+        ["\u5165\u573a\u7a97\u53e3", `${num(settings.entryStartSeconds)}s - ${num(settings.entryEndSeconds)}s`],
+        ["\u52a8\u91cf\u9608\u503c", `${num(settings.minBtcMoveBps)} bps`],
+        ["\u901f\u5ea6\u56de\u770b", `${num(settings.velocityLookbackSeconds)}s`],
+        ["\u901f\u5ea6\u9608\u503c", `${num(settings.minBtcVelocityBps)} bps`],
+        ["\u6700\u9ad8\u4e70\u5165\u4ef7", num(settings.maxEntryPrice, 3)],
+        ["\u6700\u5927\u4ef7\u5dee", `${num(settings.maxSpreadCents)} cents`],
+        ["Kelly \u6700\u5927\u4ed3\u4f4d", `${num(settings.kellyMaxPct)}%`],
+        ["\u6837\u672c\u4e0d\u8db3\u4ed3\u4f4d", `${num(settings.kellyFallbackPct)}%`],
+        ["\u76d8\u53e3\u4f7f\u7528\u6bd4\u4f8b", `${num(n(settings.depthUsageRatio) * 100)}%`],
+        ["panic \u6d6e\u4e8f\u9608\u503c", `${num(settings.panicLossCents)} cents`],
+        ["\u5bf9\u51b2\u6bd4\u4f8b", `${num(n(settings.hedgeSizeRatio) * 100)}%`],
+        ["\u6700\u9ad8\u5bf9\u51b2\u4ef7", num(settings.maxHedgePrice, 3)],
+        ["\u624b\u7eed\u8d39", `${num(settings.feeBps)} bps`]
       ]
     ),
     "",
-    "## 当前资金",
+    "## \u5f53\u524d\u8d44\u91d1",
     "",
     table(
-      ["项目", "值"],
+      ["\u9879\u76ee", "\u503c"],
       [
-        ["模拟余额", num(state.paperBalance, 2)],
-        ["已实现 PnL", num(state.realizedPnl, 2)],
-        ["当前仓位", positionText(state.position)]
+        ["\u6a21\u62df\u4f59\u989d", num(state.paperBalance, 2)],
+        ["\u5df2\u5b9e\u73b0 PnL", num(state.realizedPnl, 2)],
+        ["\u5f53\u524d\u4ed3\u4f4d", positionText(state.position)]
       ]
     ),
     "",
-    "## 交易汇总",
+    "## \u4ea4\u6613\u6c47\u603b",
     "",
-    summaryTable(trades),
+    summaryTable(trades, actionEvents),
     "",
-    "## 交易记录",
+    "## \u5df2\u7ed3\u7b97\u4ea4\u6613",
     "",
-    trades.length ? tradeTable(trades) : "_暂无交易_",
+    trades.length ? tradeTable(trades) : "_\u6682\u65e0\u5df2\u7ed3\u7b97\u4ea4\u6613_",
     "",
-    "## 信号快照",
+    "## \u6210\u4ea4\u52a8\u4f5c\u6d41\u6c34",
     "",
-    signalSnapshots.length ? snapshotTable(signalSnapshots) : "_暂无可回测快照_",
+    actionEvents.length ? actionTable(actionEvents) : "_\u6682\u65e0\u5165\u573a\u6216\u5bf9\u51b2\u52a8\u4f5c_",
+    "",
+    "## \u4fe1\u53f7\u5feb\u7167",
+    "",
+    signalSnapshots.length ? snapshotTable(signalSnapshots) : "_\u6682\u65e0\u53ef\u56de\u6d4b\u5feb\u7167_",
     ""
   ];
 
@@ -145,28 +151,29 @@ async function readJsonlObjects(file: string): Promise<Row[]> {
     });
 }
 
-function summaryTable(trades: Row[]) {
+function summaryTable(trades: Row[], actionEvents: Row[]) {
   const pnl = trades.map((t) => n(t.netPnl)).filter(Number.isFinite);
   const wins = pnl.filter((v) => v > 0);
   const losses = pnl.filter((v) => v < 0);
   const total = sum(pnl);
   return table(
-    ["指标", "值"],
+    ["\u6307\u6807", "\u503c"],
     [
-      ["交易数", String(trades.length)],
-      ["胜率", pnl.length ? `${num(wins.length / pnl.length * 100)}%` : "-"],
-      ["总 PnL", num(total, 2)],
-      ["平均 PnL", pnl.length ? num(total / pnl.length, 2) : "-"],
-      ["平均盈利", wins.length ? num(sum(wins) / wins.length, 2) : "-"],
-      ["平均亏损", losses.length ? num(sum(losses) / losses.length, 2) : "-"],
-      ["对冲次数", String(trades.filter((t) => Boolean(t.hedgeActive)).length)]
+      ["\u5df2\u7ed3\u7b97\u4ea4\u6613\u6570", String(trades.length)],
+      ["\u5165\u573a\u52a8\u4f5c\u6570", String(actionEvents.filter((e) => e.type === "entry_filled").length)],
+      ["\u5bf9\u51b2\u52a8\u4f5c\u6570", String(actionEvents.filter((e) => e.type === "panic_hedge_triggered").length)],
+      ["\u80dc\u7387", pnl.length ? `${num(wins.length / pnl.length * 100)}%` : "-"],
+      ["\u603b PnL", num(total, 2)],
+      ["\u5e73\u5747 PnL", pnl.length ? num(total / pnl.length, 2) : "-"],
+      ["\u5e73\u5747\u76c8\u5229", wins.length ? num(sum(wins) / wins.length, 2) : "-"],
+      ["\u5e73\u5747\u4e8f\u635f", losses.length ? num(sum(losses) / losses.length, 2) : "-"]
     ]
   );
 }
 
 function tradeTable(trades: Row[]) {
   return table(
-    ["#", "入场", "方向", "入场秒", "剩余秒", "BTC入场", "动量", "速度", "指标", "买入价", "份额", "对冲", "结果", "PnL"],
+    ["#", "\u5165\u573a", "\u65b9\u5411", "\u5165\u573a\u79d2", "\u5269\u4f59\u79d2", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u6307\u6807", "\u4e70\u5165\u4ef7", "\u4efd\u989d", "\u5bf9\u51b2", "\u7ed3\u679c", "PnL"],
     trades.map((t, index) => [
       String(index + 1),
       shortTime(t.entryTime),
@@ -186,9 +193,29 @@ function tradeTable(trades: Row[]) {
   );
 }
 
+function actionTable(events: Row[]) {
+  return table(
+    ["\u65f6\u95f4", "\u52a8\u4f5c", "\u5e02\u573a", "\u65b9\u5411", "\u4efd\u989d", "\u5747\u4ef7", "\u91d1\u989d", "\u6ed1\u70b9", "\u8bf4\u660e"],
+    events.map((event) => {
+      const fill = fillFromEvent(event);
+      return [
+        shortTime(event.timestamp),
+        event.type === "entry_filled" ? "\u5165\u573a\u4e70\u5165" : "\u5bf9\u51b2\u4e70\u5165",
+        String(event.marketSlug ?? "-"),
+        side(event.side ?? event.hedgeSide),
+        num(fill.shares, 2),
+        num(fill.avgPrice, 3),
+        num(fill.value, 2),
+        num(fill.slippageCents, 2),
+        event.type === "entry_filled" ? sizingText(event.sizing) : "\u89e6\u53d1 panic hedge"
+      ];
+    })
+  );
+}
+
 function snapshotTable(snapshots: Row[]) {
   return table(
-    ["时间", "局内秒", "剩余秒", "BTC", "动量", "速度", "指标", "信号", "UP卖一", "DOWN卖一", "目标仓位", "限制"],
+    ["\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "BTC", "\u52a8\u91cf", "\u901f\u5ea6", "\u6307\u6807", "\u4fe1\u53f7", "UP\u5356\u4e00", "DOWN\u5356\u4e00", "\u76ee\u6807\u4ed3\u4f4d", "\u9650\u5236"],
     snapshots.map((s) => [
       shortTime(s.timestamp),
       num(s.secondInBucket, 0),
@@ -206,10 +233,25 @@ function snapshotTable(snapshots: Row[]) {
   );
 }
 
+function usefulEvents(rows: Row[]) {
+  return rows.filter((row) => row.type === "entry_filled" || row.type === "panic_hedge_triggered");
+}
+
 function usefulSnapshots(rows: Row[]) {
   return rows
     .filter((r) => r.signalSide || r.positionSide || r.action !== "no_signal")
-    .slice(-300);
+    .slice(-500);
+}
+
+function fillFromEvent(event: Row) {
+  const fill = event.type === "panic_hedge_triggered" ? event.hedgeFill : event.fill;
+  return fill && typeof fill === "object" ? fill as Row : {};
+}
+
+function sizingText(value: unknown) {
+  if (!value || typeof value !== "object") return "-";
+  const sizing = value as Row;
+  return `Kelly ${num(sizing.kellyTargetUsdc, 2)} / \u6df1\u5ea6 ${num(sizing.depthCapUsdc, 2)} / \u9650\u5236 ${sizing.limitedBy ?? "-"}`;
 }
 
 function table(headers: string[], rows: unknown[][]) {
@@ -224,26 +266,26 @@ function markdownCell(value: unknown) {
 }
 
 function hedgeText(t: Row) {
-  if (!t.hedgeActive) return "无";
+  if (!t.hedgeActive) return "\u65e0";
   return `${side(t.hedgeSide)} ${num(t.hedgeShares, 2)} @ ${num(t.hedgeAvgPrice, 3)}`;
 }
 
 function positionText(value: unknown) {
-  if (!value || typeof value !== "object") return "无";
+  if (!value || typeof value !== "object") return "\u65e0";
   const position = value as Row;
-  return `${side(position.side)} ${num(position.shares, 2)} 份 @ ${num(position.entryAvgPrice, 3)}`;
+  return `${side(position.side)} ${num(position.shares, 2)} \u4efd @ ${num(position.entryAvgPrice, 3)}`;
 }
 
 function regime(value: unknown) {
   const map: Record<string, string> = {
-    uptrend: "上行顺风",
-    downtrend: "下行顺风",
-    up_reversal: "上涨转弱",
-    down_reversal: "下跌转强",
-    chop: "震荡",
-    up: "上行",
-    down: "下行",
-    flat: "横盘"
+    uptrend: "\u4e0a\u884c\u987a\u98ce",
+    downtrend: "\u4e0b\u884c\u987a\u98ce",
+    up_reversal: "\u4e0a\u6da8\u8f6c\u5f31",
+    down_reversal: "\u4e0b\u8dcc\u8f6c\u5f3a",
+    chop: "\u9707\u8361",
+    up: "\u4e0a\u884c",
+    down: "\u4e0b\u884c",
+    flat: "\u6a2a\u76d8"
   };
   if (typeof value === "object" && value) {
     const label = String((value as Row).label ?? "-");

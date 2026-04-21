@@ -356,7 +356,10 @@ export class Bot {
     const elapsed = (Date.now() - Date.parse(position.entryTime)) / 1000;
     const profitCents = (bid - position.entryAvgPrice) * 100;
     const panicLoss = profitCents <= -settings.panicLossCents;
-    const panicIndicator = isAdverseRegime(position.side, btcRegime, profitCents);
+    const adverseRegime = isAdverseRegime(position.side, btcRegime, profitCents);
+    const indicatorLoss = profitCents <= -settings.panicLossCents * 0.75;
+    const hedgeAgeOk = elapsed >= 20;
+    const panicIndicator = adverseRegime && indicatorLoss && hedgeAgeOk;
 
     const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
       panicLoss ||
@@ -374,6 +377,9 @@ export class Bot {
         secondInBucket,
         elapsedSeconds: elapsed,
         panicLoss,
+        adverseRegime,
+        indicatorLoss,
+        hedgeAgeOk,
         panicIndicator
       });
       await this.panicHedge(settings, market, position, position.side === "UP" ? "DOWN" : "UP", upBook, downBook, null);

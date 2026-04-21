@@ -31,7 +31,7 @@ export const defaultSettings: Settings = {
   maxSpreadCents: 5,
   repriceIntervalMs: 1000,
   panicHedgeEnabled: true,
-  panicLossCents: 12,
+  panicLossCents: 18,
   hedgeSizeRatio: 0.75,
   maxHedgePrice: 0.66,
   maxHedgeSlippageCents: 5,
