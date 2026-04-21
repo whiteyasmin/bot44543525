@@ -1,13 +1,28 @@
 import type { BtcTick, MarketInfo, OrderBook, Position, RuntimeState, Settings, Side } from "./types.js";
 import { bookForSide, currentBucketStart, discoverMarket, extractSlug, getBtcCloseForBucket, getBtcTick, getOrderBook, marketSlugForBucket } from "./market.js";
 import { askDepthUsdc, bestAsk, bestBid, bidDepthShares, simulateBuy, simulateSell, spreadCents } from "./paper.js";
-import { paths, readJsonFile, readSettings, writeJsonFile } from "./store.js";
+import { paths, readAllJsonl, readJsonFile, readSettings, writeJsonFile } from "./store.js";
 import { recordEvent, recordOrderbook, recordSnapshot, recordTrade } from "./recorder.js";
 
 interface PersistedPaperState {
   paperBalance: number;
   realizedPnl: number;
   position: Position | null;
+}
+
+interface TradeRow {
+  netPnl?: number;
+  entryCost?: number;
+}
+
+interface KellySizing {
+  targetUsdc: number;
+  kellyPct: number;
+  rawKellyPct: number;
+  winRate: number | null;
+  payoffRatio: number | null;
+  sampleSize: number;
+  source: "fallback" | "kelly" | "disabled";
 }
 
 export class Bot {
@@ -25,6 +40,7 @@ export class Bot {
     secondInBucket: 0,
     upBook: null,
     downBook: null,
+    bookUpdatedAt: null,
     position: null,
     lastAction: "idle",
     paperBalance: 10000,
@@ -96,6 +112,7 @@ export class Bot {
         getOrderBook(market.upTokenId),
         getOrderBook(market.downTokenId)
       ]);
+      const bookUpdatedAt = new Date().toISOString();
 
       this.state = {
         ...this.state,
@@ -106,6 +123,7 @@ export class Bot {
         secondInBucket,
         upBook,
         downBook,
+        bookUpdatedAt,
         updatedAt: new Date().toISOString(),
         lastError: null
       };
@@ -201,7 +219,8 @@ export class Bot {
 
     const maxPrice = ask + settings.maxEntrySlippageCents / 100;
     const depthLimitedUsdc = askDepthUsdc(book, maxPrice) * settings.depthUsageRatio;
-    const targetUsdc = Math.min(settings.maxPositionUsdc, depthLimitedUsdc, settings.maxShares * ask, this.state.paperBalance);
+    const kelly = await this.kellySizing(settings);
+    const targetUsdc = Math.min(kelly.targetUsdc, depthLimitedUsdc, settings.maxShares * ask, this.state.paperBalance);
     if (targetUsdc < settings.minOrderUsdc) return this.action("entry_skipped_depth");
 
     const fill = simulateBuy(book, targetUsdc, settings.maxEntrySlippageCents);
@@ -222,14 +241,16 @@ export class Bot {
       btcOpen: btc.open,
       btcEntry: btc.price,
       entryMoveBps: moveBps,
-      entryVelocityBps: velocityBps
+      entryVelocityBps: velocityBps,
+      kellyPct: kelly.kellyPct,
+      kellySource: kelly.source
     };
     this.state.paperBalance -= fill.value;
     this.state.position = position;
     this.lastBucketAction = market.slug;
     this.state.lastAction = `entered_${side}`;
     await this.persist();
-    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill });
+    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill, kelly });
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: side, reason: "entry", bids: book.bids, asks: book.asks });
   }
 
@@ -320,6 +341,8 @@ export class Bot {
       btcExit: btc.price,
       entryMoveBps: position.entryMoveBps,
       entryVelocityBps: position.entryVelocityBps,
+      kellyPct: position.kellyPct ?? null,
+      kellySource: position.kellySource ?? null,
       exitMoveBps: moveBps,
       entryAvgPrice: position.entryAvgPrice,
       entryShares: position.shares,
@@ -390,6 +413,8 @@ export class Bot {
   }
 
   private async snapshot(market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, secondInBucket: number, upBook: OrderBook, downBook: OrderBook) {
+    const settings = await readSettings();
+    const kelly = await this.kellySizing(settings);
     await recordSnapshot({
       marketSlug: market.slug,
       secondInBucket,
@@ -410,11 +435,76 @@ export class Bot {
       action: this.state.lastAction,
       positionSide: this.state.position?.side ?? null,
       positionShares: this.state.position?.shares ?? 0,
-      paperBalance: this.state.paperBalance
+      paperBalance: this.state.paperBalance,
+      kellyPct: kelly.kellyPct,
+      kellyTargetUsdc: kelly.targetUsdc,
+      kellySampleSize: kelly.sampleSize,
+      kellySource: kelly.source
     });
+  }
+
+  private async kellySizing(settings: Settings): Promise<KellySizing> {
+    if (!settings.kellyEnabled) {
+      const pct = Math.min(settings.maxPositionUsdc / Math.max(this.state.paperBalance, 1) * 100, 100);
+      return {
+        targetUsdc: Math.min(settings.maxPositionUsdc, this.state.paperBalance),
+        kellyPct: pct,
+        rawKellyPct: pct,
+        winRate: null,
+        payoffRatio: null,
+        sampleSize: 0,
+        source: "disabled"
+      };
+    }
+
+    const trades = (await readAllJsonl<TradeRow>(paths.trades))
+      .filter((t) => Number.isFinite(t.netPnl) && Number.isFinite(t.entryCost) && Number(t.entryCost) > 0)
+      .slice(-settings.kellyLookbackTrades);
+
+    if (trades.length < settings.kellyMinTrades) {
+      const fallbackPct = clamp(settings.kellyFallbackPct, 0, settings.kellyMaxPct);
+      return {
+        targetUsdc: this.state.paperBalance * fallbackPct / 100,
+        kellyPct: fallbackPct,
+        rawKellyPct: fallbackPct,
+        winRate: null,
+        payoffRatio: null,
+        sampleSize: trades.length,
+        source: "fallback"
+      };
+    }
+
+    const wins = trades.filter((t) => Number(t.netPnl) > 0).map((t) => Number(t.netPnl));
+    const losses = trades.filter((t) => Number(t.netPnl) < 0).map((t) => Math.abs(Number(t.netPnl)));
+    const winRate = wins.length / trades.length;
+    const avgWin = average(wins);
+    const avgLoss = average(losses);
+    const payoffRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+    const rawKelly = payoffRatio > 0 ? winRate - (1 - winRate) / payoffRatio : 0;
+    const halfKellyPct = Math.max(0, rawKelly * settings.kellyFraction * 100);
+    const kellyPct = clamp(halfKellyPct, 0, settings.kellyMaxPct);
+
+    return {
+      targetUsdc: this.state.paperBalance * kellyPct / 100,
+      kellyPct,
+      rawKellyPct: rawKelly * 100,
+      winRate,
+      payoffRatio,
+      sampleSize: trades.length,
+      source: "kelly"
+    };
   }
 
   private action(action: string) {
     this.state.lastAction = action;
   }
+}
+
+function average(values: number[]) {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
 }

@@ -100,3 +100,16 @@ export async function readRecentJsonl(file: string, limit = 20): Promise<unknown
     return [];
   }
 }
+
+export async function readAllJsonl<T = unknown>(file: string): Promise<T[]> {
+  await ensureDataDir();
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as T);
+  } catch {
+    return [];
+  }
+}

@@ -15,6 +15,12 @@ export interface Settings {
   maxEntryPrice: number;
   minEdgeBps: number;
   maxPositionUsdc: number;
+  kellyEnabled: boolean;
+  kellyFraction: number;
+  kellyLookbackTrades: number;
+  kellyMinTrades: number;
+  kellyFallbackPct: number;
+  kellyMaxPct: number;
   maxShares: number;
   depthUsageRatio: number;
   minOrderUsdc: number;
@@ -88,6 +94,8 @@ export interface Position {
   btcEntry: number;
   entryMoveBps: number;
   entryVelocityBps: number;
+  kellyPct?: number;
+  kellySource?: string;
   hedgeSide?: Side;
   hedgeShares?: number;
   hedgeAvgPrice?: number;
@@ -113,6 +121,7 @@ export interface RuntimeState {
   secondInBucket: number;
   upBook: OrderBook | null;
   downBook: OrderBook | null;
+  bookUpdatedAt: string | null;
   position: Position | null;
   lastAction: string;
   paperBalance: number;
