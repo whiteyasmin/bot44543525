@@ -45,6 +45,8 @@ interface EntrySignal {
   strategyType: string;
   tier: string;
   multiplier: number;
+  ask: number;
+  score: number;
   pressureScore: number;
   reason: string;
   timing: EntryTiming;
@@ -283,16 +285,10 @@ export class Bot {
     if (!timing.allowed) return null;
     const pressureSide: Side | null = pressure >= settings.minBtcMoveBps ? "UP" : pressure <= -settings.minBtcMoveBps ? "DOWN" : null;
     const trend = pressureSide ? trendEntryForSide(settings, pressureSide, pressureSide === "UP" ? upAsk : downAsk, pressure, moveBps, velocityBps, timing) : null;
-    if (trend) return trend;
-
     const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, pressure, timing);
     const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, pressure, timing);
-    const misprice = bestSignal(upMisprice, downMisprice);
-    if (misprice) return misprice;
-
     const reverse = reverseFavoriteEntry(settings, pressure, upAsk, downAsk, timing);
-    if (reverse) return reverse;
-    return null;
+    return bestSignal(trend, upMisprice, downMisprice, reverse);
   }
 
   private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, signal: EntrySignal, book: OrderBook) {
@@ -811,17 +807,45 @@ function sidePressure(side: Side, pressure: number) {
   return side === "UP" ? pressure : -pressure;
 }
 
-function signal(side: Side, strategyType: string, tier: string, multiplier: number, pressure: number, reason: string, timing: EntryTiming): EntrySignal {
-  return { side, strategyType, tier, multiplier, pressureScore: pressure, reason, timing };
+function signal(side: Side, strategyType: string, tier: string, multiplier: number, ask: number, pressure: number, reason: string, timing: EntryTiming): EntrySignal {
+  const support = sidePressure(side, pressure);
+  return {
+    side,
+    strategyType,
+    tier,
+    multiplier,
+    ask,
+    score: signalScore(tier, ask, support, timing, multiplier),
+    pressureScore: pressure,
+    reason,
+    timing
+  };
 }
 
 function bestSignal(...signals: Array<EntrySignal | null>) {
   const valid = signals.filter(Boolean) as EntrySignal[];
   if (!valid.length) return null;
   return valid.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.ask !== b.ask) return a.ask - b.ask;
     if (b.multiplier !== a.multiplier) return b.multiplier - a.multiplier;
     return Math.abs(b.pressureScore) - Math.abs(a.pressureScore);
   })[0];
+}
+
+function signalScore(tier: string, ask: number, support: number, timing: EntryTiming, multiplier: number) {
+  const tierWeight: Record<string, number> = {
+    hard_misprice: 100,
+    trend_strong_chase: 88,
+    supported_misprice: 82,
+    trend_standard: 72,
+    reverse_favorite: 68,
+    cheap_probe: 52
+  };
+  const priceEdge = Math.max(0, 0.62 - ask) * 100;
+  const supportScore = Math.max(0, Math.min(12, support)) * 3;
+  const timeScore = timing.phase === "normal" ? 8 : timing.phase === "early_confirm" ? 3 : timing.phase === "late_confirm" ? 2 : 0;
+  return (tierWeight[tier] ?? 50) + priceEdge + supportScore + timeScore + multiplier * 8;
 }
 
 function trendEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number, moveBps: number, velocityBps: number, timing: EntryTiming): EntrySignal | null {
@@ -832,10 +856,10 @@ function trendEntryForSide(settings: Settings, side: Side, ask: number | null, p
   const trendConfirmed = moveSupport >= settings.minBtcMoveBps * 0.8 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * timing.thresholdMultiplier;
   const strongTrendConfirmed = moveSupport >= settings.minBtcMoveBps * 2 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier;
   if (ask <= 0.62 - timing.pricePenalty && trendConfirmed && support >= settings.minBtcMoveBps * timing.thresholdMultiplier) {
-    return signal(side, "trend_entry", "trend_standard", 1 * timing.sizeMultiplier, pressure, "趋势顺风入场", timing);
+    return signal(side, "trend_entry", "trend_standard", 1 * timing.sizeMultiplier, ask, pressure, "趋势顺风入场", timing);
   }
   if (ask <= 0.68 - timing.pricePenalty && strongTrendConfirmed && support >= settings.minBtcMoveBps * 2.2 * timing.thresholdMultiplier) {
-    return signal(side, "trend_entry", "trend_strong_chase", 0.45 * timing.sizeMultiplier, pressure, "强趋势追单减仓", timing);
+    return signal(side, "trend_entry", "trend_strong_chase", 0.45 * timing.sizeMultiplier, ask, pressure, "强趋势追单减仓", timing);
   }
   return null;
 }
@@ -846,13 +870,13 @@ function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null
   const hardSupport = timing.phase === "normal" ? 0 : settings.minBtcMoveBps * (timing.thresholdMultiplier - 1);
   const confirmedHardSupport = Math.max(hardSupport, settings.minBtcVelocityBps * 2);
   if (ask <= 0.45 - timing.pricePenalty * 0.5 && support >= confirmedHardSupport) {
-    return signal(side, "misprice_entry", "hard_misprice", 0.85 * timing.sizeMultiplier, pressure, "硬错价入场", timing);
+    return signal(side, "misprice_entry", "hard_misprice", 0.85 * timing.sizeMultiplier, ask, pressure, "硬错价入场", timing);
   }
   if (ask <= 0.38 - timing.pricePenalty * 0.5 && support >= hardSupport) {
-    return signal(side, "misprice_entry", "cheap_probe", 0.35 * timing.sizeMultiplier, pressure, "低价试探错价", timing);
+    return signal(side, "misprice_entry", "cheap_probe", 0.35 * timing.sizeMultiplier, ask, pressure, "低价试探错价", timing);
   }
   if (ask <= 0.52 - timing.pricePenalty && support >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier) {
-    return signal(side, "misprice_entry", "supported_misprice", 0.75 * timing.sizeMultiplier, pressure, "压力支持错价", timing);
+    return signal(side, "misprice_entry", "supported_misprice", 0.75 * timing.sizeMultiplier, ask, pressure, "压力支持错价", timing);
   }
   return null;
 }
@@ -865,7 +889,7 @@ function reverseFavoriteEntry(settings: Settings, pressure: number, upAsk: numbe
   if (favoriteAsk == null || weakAsk == null) return null;
   const support = Math.abs(pressure);
   if (weakAsk <= 0.58 && weakAsk > 0.45 && favoriteAsk <= 0.62 - timing.pricePenalty && support >= settings.minBtcMoveBps * 1.5 * timing.thresholdMultiplier) {
-    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.8 * timing.sizeMultiplier, pressure, "弱错价不接，买压力方向", timing);
+    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.8 * timing.sizeMultiplier, favoriteAsk, pressure, "弱错价不接，买压力方向", timing);
   }
   return null;
 }
