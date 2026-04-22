@@ -748,6 +748,7 @@ export class Bot {
       decisionReason: this.state.decision.reason
     });
     await this.recordShadowCandidates(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook, signal);
+    await this.recordShadowHedgeChecks(settings, market, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook);
   }
 
   private async recordShadowCandidates(
@@ -845,6 +846,9 @@ export class Bot {
   private async settleShadowSignals(market: MarketInfo, fallbackPrice: number) {
     const rows = await readAllJsonl<Record<string, unknown>>(paths.shadowSignals);
     const settledIds = new Set(rows.filter((row) => row.type === "shadow_settled").map((row) => String(row.shadowId)));
+    const hedgeByShadowId = new Map(rows
+      .filter((row) => row.type === "shadow_hedge")
+      .map((row) => [String(row.shadowId), row]));
     const pending = rows.filter((row) => row.type === "shadow_signal" && row.marketSlug === market.slug && !settledIds.has(String(row.shadowId)));
     if (!pending.length) return;
     const settings = await readSettings();
@@ -860,8 +864,20 @@ export class Bot {
       const side = row.side === "DOWN" ? "DOWN" : "UP";
       const ask = Number(row.ask);
       if (!Number.isFinite(ask)) continue;
-      const fee = tradeFee(settings, 1, ask);
-      const grossPnl = side === winner ? 1 - ask : -ask;
+      const shadowId = String(row.shadowId ?? "");
+      const hedge = hedgeByShadowId.get(shadowId);
+      const hedgeSide = hedge?.hedgeSide === "UP" ? "UP" : hedge?.hedgeSide === "DOWN" ? "DOWN" : null;
+      const hedgeShares = Number(hedge?.hedgeShares ?? 0);
+      const hedgeAvgPrice = Number(hedge?.hedgeAvgPrice ?? 0);
+      const hedgeCost = Number(hedge?.hedgeCost ?? 0);
+      const entryFee = tradeFee(settings, 1, ask);
+      const unhedgedGrossPnl = side === winner ? 1 - ask : -ask;
+      const unhedgedNetPnl = unhedgedGrossPnl - entryFee;
+      const hedgeFee = hedgeSide && hedgeShares > 0 && hedgeAvgPrice > 0 ? tradeFee(settings, hedgeShares, hedgeAvgPrice) : 0;
+      const mainValue = side === winner ? 1 : 0;
+      const hedgeValue = hedgeSide === winner ? hedgeShares : 0;
+      const grossPnl = mainValue + hedgeValue - ask - hedgeCost;
+      const fees = entryFee + hedgeFee;
       await recordShadowSignal({
         ...row,
         timestamp: undefined,
@@ -869,13 +885,164 @@ export class Bot {
         exitTime: new Date().toISOString(),
         btcResolve: resolvePrice,
         resolvedWinner: winner,
+        unhedgedGrossPnl,
+        unhedgedNetPnl,
+        shadowHedgeTriggered: Boolean(hedgeSide),
+        shadowHedgeSide: hedgeSide,
+        shadowHedgeSecond: hedge?.hedgeSecond ?? null,
+        shadowHedgeAsk: hedge?.hedgeAsk ?? null,
+        shadowHedgeShares: hedgeSide ? hedgeShares : 0,
+        shadowHedgeAvgPrice: hedgeSide ? hedgeAvgPrice : null,
+        shadowHedgeCost: hedgeSide ? hedgeCost : 0,
+        shadowHedgeReason: hedge?.hedgeReason ?? null,
+        shadowHedgeImprovementPct: hedge?.hedgeImprovementPct ?? null,
+        mainValue,
+        hedgeValue,
         grossPnl,
-        fees: fee,
-        netPnl: grossPnl - fee,
-        roiPct: ask > 0 ? (grossPnl - fee) / ask * 100 : 0
+        fees,
+        netPnl: grossPnl - fees,
+        roiPct: ask + hedgeCost > 0 ? (grossPnl - fees) / (ask + hedgeCost) * 100 : 0
       });
     }
     await recordEvent("shadow_signals_settled", { marketSlug: market.slug, count: pending.length, resolvedWinner: winner, resolvePrice });
+  }
+
+  private async recordShadowHedgeChecks(
+    settings: Settings,
+    market: MarketInfo,
+    moveBps: number,
+    velocityBps: number,
+    btcRegime: BtcRegime,
+    secondInBucket: number,
+    upBook: OrderBook,
+    downBook: OrderBook
+  ) {
+    if (!settings.panicHedgeEnabled) return;
+    const rows = await readAllJsonl<Record<string, unknown>>(paths.shadowSignals);
+    const settledIds = new Set(rows.filter((row) => row.type === "shadow_settled").map((row) => String(row.shadowId)));
+    const hedgedIds = new Set(rows.filter((row) => row.type === "shadow_hedge").map((row) => String(row.shadowId)));
+    const candidates = rows.filter((row) =>
+      row.type === "shadow_signal" &&
+      row.marketSlug === market.slug &&
+      !settledIds.has(String(row.shadowId)) &&
+      !hedgedIds.has(String(row.shadowId))
+    );
+    for (const row of candidates) {
+      const shadowId = String(row.shadowId ?? "");
+      const side: Side = row.side === "DOWN" ? "DOWN" : "UP";
+      const entrySecond = Number(row.secondInBucket);
+      const entryAvgPrice = Number(row.ask);
+      if (!shadowId || !Number.isFinite(entrySecond) || !Number.isFinite(entryAvgPrice)) continue;
+      const elapsed = secondInBucket - entrySecond;
+      if (elapsed < 0) continue;
+      const book = bookForSide(side, upBook, downBook);
+      const bid = bestBid(book);
+      if (bid == null) continue;
+      const hedgeSide: Side = side === "UP" ? "DOWN" : "UP";
+      const hedgeBook = bookForSide(hedgeSide, upBook, downBook);
+      const hedgeAsk = bestAsk(hedgeBook);
+      const profitCents = (bid - entryAvgPrice) * 100;
+      const panicLoss = profitCents <= -settings.panicLossCents;
+      const severePanicLoss = profitCents <= -settings.panicLossCents * 1.5;
+      const adverseRegime = isAdverseRegime(side, btcRegime, profitCents);
+      const confirmedAdverseTrend = btcRegime.entrySide === hedgeSide;
+      const currentIndicators = entryIndicators(moveBps, velocityBps);
+      const currentPressureScore = currentIndicators.hedgePressure;
+      const adversePressure = sidePressure(hedgeSide, currentPressureScore) + Math.max(0, currentIndicators.reversalRisk - 1);
+      const strongAdversePressure = adversePressure >= settings.minBtcMoveBps * 2;
+      const secondsLeft = 300 - secondInBucket;
+      const hedgeAgeOk = elapsed >= 45;
+      const hedgeTimeOk = secondsLeft >= 75;
+      const panicIndicator = panicLoss && confirmedAdverseTrend && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
+      const severePanic = severePanicLoss && adverseRegime && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
+      if (!panicIndicator && !severePanic) continue;
+
+      if (hedgeAsk == null || hedgeAsk > settings.maxHedgePrice) {
+        await recordShadowSignal({
+          type: "shadow_hedge_blocked",
+          shadowId,
+          marketSlug: market.slug,
+          hedgeSecond: secondInBucket,
+          hedgeSide,
+          hedgeAsk,
+          reason: "对冲价格过高或没有卖盘",
+          profitCents,
+          panicIndicator,
+          severePanic
+        });
+        hedgedIds.add(shadowId);
+        continue;
+      }
+
+      const hedgeRatio = dynamicHedgeRatio(settings.hedgeSizeRatio, hedgeAsk);
+      const hedgeFill = simulateBuy(hedgeBook, hedgeRatio * hedgeAsk, settings.maxHedgeSlippageCents);
+      if (!hedgeFill.avgPrice || hedgeFill.shares <= 0) continue;
+      const pseudoPosition: Position = {
+        id: shadowId,
+        marketSlug: market.slug,
+        side,
+        status: "open",
+        entryTime: String(row.entryTime ?? new Date().toISOString()),
+        entrySecond,
+        bucketStart: market.bucketStart,
+        bucketEnd: market.bucketEnd,
+        shares: 1,
+        entryAvgPrice,
+        entryCost: entryAvgPrice,
+        btcOpen: Number(row.btcOpen ?? 0),
+        btcEntry: Number(row.btcEntry ?? 0),
+        entryMoveBps: Number(row.moveBps ?? 0),
+        entryVelocityBps: Number(row.velocityBps ?? 0)
+      };
+      const hedgeEffect = hedgeImprovement(settings, pseudoPosition, hedgeFill.value, hedgeFill.shares, hedgeFill.avgPrice);
+      if (hedgeEffect.improvementPct < settings.minHedgeImprovementPct) {
+        await recordShadowSignal({
+          type: "shadow_hedge_blocked",
+          shadowId,
+          marketSlug: market.slug,
+          hedgeSecond: secondInBucket,
+          hedgeSide,
+          hedgeAsk,
+          reason: "对冲改善不足",
+          profitCents,
+          hedgeImprovementPct: hedgeEffect.improvementPct,
+          minHedgeImprovementPct: settings.minHedgeImprovementPct,
+          panicIndicator,
+          severePanic
+        });
+        hedgedIds.add(shadowId);
+        continue;
+      }
+
+      await recordShadowSignal({
+        type: "shadow_hedge",
+        shadowId,
+        marketSlug: market.slug,
+        hedgeTime: new Date().toISOString(),
+        hedgeSecond: secondInBucket,
+        secondsLeft,
+        hedgeSide,
+        hedgeAsk,
+        hedgeRatio,
+        hedgeShares: hedgeFill.shares,
+        hedgeAvgPrice: hedgeFill.avgPrice,
+        hedgeCost: hedgeFill.value,
+        profitCents,
+        moveBps,
+        velocityBps,
+        trendPressure: currentIndicators.trendPressure,
+        mispricePressure: currentIndicators.mispricePressure,
+        reversalRisk: currentIndicators.reversalRisk,
+        adversePressure,
+        panicIndicator,
+        severePanic,
+        hedgeReason: panicIndicator ? "panicIndicator" : "severePanic",
+        unhedgedWorstLoss: hedgeEffect.unhedgedWorstLoss,
+        hedgedWorstLoss: hedgeEffect.hedgedWorstLoss,
+        hedgeImprovementPct: hedgeEffect.improvementPct
+      });
+      hedgedIds.add(shadowId);
+    }
   }
 
   private async kellySizing(settings: Settings): Promise<KellySizing> {

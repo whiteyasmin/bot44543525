@@ -137,6 +137,8 @@ export async function buildShadowMarkdownReport() {
   ]);
   const settled = dedupeShadowSignals(shadowSignals);
   const pending = dedupePendingShadowSignals(shadowSignals, settled);
+  const hedges = shadowSignals.filter((row) => row.type === "shadow_hedge").slice(-200);
+  const hedgeBlocks = shadowSignals.filter((row) => row.type === "shadow_hedge_blocked").slice(-120);
   const lines: string[] = [
     "# BTC 5m \u5f71\u5b50\u4fe1\u53f7\u56de\u6d4b",
     "",
@@ -168,6 +170,14 @@ export async function buildShadowMarkdownReport() {
     "## \u5df2\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7",
     "",
     settled.length ? shadowTable(settled) : "_\u6682\u65e0\u5df2\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7_",
+    "",
+    "## \u5f71\u5b50\u5bf9\u51b2\u89c2\u5bdf",
+    "",
+    hedges.length ? shadowHedgeTable(hedges) : "_\u6682\u65e0\u5f71\u5b50\u5bf9\u51b2\u89c2\u5bdf_",
+    "",
+    "## \u5f71\u5b50\u5bf9\u51b2\u672a\u6267\u884c",
+    "",
+    hedgeBlocks.length ? shadowHedgeBlockTable(hedgeBlocks) : "_\u6682\u65e0\u5f71\u5b50\u5bf9\u51b2\u672a\u6267\u884c\u8bb0\u5f55_",
     "",
     "## \u672a\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7",
     "",
@@ -313,7 +323,7 @@ function actionTable(events: Row[]) {
 
 function shadowTable(rows: Row[]) {
   return table(
-    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "\u65b9\u5411", "\u7c7b\u578b", "\u4ef7\u683c", "\u4ef7\u683c\u6bb5", "\u8d85\u5b9e\u76d8\u4e0a\u9650", "\u4f1a\u5b9e\u76d8\u4e0b\u5355", "\u6a21\u62df\u91d1\u989d", "\u6a21\u62df\u4efd\u989d", "\u9650\u5236", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u8d8b\u52bf\u538b\u529b", "\u9519\u4ef7\u538b\u529b", "\u53cd\u8f6c", "\u7ed3\u679c", "PnL"],
+    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "\u65b9\u5411", "\u7c7b\u578b", "\u4ef7\u683c", "\u4ef7\u683c\u6bb5", "\u8d85\u5b9e\u76d8\u4e0a\u9650", "\u4f1a\u5b9e\u76d8\u4e0b\u5355", "\u6a21\u62df\u91d1\u989d", "\u6a21\u62df\u4efd\u989d", "\u9650\u5236", "\u5bf9\u51b2", "\u4e0d\u5bf9\u51b2PnL", "\u5bf9\u51b2\u540ePnL", "\u7ed3\u679c", "\u52a8\u91cf", "\u901f\u5ea6", "\u8d8b\u52bf\u538b\u529b", "\u9519\u4ef7\u538b\u529b", "\u53cd\u8f6c"],
     rows.slice(-200).map((row, index) => [
       String(index + 1),
       shortTime(row.entryTime),
@@ -328,14 +338,51 @@ function shadowTable(rows: Row[]) {
       num(row.shadowTargetUsdc, 2),
       num(row.shadowShares, 2),
       String(row.shadowLimitedBy ?? "-"),
-      num(row.btcEntry, 2),
+      row.shadowHedgeTriggered ? `${side(row.shadowHedgeSide)} ${num(row.shadowHedgeShares, 2)}@${num(row.shadowHedgeAvgPrice, 3)}` : "\u65e0",
+      num(row.unhedgedNetPnl, 3),
+      num(row.netPnl, 3),
+      side(row.resolvedWinner),
       bps(row.moveBps),
       bps(row.velocityBps),
       num(row.trendPressure, 2),
       num(row.mispricePressure, 2),
-      num(row.reversalRisk, 2),
-      side(row.resolvedWinner),
-      num(row.netPnl, 3)
+      num(row.reversalRisk, 2)
+    ])
+  );
+}
+
+function shadowHedgeTable(rows: Row[]) {
+  return table(
+    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "\u5bf9\u51b2\u65b9\u5411", "\u5bf9\u51b2\u4ef7", "\u4efd\u989d", "\u6210\u672c", "\u89e6\u53d1", "\u6d6e\u4e8fcent", "\u53cd\u5411\u538b\u529b", "\u6539\u5584%"],
+    rows.map((row, index) => [
+      String(index + 1),
+      shortTime(row.hedgeTime ?? row.timestamp),
+      num(row.hedgeSecond, 0),
+      num(row.secondsLeft, 0),
+      side(row.hedgeSide),
+      num(row.hedgeAsk, 3),
+      num(row.hedgeShares, 2),
+      num(row.hedgeCost, 3),
+      String(row.hedgeReason ?? "-"),
+      num(row.profitCents, 2),
+      num(row.adversePressure, 2),
+      num(row.hedgeImprovementPct, 2)
+    ])
+  );
+}
+
+function shadowHedgeBlockTable(rows: Row[]) {
+  return table(
+    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5bf9\u51b2\u65b9\u5411", "\u5bf9\u51b2\u4ef7", "\u539f\u56e0", "\u6d6e\u4e8fcent", "\u6539\u5584%"],
+    rows.map((row, index) => [
+      String(index + 1),
+      shortTime(row.timestamp),
+      num(row.hedgeSecond, 0),
+      side(row.hedgeSide),
+      num(row.hedgeAsk, 3),
+      String(row.reason ?? "-"),
+      num(row.profitCents, 2),
+      num(row.hedgeImprovementPct, 2)
     ])
   );
 }
@@ -367,6 +414,7 @@ function shadowSummaryTable(rows: Row[]) {
   const wins = pnl.filter((value) => value > 0);
   const overMax = rows.filter((row) => row.overRealMaxEntry);
   const wouldTrade = rows.filter((row) => row.shadowWouldTrade);
+  const hedged = rows.filter((row) => row.shadowHedgeTriggered);
   return table(
     ["\u6307\u6807", "\u503c"],
     [
@@ -375,7 +423,8 @@ function shadowSummaryTable(rows: Row[]) {
       ["\u5355\u4efd\u603b PnL", num(sum(pnl), 3)],
       ["\u5e73\u5747\u5355\u4efd PnL", pnl.length ? num(sum(pnl) / pnl.length, 3) : "-"],
       ["\u8d85\u5b9e\u76d8\u4e0a\u9650\u6570", String(overMax.length)],
-      ["\u6309\u5f53\u524d\u5b9e\u76d8\u89c4\u5219\u4f1a\u4e0b\u5355", String(wouldTrade.length)]
+      ["\u6309\u5f53\u524d\u5b9e\u76d8\u89c4\u5219\u4f1a\u4e0b\u5355", String(wouldTrade.length)],
+      ["\u89e6\u53d1\u5f71\u5b50\u5bf9\u51b2", String(hedged.length)]
     ]
   );
 }
