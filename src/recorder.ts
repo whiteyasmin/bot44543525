@@ -72,7 +72,7 @@ export async function buildMarkdownReport() {
     table(
       ["\u53c2\u6570", "\u503c"],
       [
-        ["\u5165\u573a\u7a97\u53e3", `${num(settings.entryStartSeconds)}s - ${num(settings.entryEndSeconds)}s`],
+        ["时间风险参数", `最早 ${num(settings.entryStartSeconds)}s / 普通截止 ${num(settings.entryEndSeconds)}s`],
         ["\u52a8\u91cf\u9608\u503c", `${num(settings.minBtcMoveBps)} bps`],
         ["\u901f\u5ea6\u56de\u770b", `${num(settings.velocityLookbackSeconds)}s`],
         ["\u901f\u5ea6\u9608\u503c", `${num(settings.minBtcVelocityBps)} bps`],

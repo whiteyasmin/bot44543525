@@ -47,6 +47,17 @@ interface EntrySignal {
   multiplier: number;
   pressureScore: number;
   reason: string;
+  timing: EntryTiming;
+}
+
+interface EntryTiming {
+  phase: "too_early" | "early_confirm" | "normal" | "late_confirm" | "last_chance" | "too_late";
+  allowed: boolean;
+  secondsLeft: number;
+  thresholdMultiplier: number;
+  pricePenalty: number;
+  sizeMultiplier: number;
+  reason: string;
 }
 
 export class Bot {
@@ -245,26 +256,17 @@ export class Bot {
       this.decide("skip", null, "当前 5 分钟市场已交易，等待下一局", { market: market.slug });
       return;
     }
-    if (secondInBucket < settings.entryStartSeconds || secondInBucket > settings.entryEndSeconds) {
-      this.state.lastAction = "outside_entry_window";
-      this.decide("skip", null, "不在允许入场时间窗口", {
-        secondInBucket,
-        entryStartSeconds: settings.entryStartSeconds,
-        entryEndSeconds: settings.entryEndSeconds
-      });
-      return;
-    }
-
     const upAsk = bestAsk(upBook);
     const downAsk = bestAsk(downBook);
-    const entrySignal = this.entrySignal(settings, moveBps, velocityBps, upAsk, downAsk);
+    const entrySignal = this.entrySignal(settings, moveBps, velocityBps, secondInBucket, upAsk, downAsk);
     if (!entrySignal) {
       this.state.lastAction = "no_signal";
-      this.decide("wait_signal", null, "价格分层信号未满足", {
+      this.decide("wait_signal", null, "动量、速度、时间组合未满足", {
         moveBps,
         minBtcMoveBps: settings.minBtcMoveBps,
         velocityBps,
         minBtcVelocityBps: settings.minBtcVelocityBps,
+        timing: entryTiming(settings, secondInBucket, pressureScore(moveBps, velocityBps), velocityBps),
         btcRegime,
         upAsk,
         downAsk
@@ -275,18 +277,20 @@ export class Bot {
     await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, entrySignal, bookForSide(entrySignal.side, upBook, downBook));
   }
 
-  private entrySignal(settings: Settings, moveBps: number, velocityBps: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
+  private entrySignal(settings: Settings, moveBps: number, velocityBps: number, secondInBucket: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
     const pressure = pressureScore(moveBps, velocityBps);
+    const timing = entryTiming(settings, secondInBucket, pressure, velocityBps);
+    if (!timing.allowed) return null;
     const pressureSide: Side | null = pressure >= settings.minBtcMoveBps ? "UP" : pressure <= -settings.minBtcMoveBps ? "DOWN" : null;
-    const trend = pressureSide ? trendEntryForSide(settings, pressureSide, pressureSide === "UP" ? upAsk : downAsk, pressure) : null;
+    const trend = pressureSide ? trendEntryForSide(settings, pressureSide, pressureSide === "UP" ? upAsk : downAsk, pressure, moveBps, velocityBps, timing) : null;
     if (trend) return trend;
 
-    const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, pressure);
-    const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, pressure);
+    const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, pressure, timing);
+    const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, pressure, timing);
     const misprice = bestSignal(upMisprice, downMisprice);
     if (misprice) return misprice;
 
-    const reverse = reverseFavoriteEntry(settings, pressure, upAsk, downAsk);
+    const reverse = reverseFavoriteEntry(settings, pressure, upAsk, downAsk, timing);
     if (reverse) return reverse;
     return null;
   }
@@ -606,7 +610,7 @@ export class Bot {
     const kelly = await this.kellySizing(settings);
     const upAsk = bestAsk(upBook);
     const downAsk = bestAsk(downBook);
-    const signal = this.entrySignal(settings, moveBps, velocityBps, upAsk, downAsk);
+    const signal = this.entrySignal(settings, moveBps, velocityBps, secondInBucket, upAsk, downAsk);
     const signalSide = signal?.side ?? null;
     const trendAtEntry = btcRegime.label;
     const signalBook = signalSide ? bookForSide(signalSide, upBook, downBook) : null;
@@ -807,8 +811,8 @@ function sidePressure(side: Side, pressure: number) {
   return side === "UP" ? pressure : -pressure;
 }
 
-function signal(side: Side, strategyType: string, tier: string, multiplier: number, pressure: number, reason: string): EntrySignal {
-  return { side, strategyType, tier, multiplier, pressureScore: pressure, reason };
+function signal(side: Side, strategyType: string, tier: string, multiplier: number, pressure: number, reason: string, timing: EntryTiming): EntrySignal {
+  return { side, strategyType, tier, multiplier, pressureScore: pressure, reason, timing };
 }
 
 function bestSignal(...signals: Array<EntrySignal | null>) {
@@ -820,41 +824,124 @@ function bestSignal(...signals: Array<EntrySignal | null>) {
   })[0];
 }
 
-function trendEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number): EntrySignal | null {
+function trendEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number, moveBps: number, velocityBps: number, timing: EntryTiming): EntrySignal | null {
   if (ask == null || ask > settings.maxEntryPrice) return null;
   const support = sidePressure(side, pressure);
-  if (ask <= 0.68 && support >= settings.minBtcMoveBps) {
-    return signal(side, "trend_entry", "trend_standard", 1, pressure, "趋势顺风入场");
+  const moveSupport = side === "UP" ? moveBps : -moveBps;
+  const velocitySupport = side === "UP" ? velocityBps : -velocityBps;
+  const trendConfirmed = moveSupport >= settings.minBtcMoveBps * 0.8 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * timing.thresholdMultiplier;
+  const strongTrendConfirmed = moveSupport >= settings.minBtcMoveBps * 2 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier;
+  if (ask <= 0.62 - timing.pricePenalty && trendConfirmed && support >= settings.minBtcMoveBps * timing.thresholdMultiplier) {
+    return signal(side, "trend_entry", "trend_standard", 0.8 * timing.sizeMultiplier, pressure, "趋势顺风入场", timing);
   }
-  if (ask <= 0.75 && support >= settings.minBtcMoveBps * 2.2) {
-    return signal(side, "trend_entry", "trend_strong_chase", 0.5, pressure, "强趋势追单减仓");
+  if (ask <= 0.68 - timing.pricePenalty && strongTrendConfirmed && support >= settings.minBtcMoveBps * 2.2 * timing.thresholdMultiplier) {
+    return signal(side, "trend_entry", "trend_strong_chase", 0.35 * timing.sizeMultiplier, pressure, "强趋势追单减仓", timing);
   }
   return null;
 }
 
-function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number): EntrySignal | null {
+function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number, timing: EntryTiming): EntrySignal | null {
   if (ask == null || ask > settings.maxEntryPrice) return null;
   const support = sidePressure(side, pressure);
-  if (ask <= 0.45 && support >= -settings.minBtcMoveBps) {
-    return signal(side, "misprice_entry", "hard_misprice", 0.7, pressure, "硬错价入场");
+  const hardSupport = timing.phase === "normal" ? 0 : settings.minBtcMoveBps * (timing.thresholdMultiplier - 1);
+  if (ask <= 0.45 - timing.pricePenalty * 0.5 && support >= hardSupport) {
+    return signal(side, "misprice_entry", "hard_misprice", 0.6 * timing.sizeMultiplier, pressure, "硬错价入场", timing);
   }
-  if (ask <= 0.52 && support >= settings.minBtcVelocityBps * 2) {
-    return signal(side, "misprice_entry", "supported_misprice", 0.5, pressure, "压力支持错价");
+  if (ask <= 0.52 - timing.pricePenalty && support >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier) {
+    return signal(side, "misprice_entry", "supported_misprice", 0.5 * timing.sizeMultiplier, pressure, "压力支持错价", timing);
   }
   return null;
 }
 
-function reverseFavoriteEntry(settings: Settings, pressure: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
+function reverseFavoriteEntry(settings: Settings, pressure: number, upAsk: number | null, downAsk: number | null, timing: EntryTiming): EntrySignal | null {
   const pressureSide: Side | null = pressure >= settings.minBtcMoveBps ? "UP" : pressure <= -settings.minBtcMoveBps ? "DOWN" : null;
   if (!pressureSide) return null;
   const favoriteAsk = pressureSide === "UP" ? upAsk : downAsk;
   const weakAsk = pressureSide === "UP" ? downAsk : upAsk;
   if (favoriteAsk == null || weakAsk == null) return null;
   const support = Math.abs(pressure);
-  if (weakAsk <= 0.58 && weakAsk > 0.45 && favoriteAsk <= 0.62 && support >= settings.minBtcMoveBps * 1.5) {
-    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.6, pressure, "弱错价不接，买压力方向");
+  if (weakAsk <= 0.58 && weakAsk > 0.45 && favoriteAsk <= 0.62 - timing.pricePenalty && support >= settings.minBtcMoveBps * 1.5 * timing.thresholdMultiplier) {
+    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.6 * timing.sizeMultiplier, pressure, "弱错价不接，买压力方向", timing);
   }
   return null;
+}
+
+function entryTiming(settings: Settings, secondInBucket: number, pressure: number, velocityBps: number): EntryTiming {
+  const secondsLeft = Math.max(0, 300 - secondInBucket);
+  const strength = Math.abs(pressure);
+  const velocityStrength = Math.abs(velocityBps);
+  const strongPressure = strength >= settings.minBtcMoveBps * 2.2;
+  const strongVelocity = velocityStrength >= settings.minBtcVelocityBps * 1.5;
+
+  if (secondInBucket < 15) {
+    return {
+      phase: "too_early",
+      allowed: false,
+      secondsLeft,
+      thresholdMultiplier: 99,
+      pricePenalty: 0.12,
+      sizeMultiplier: 0,
+      reason: "开局数据太少"
+    };
+  }
+
+  if (secondInBucket < settings.entryStartSeconds) {
+    return {
+      phase: "early_confirm",
+      allowed: strongPressure && strongVelocity,
+      secondsLeft,
+      thresholdMultiplier: 1.35,
+      pricePenalty: 0.04,
+      sizeMultiplier: 0.55,
+      reason: "早段只接强动量强速度"
+    };
+  }
+
+  if (secondInBucket <= settings.entryEndSeconds) {
+    return {
+      phase: "normal",
+      allowed: true,
+      secondsLeft,
+      thresholdMultiplier: 1,
+      pricePenalty: 0,
+      sizeMultiplier: 1,
+      reason: "正常信号区"
+    };
+  }
+
+  if (secondsLeft >= 90) {
+    return {
+      phase: "late_confirm",
+      allowed: strength >= settings.minBtcMoveBps * 1.6 && velocityStrength >= settings.minBtcVelocityBps,
+      secondsLeft,
+      thresholdMultiplier: 1.2,
+      pricePenalty: 0.04,
+      sizeMultiplier: 0.7,
+      reason: "后段需要更强信号和更低价格"
+    };
+  }
+
+  if (secondsLeft >= 60) {
+    return {
+      phase: "last_chance",
+      allowed: strongPressure && strongVelocity,
+      secondsLeft,
+      thresholdMultiplier: 1.45,
+      pricePenalty: 0.08,
+      sizeMultiplier: 0.45,
+      reason: "末段只接极强信号"
+    };
+  }
+
+  return {
+    phase: "too_late",
+    allowed: false,
+    secondsLeft,
+    thresholdMultiplier: 99,
+    pricePenalty: 0.12,
+    sizeMultiplier: 0,
+    reason: "剩余时间太少"
+  };
 }
 
 function classifyBtcRegime(settings: Settings, moveBps: number, velocityBps: number): BtcRegime {

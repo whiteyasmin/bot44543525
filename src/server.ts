@@ -184,7 +184,7 @@ function appHtml() {
 </main>
 <script>
 const labels = {
- autoDiscoverMarket:'自动当前市场', manualMarketUrl:'手动市场 URL', entryStartSeconds:'入场开始秒', entryEndSeconds:'入场结束秒',
+ autoDiscoverMarket:'自动当前市场', manualMarketUrl:'手动市场 URL', entryStartSeconds:'最早评估秒', entryEndSeconds:'普通截止秒',
  minBtcMoveBps:'BTC 动量 bps', velocityLookbackSeconds:'速度回看秒', minBtcVelocityBps:'BTC 速度 bps',
  maxEntryPrice:'最高买入价', maxPositionUsdc:'固定仓位 USDC', kellyEnabled:'启用 1/2 Kelly', kellyFraction:'Kelly 系数', kellyLookbackTrades:'Kelly 回看交易数', kellyMinTrades:'Kelly 最小样本', kellyFallbackPct:'样本不足仓位 %', kellyMaxPct:'Kelly 最大仓位 %', maxShares:'最大份额', depthUsageRatio:'使用盘口比例', goodSpreadCents:'好价差 cents', okSpreadCents:'可接受价差 cents', minDepthToKellyRatio:'最小深度/Kelly', thinDepthMultiplier:'薄盘口折扣', okDepthMultiplier:'一般盘口折扣', minOrderUsdc:'最小订单 USDC',
  maxEntrySlippageCents:'入场滑点 cents', maxSpreadCents:'最大价差 cents', repriceIntervalMs:'刷新毫秒',
@@ -205,7 +205,7 @@ const detailLabels = {
   entrySignal:'入场信号', entryStrategyType:'入场策略', entrySignalTier:'入场分层', entrySignalMultiplier:'入场仓位倍率', entryPressureScore:'入场压力分',
   pressureScore:'压力分', adversePressure:'反向压力', strongAdversePressure:'强反向压力', hedgeTimeOk:'剩余时间足够',
   upAsk:'UP 卖一', downAsk:'DOWN 卖一',
- secondsLeftAtEntry:'入场剩余秒', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
+ secondsLeftAtEntry:'入场剩余秒', timing:'时间风险', phase:'时间阶段', secondsLeft:'剩余秒', thresholdMultiplier:'阈值倍数', pricePenalty:'价格折扣', sizeMultiplier:'仓位倍数', reason:'原因', sizing:'仓位计算', fill:'成交', positionMarket:'原市场', currentMarket:'当前市场',
  resolvePrice:'结算 BTC', pnl:'盈亏'
 };
 const regimeMap={uptrend:'上行顺风',downtrend:'下行顺风',up_reversal:'上涨转弱',down_reversal:'下跌转强',chop:'震荡'};
