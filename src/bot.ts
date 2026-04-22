@@ -832,10 +832,10 @@ function trendEntryForSide(settings: Settings, side: Side, ask: number | null, p
   const trendConfirmed = moveSupport >= settings.minBtcMoveBps * 0.8 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * timing.thresholdMultiplier;
   const strongTrendConfirmed = moveSupport >= settings.minBtcMoveBps * 2 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier;
   if (ask <= 0.62 - timing.pricePenalty && trendConfirmed && support >= settings.minBtcMoveBps * timing.thresholdMultiplier) {
-    return signal(side, "trend_entry", "trend_standard", 0.8 * timing.sizeMultiplier, pressure, "趋势顺风入场", timing);
+    return signal(side, "trend_entry", "trend_standard", 1 * timing.sizeMultiplier, pressure, "趋势顺风入场", timing);
   }
   if (ask <= 0.68 - timing.pricePenalty && strongTrendConfirmed && support >= settings.minBtcMoveBps * 2.2 * timing.thresholdMultiplier) {
-    return signal(side, "trend_entry", "trend_strong_chase", 0.35 * timing.sizeMultiplier, pressure, "强趋势追单减仓", timing);
+    return signal(side, "trend_entry", "trend_strong_chase", 0.45 * timing.sizeMultiplier, pressure, "强趋势追单减仓", timing);
   }
   return null;
 }
@@ -845,10 +845,10 @@ function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null
   const support = sidePressure(side, pressure);
   const hardSupport = timing.phase === "normal" ? 0 : settings.minBtcMoveBps * (timing.thresholdMultiplier - 1);
   if (ask <= 0.45 - timing.pricePenalty * 0.5 && support >= hardSupport) {
-    return signal(side, "misprice_entry", "hard_misprice", 0.6 * timing.sizeMultiplier, pressure, "硬错价入场", timing);
+    return signal(side, "misprice_entry", "hard_misprice", 0.85 * timing.sizeMultiplier, pressure, "硬错价入场", timing);
   }
   if (ask <= 0.52 - timing.pricePenalty && support >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier) {
-    return signal(side, "misprice_entry", "supported_misprice", 0.5 * timing.sizeMultiplier, pressure, "压力支持错价", timing);
+    return signal(side, "misprice_entry", "supported_misprice", 0.75 * timing.sizeMultiplier, pressure, "压力支持错价", timing);
   }
   return null;
 }
@@ -861,7 +861,7 @@ function reverseFavoriteEntry(settings: Settings, pressure: number, upAsk: numbe
   if (favoriteAsk == null || weakAsk == null) return null;
   const support = Math.abs(pressure);
   if (weakAsk <= 0.58 && weakAsk > 0.45 && favoriteAsk <= 0.62 - timing.pricePenalty && support >= settings.minBtcMoveBps * 1.5 * timing.thresholdMultiplier) {
-    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.6 * timing.sizeMultiplier, pressure, "弱错价不接，买压力方向", timing);
+    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.8 * timing.sizeMultiplier, pressure, "弱错价不接，买压力方向", timing);
   }
   return null;
 }
