@@ -13,6 +13,7 @@ export const paths = {
   settings: settingsPath,
   state: statePath,
   trades: path.join(dataDir, "trades.jsonl"),
+  shadowSignals: path.join(dataDir, "shadow-signals.jsonl"),
   snapshots: path.join(dataDir, "snapshots.jsonl"),
   events: path.join(dataDir, "events.jsonl"),
   orderbooks: path.join(dataDir, "orderbooks.jsonl")
@@ -110,7 +111,7 @@ export async function fileInfo(file: string) {
 
 export async function clearLogs() {
   await ensureDataDir();
-  await Promise.all([paths.trades, paths.snapshots, paths.events, paths.orderbooks].map((p) => fs.writeFile(p, "")));
+  await Promise.all([paths.trades, paths.shadowSignals, paths.snapshots, paths.events, paths.orderbooks].map((p) => fs.writeFile(p, "")));
 }
 
 export async function readRecentJsonl(file: string, limit = 20): Promise<unknown[]> {

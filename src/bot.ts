@@ -3,7 +3,7 @@ import { bookForSide, currentBucketStart, discoverMarket, extractSlug, getBtcClo
 import type { BtcRegime } from "./types.js";
 import { askDepthUsdc, bestAsk, bestBid, bidDepthShares, simulateBuy, spreadCents } from "./paper.js";
 import { paths, readAllJsonl, readJsonFile, readSettings, writeJsonFile } from "./store.js";
-import { recordEvent, recordOrderbook, recordSnapshot, recordTrade } from "./recorder.js";
+import { recordEvent, recordOrderbook, recordShadowSignal, recordSnapshot, recordTrade } from "./recorder.js";
 
 interface PersistedPaperState {
   paperBalance: number;
@@ -73,6 +73,15 @@ interface EntryTiming {
   reason: string;
 }
 
+interface ShadowCandidate {
+  side: Side;
+  kind: string;
+  ask: number;
+  reason: string;
+  observationBand: string;
+  signal?: EntrySignal | null;
+}
+
 export class Bot {
   private timer: NodeJS.Timeout | null = null;
   private priceHistory: BtcTick[] = [];
@@ -80,6 +89,7 @@ export class Bot {
   private lastBucketAction: string | null = null;
   private waitForNextMarketSlug: string | null = null;
   private lastBotEnabled = false;
+  private shadowKeys = new Set<string>();
   private state: RuntimeState = {
     running: false,
     lastError: null,
@@ -166,6 +176,11 @@ export class Bot {
       const moveBps = ((btc.price / btc.open) - 1) * 10000;
       const velocityBps = this.velocityBps(settings.velocityLookbackSeconds, btc.price);
       const btcRegime = classifyBtcRegime(settings, moveBps, velocityBps);
+
+      if (this.state.currentMarket && this.state.currentMarket.slug !== slug) {
+        await this.settleShadowSignals(this.state.currentMarket, btc.price);
+        this.shadowKeys.clear();
+      }
 
       const market = await this.marketFor(slug, bucketStart);
       const [upBook, downBook] = await Promise.all([
@@ -728,8 +743,139 @@ export class Bot {
       depthCapUsdc: sizing?.depthCapUsdc ?? null,
       depthToKellyRatio: sizing?.depthToKellyRatio ?? null,
       qualityMultiplier: sizing?.qualityMultiplier ?? null,
-      sizeLimitedBy: sizing?.limitedBy ?? null
+      sizeLimitedBy: sizing?.limitedBy ?? null,
+      decisionStatus: this.state.decision.status,
+      decisionReason: this.state.decision.reason
     });
+    await this.recordShadowCandidates(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook, signal);
+  }
+
+  private async recordShadowCandidates(
+    settings: Settings,
+    market: MarketInfo,
+    btc: BtcTick,
+    moveBps: number,
+    velocityBps: number,
+    btcRegime: BtcRegime,
+    secondInBucket: number,
+    upBook: OrderBook,
+    downBook: OrderBook,
+    signal: EntrySignal | null
+  ) {
+    const candidates = shadowCandidates(settings, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook, signal);
+    const timeBand = Math.floor(secondInBucket / 30) * 30;
+    for (const candidate of candidates) {
+      const shadowId = `${market.slug}-${timeBand}-${candidate.kind}-${candidate.side}`;
+      if (this.shadowKeys.has(shadowId)) continue;
+      this.shadowKeys.add(shadowId);
+      const book = bookForSide(candidate.side, upBook, downBook);
+      const spread = spreadCents(book);
+      const sizing = await this.entrySizing(settings, book, candidate.ask, spread, candidate.signal?.multiplier ?? 1);
+      const fill = simulateBuy(book, sizing.targetUsdc, settings.maxEntrySlippageCents);
+      const shadowWouldTrade = candidate.ask <= settings.maxEntryPrice &&
+        spread <= settings.maxSpreadCents &&
+        sizing.targetUsdc >= sizing.effectiveMinOrderUsdc &&
+        Boolean(fill.avgPrice) &&
+        fill.value >= sizing.effectiveMinOrderUsdc;
+      await recordShadowSignal({
+        type: "shadow_signal",
+        shadowId,
+        marketSlug: market.slug,
+        entryTime: new Date().toISOString(),
+        bucketStart: market.bucketStart,
+        bucketEnd: market.bucketEnd,
+        secondInBucket,
+        secondsLeft: 300 - secondInBucket,
+        side: candidate.side,
+        kind: candidate.kind,
+        reason: candidate.reason,
+        observationBand: candidate.observationBand,
+        ask: candidate.ask,
+        overRealMaxEntry: candidate.ask > settings.maxEntryPrice,
+        realMaxEntryPrice: settings.maxEntryPrice,
+        entryPriceBucket: priceBucket(candidate.ask),
+        bid: bestBid(book),
+        spreadCents: spread,
+        askDepthUsdc: askDepthUsdc(book, candidate.ask + 0.03),
+        shadowWouldTrade,
+        shadowTargetUsdc: sizing.targetUsdc,
+        shadowEffectiveMinOrderUsdc: sizing.effectiveMinOrderUsdc,
+        shadowShares: fill.shares,
+        shadowAvgPrice: fill.avgPrice,
+        shadowFillValue: fill.value,
+        shadowFillRatio: fill.fillRatio,
+        shadowLimitedBy: sizing.limitedBy,
+        shadowDepthCapUsdc: sizing.depthCapUsdc,
+        shadowDepthRawUsdc: sizing.depthRawUsdc,
+        shadowDepthToKellyRatio: sizing.depthToKellyRatio,
+        shadowQualityMultiplier: sizing.qualityMultiplier,
+        shadowKellyTargetUsdc: sizing.kellyTargetUsdc,
+        shadowKellyPct: sizing.kelly.kellyPct,
+        shadowKellySource: sizing.kelly.source,
+        paramEntryStartSeconds: settings.entryStartSeconds,
+        paramEntryEndSeconds: settings.entryEndSeconds,
+        paramMinBtcMoveBps: settings.minBtcMoveBps,
+        paramVelocityLookbackSeconds: settings.velocityLookbackSeconds,
+        paramMinBtcVelocityBps: settings.minBtcVelocityBps,
+        paramMaxEntryPrice: settings.maxEntryPrice,
+        paramMaxSpreadCents: settings.maxSpreadCents,
+        paramMaxEntrySlippageCents: settings.maxEntrySlippageCents,
+        paramKellyFallbackPct: settings.kellyFallbackPct,
+        paramKellyMaxPct: settings.kellyMaxPct,
+        paramDepthUsageRatio: settings.depthUsageRatio,
+        paramMinDepthToKellyRatio: settings.minDepthToKellyRatio,
+        paramMinOrderUsdc: settings.minOrderUsdc,
+        paramMaxShares: settings.maxShares,
+        btcOpen: btc.open,
+        btcEntry: btc.price,
+        moveBps,
+        velocityBps,
+        btcRegime,
+        signalTier: candidate.signal?.tier ?? null,
+        signalScore: candidate.signal?.score ?? null,
+        trendPressure: candidate.signal?.trendPressure ?? entryIndicators(moveBps, velocityBps).trendPressure,
+        mispricePressure: candidate.signal?.mispricePressure ?? entryIndicators(moveBps, velocityBps).mispricePressure,
+        reversalRisk: candidate.signal?.reversalRisk ?? entryIndicators(moveBps, velocityBps).reversalRisk,
+        realAction: this.state.lastAction,
+        realPositionSide: this.state.position?.side ?? null
+      });
+    }
+  }
+
+  private async settleShadowSignals(market: MarketInfo, fallbackPrice: number) {
+    const rows = await readAllJsonl<Record<string, unknown>>(paths.shadowSignals);
+    const settledIds = new Set(rows.filter((row) => row.type === "shadow_settled").map((row) => String(row.shadowId)));
+    const pending = rows.filter((row) => row.type === "shadow_signal" && row.marketSlug === market.slug && !settledIds.has(String(row.shadowId)));
+    if (!pending.length) return;
+    const settings = await readSettings();
+    let resolvePrice = fallbackPrice;
+    try {
+      resolvePrice = await getBtcCloseForBucket(market.bucketStart);
+    } catch {
+      resolvePrice = fallbackPrice;
+    }
+    const openPrice = Number(pending[0]?.btcOpen);
+    const winner: Side = resolvePrice >= (Number.isFinite(openPrice) ? openPrice : fallbackPrice) ? "UP" : "DOWN";
+    for (const row of pending) {
+      const side = row.side === "DOWN" ? "DOWN" : "UP";
+      const ask = Number(row.ask);
+      if (!Number.isFinite(ask)) continue;
+      const fee = tradeFee(settings, 1, ask);
+      const grossPnl = side === winner ? 1 - ask : -ask;
+      await recordShadowSignal({
+        ...row,
+        timestamp: undefined,
+        type: "shadow_settled",
+        exitTime: new Date().toISOString(),
+        btcResolve: resolvePrice,
+        resolvedWinner: winner,
+        grossPnl,
+        fees: fee,
+        netPnl: grossPnl - fee,
+        roiPct: ask > 0 ? (grossPnl - fee) / ask * 100 : 0
+      });
+    }
+    await recordEvent("shadow_signals_settled", { marketSlug: market.slug, count: pending.length, resolvedWinner: winner, resolvePrice });
   }
 
   private async kellySizing(settings: Settings): Promise<KellySizing> {
@@ -888,6 +1034,62 @@ function sidePressure(side: Side, pressure: number) {
   return side === "UP" ? pressure : -pressure;
 }
 
+function shadowCandidates(
+  settings: Settings,
+  moveBps: number,
+  velocityBps: number,
+  btcRegime: BtcRegime,
+  secondInBucket: number,
+  upBook: OrderBook,
+  downBook: OrderBook,
+  signal: EntrySignal | null
+): ShadowCandidate[] {
+  const upAsk = bestAsk(upBook);
+  const downAsk = bestAsk(downBook);
+  const candidates: ShadowCandidate[] = [];
+  const shadowMaxPrice = 0.9;
+  const add = (side: Side, kind: string, ask: number | null, reason: string, linkedSignal: EntrySignal | null = null) => {
+    if (ask == null || ask > shadowMaxPrice) return;
+    const duplicate = candidates.some((item) => item.side === side && item.kind === kind);
+    if (!duplicate) candidates.push({ side, kind, ask, reason, observationBand: shadowObservationBand(ask, settings.maxEntryPrice), signal: linkedSignal });
+  };
+
+  if (signal) add(signal.side, "strategy_signal", signal.ask, signal.reason, signal);
+
+  add("UP", "cheap_up", upAsk != null && upAsk <= 0.42 ? upAsk : null, "UP 低价观察");
+  add("DOWN", "cheap_down", downAsk != null && downAsk <= 0.42 ? downAsk : null, "DOWN 低价观察");
+  add("UP", "balanced_up", upAsk != null && upAsk > 0.42 && upAsk <= 0.58 ? upAsk : null, "UP 均衡价观察");
+  add("DOWN", "balanced_down", downAsk != null && downAsk > 0.42 && downAsk <= 0.58 ? downAsk : null, "DOWN 均衡价观察");
+
+  const indicators = entryIndicators(moveBps, velocityBps);
+  if (btcRegime.entrySide === "UP" && indicators.trendPressure >= settings.minBtcMoveBps * 0.8) {
+    add("UP", "tailwind_up", upAsk != null && upAsk <= 0.78 ? upAsk : null, "UP 顺风观察");
+    add("UP", "tailwind_chase_up", upAsk != null && upAsk > 0.78 && upAsk <= shadowMaxPrice ? upAsk : null, "UP 高价顺风观察");
+  }
+  if (btcRegime.entrySide === "DOWN" && indicators.trendPressure <= -settings.minBtcMoveBps * 0.8) {
+    add("DOWN", "tailwind_down", downAsk != null && downAsk <= 0.78 ? downAsk : null, "DOWN 顺风观察");
+    add("DOWN", "tailwind_chase_down", downAsk != null && downAsk > 0.78 && downAsk <= shadowMaxPrice ? downAsk : null, "DOWN 高价顺风观察");
+  }
+
+  const conflict = btcRegime.label === "up_reversal" || btcRegime.label === "down_reversal";
+  if (conflict && secondInBucket >= settings.entryStartSeconds && secondInBucket <= 240) {
+    const side: Side = velocityBps >= 0 ? "UP" : "DOWN";
+    add(side, "reversal_watch", side === "UP" ? upAsk : downAsk, "动量和速度冲突，观察反转方向");
+  }
+
+  return candidates.slice(0, 8);
+}
+
+function shadowObservationBand(ask: number, realMaxEntryPrice: number) {
+  if (ask <= 0.32) return "deep_cheap";
+  if (ask <= 0.42) return "cheap";
+  if (ask <= 0.58) return "balanced";
+  if (ask <= 0.70) return "tailwind_standard";
+  if (ask <= realMaxEntryPrice) return "real_max_area";
+  if (ask <= 0.85) return "above_real_max";
+  return "extreme_chase";
+}
+
 function signal(side: Side, strategyType: string, tier: string, multiplier: number, ask: number, pressure: number, indicators: EntryIndicators, reason: string, timing: EntryTiming): EntrySignal {
   const support = sidePressure(side, pressure);
   return {
@@ -954,15 +1156,20 @@ function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null
   const moveSupport = side === "UP" ? indicators.trendPressure : -indicators.trendPressure;
   const rawMoveSupport = side === "UP" ? moveBps : -moveBps;
   const needsMoveSupport = timing.phase !== "normal";
-  if (needsMoveSupport && moveSupport < settings.minBtcMoveBps * 0.5) return null;
   const hardSupport = timing.phase === "normal" ? 0 : settings.minBtcMoveBps * (timing.thresholdMultiplier - 1);
   const confirmedHardSupport = Math.max(hardSupport, settings.minBtcVelocityBps * 2 + indicators.reversalRisk);
   if (ask <= 0.45 - timing.pricePenalty * 0.5 && support >= confirmedHardSupport) {
     return signal(side, "misprice_entry", "hard_misprice", 0.85 * timing.sizeMultiplier, ask, indicators.mispricePressure, indicators, "硬错价入场", timing);
   }
-  if (ask <= 0.38 - timing.pricePenalty * 0.5 && support >= hardSupport) {
+  const deepCheapLimit = 0.32 - timing.pricePenalty * 0.25;
+  const cheapLimit = 0.38 - timing.pricePenalty * 0.5;
+  if (ask <= deepCheapLimit && support >= -settings.minBtcMoveBps * 0.8) {
+    return signal(side, "misprice_entry", "cheap_probe", 0.28 * timing.sizeMultiplier, ask, indicators.mispricePressure, indicators, "极低价试探错价", timing);
+  }
+  if (ask <= cheapLimit && support >= hardSupport && rawMoveSupport >= -settings.minBtcMoveBps * 0.7) {
     return signal(side, "misprice_entry", "cheap_probe", 0.35 * timing.sizeMultiplier, ask, indicators.mispricePressure, indicators, "低价试探错价", timing);
   }
+  if (needsMoveSupport && moveSupport < settings.minBtcMoveBps * 0.5) return null;
   const supportedThreshold = ask >= 0.49
     ? settings.minBtcMoveBps * 1.2 * timing.thresholdMultiplier
     : settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier + indicators.reversalRisk * 0.5;

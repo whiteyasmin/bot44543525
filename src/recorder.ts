@@ -23,6 +23,13 @@ export async function recordTrade(payload: Record<string, unknown>) {
   await appendJsonl(paths.trades, payload);
 }
 
+export async function recordShadowSignal(payload: Record<string, unknown>) {
+  await appendJsonl(paths.shadowSignals, {
+    timestamp: new Date().toISOString(),
+    ...payload
+  });
+}
+
 export async function recordOrderbook(payload: Record<string, unknown>) {
   await appendJsonl(paths.orderbooks, {
     timestamp: new Date().toISOString(),
@@ -120,6 +127,77 @@ export async function buildMarkdownReport() {
   ];
 
   return `${lines.join("\n")}\n`;
+}
+
+export async function buildShadowMarkdownReport() {
+  const generatedAt = new Date().toISOString();
+  const [settings, shadowSignals] = await Promise.all([
+    readJson(paths.settings),
+    readJsonlObjects(paths.shadowSignals)
+  ]);
+  const settled = dedupeShadowSignals(shadowSignals);
+  const pending = dedupePendingShadowSignals(shadowSignals, settled);
+  const lines: string[] = [
+    "# BTC 5m \u5f71\u5b50\u4fe1\u53f7\u56de\u6d4b",
+    "",
+    `\u751f\u6210\u65f6\u95f4: ${generatedAt}`,
+    "",
+    "## \u5f53\u524d\u53c2\u6570",
+    "",
+    table(
+      ["\u53c2\u6570", "\u503c"],
+      [
+        ["\u771f\u5b9e\u6700\u9ad8\u4e70\u5165\u4ef7", num(settings.maxEntryPrice, 3)],
+        ["\u5f71\u5b50\u89c2\u5bdf\u6700\u9ad8\u4ef7", "0.900"],
+        ["\u6700\u65e9\u8bc4\u4f30\u79d2", num(settings.entryStartSeconds, 0)],
+        ["\u666e\u901a\u622a\u6b62\u79d2", num(settings.entryEndSeconds, 0)],
+        ["BTC \u52a8\u91cf\u9608\u503c", `${num(settings.minBtcMoveBps)} bps`],
+        ["\u901f\u5ea6\u56de\u770b", `${num(settings.velocityLookbackSeconds)}s`],
+        ["BTC \u901f\u5ea6\u9608\u503c", `${num(settings.minBtcVelocityBps)} bps`],
+        ["\u6700\u5927\u4ef7\u5dee", `${num(settings.maxSpreadCents)} cents`],
+        ["\u6837\u672c\u4e0d\u8db3\u4ed3\u4f4d", `${num(settings.kellyFallbackPct)}%`],
+        ["Kelly \u6700\u5927\u4ed3\u4f4d", `${num(settings.kellyMaxPct)}%`],
+        ["\u76d8\u53e3\u4f7f\u7528\u6bd4\u4f8b", `${num(n(settings.depthUsageRatio) * 100)}%`]
+      ]
+    ),
+    "",
+    "## \u5f71\u5b50\u6c47\u603b",
+    "",
+    shadowSummaryTable(settled),
+    "",
+    "## \u5df2\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7",
+    "",
+    settled.length ? shadowTable(settled) : "_\u6682\u65e0\u5df2\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7_",
+    "",
+    "## \u672a\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7",
+    "",
+    pending.length ? pendingShadowTable(pending) : "_\u6682\u65e0\u672a\u7ed3\u7b97\u5f71\u5b50\u4fe1\u53f7_",
+    ""
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function dedupeShadowSignals(rows: Row[]) {
+  const settled = rows.filter((row) => row.type === "shadow_settled");
+  const seen = new Set<string>();
+  return settled.filter((row, index) => {
+    const key = String(row.shadowId ?? index);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupePendingShadowSignals(rows: Row[], settledRows: Row[]) {
+  const settledIds = new Set(settledRows.map((row) => String(row.shadowId)));
+  const seen = new Set<string>();
+  return rows.filter((row, index) => {
+    if (row.type !== "shadow_signal") return false;
+    const key = String(row.shadowId ?? index);
+    if (settledIds.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function readText(file: string) {
@@ -233,9 +311,78 @@ function actionTable(events: Row[]) {
   );
 }
 
+function shadowTable(rows: Row[]) {
+  return table(
+    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "\u65b9\u5411", "\u7c7b\u578b", "\u4ef7\u683c", "\u4ef7\u683c\u6bb5", "\u8d85\u5b9e\u76d8\u4e0a\u9650", "\u4f1a\u5b9e\u76d8\u4e0b\u5355", "\u6a21\u62df\u91d1\u989d", "\u6a21\u62df\u4efd\u989d", "\u9650\u5236", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u8d8b\u52bf\u538b\u529b", "\u9519\u4ef7\u538b\u529b", "\u53cd\u8f6c", "\u7ed3\u679c", "PnL"],
+    rows.slice(-200).map((row, index) => [
+      String(index + 1),
+      shortTime(row.entryTime),
+      num(row.secondInBucket, 0),
+      num(row.secondsLeft, 0),
+      side(row.side),
+      shadowKind(row.kind),
+      num(row.ask, 3),
+      observationBand(row.observationBand),
+      row.overRealMaxEntry ? "\u662f" : "\u5426",
+      row.shadowWouldTrade ? "\u662f" : "\u5426",
+      num(row.shadowTargetUsdc, 2),
+      num(row.shadowShares, 2),
+      String(row.shadowLimitedBy ?? "-"),
+      num(row.btcEntry, 2),
+      bps(row.moveBps),
+      bps(row.velocityBps),
+      num(row.trendPressure, 2),
+      num(row.mispricePressure, 2),
+      num(row.reversalRisk, 2),
+      side(row.resolvedWinner),
+      num(row.netPnl, 3)
+    ])
+  );
+}
+
+function pendingShadowTable(rows: Row[]) {
+  return table(
+    ["#", "\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "\u65b9\u5411", "\u7c7b\u578b", "\u4ef7\u683c", "\u4ef7\u683c\u6bb5", "\u4f1a\u5b9e\u76d8\u4e0b\u5355", "\u6a21\u62df\u91d1\u989d", "\u9650\u5236", "\u52a8\u91cf", "\u901f\u5ea6", "\u53c2\u6570"],
+    rows.slice(-120).map((row, index) => [
+      String(index + 1),
+      shortTime(row.entryTime),
+      num(row.secondInBucket, 0),
+      num(row.secondsLeft, 0),
+      side(row.side),
+      shadowKind(row.kind),
+      num(row.ask, 3),
+      observationBand(row.observationBand),
+      row.shadowWouldTrade ? "\u662f" : "\u5426",
+      num(row.shadowTargetUsdc, 2),
+      String(row.shadowLimitedBy ?? "-"),
+      bps(row.moveBps),
+      bps(row.velocityBps),
+      shadowParams(row)
+    ])
+  );
+}
+
+function shadowSummaryTable(rows: Row[]) {
+  const pnl = rows.map((row) => n(row.netPnl)).filter(Number.isFinite);
+  const wins = pnl.filter((value) => value > 0);
+  const overMax = rows.filter((row) => row.overRealMaxEntry);
+  const wouldTrade = rows.filter((row) => row.shadowWouldTrade);
+  return table(
+    ["\u6307\u6807", "\u503c"],
+    [
+      ["\u5df2\u7ed3\u7b97\u5f71\u5b50\u6570", String(rows.length)],
+      ["\u80dc\u7387", pnl.length ? `${num(wins.length / pnl.length * 100)}%` : "-"],
+      ["\u5355\u4efd\u603b PnL", num(sum(pnl), 3)],
+      ["\u5e73\u5747\u5355\u4efd PnL", pnl.length ? num(sum(pnl) / pnl.length, 3) : "-"],
+      ["\u8d85\u5b9e\u76d8\u4e0a\u9650\u6570", String(overMax.length)],
+      ["\u6309\u5f53\u524d\u5b9e\u76d8\u89c4\u5219\u4f1a\u4e0b\u5355", String(wouldTrade.length)]
+    ]
+  );
+}
+
 function snapshotTable(snapshots: Row[]) {
   return table(
-    ["\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "BTC", "\u52a8\u91cf", "\u901f\u5ea6", "\u6307\u6807", "\u4fe1\u53f7", "UP\u5356\u4e00", "DOWN\u5356\u4e00", "\u76ee\u6807\u4ed3\u4f4d", "\u9650\u5236"],
+    ["\u65f6\u95f4", "\u5c40\u5185\u79d2", "\u5269\u4f59\u79d2", "BTC", "\u52a8\u91cf", "\u901f\u5ea6", "\u6307\u6807", "\u4fe1\u53f7", "\u52a8\u4f5c", "\u539f\u56e0", "UP\u5356\u4e00", "DOWN\u5356\u4e00", "\u76ee\u6807\u4ed3\u4f4d", "\u9650\u5236"],
     snapshots.map((s) => [
       shortTime(s.timestamp),
       num(s.secondInBucket, 0),
@@ -245,6 +392,8 @@ function snapshotTable(snapshots: Row[]) {
       bps(s.velocityBps),
       regime(s.btcRegime ?? s.regimeLabel ?? s.trendAtEntry),
       side(s.signalSide),
+      action(s.action),
+      decisionReason(s.decisionReason),
       num(s.upAsk, 3),
       num(s.downAsk, 3),
       num(s.depthQualityTargetUsdc, 2),
@@ -337,6 +486,75 @@ function strategy(value: unknown) {
     trend_entry: "\u8d8b\u52bf\u5165\u573a",
     misprice_entry: "\u9519\u4ef7\u5165\u573a",
     reverse_favorite_entry: "\u53cd\u5411\u8d4c\u8d62"
+  };
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function shadowKind(value: unknown) {
+  const map: Record<string, string> = {
+    strategy_signal: "\u7b56\u7565\u4fe1\u53f7",
+    cheap_up: "UP \u4f4e\u4ef7",
+    cheap_down: "DOWN \u4f4e\u4ef7",
+    balanced_up: "UP \u5747\u8861\u4ef7",
+    balanced_down: "DOWN \u5747\u8861\u4ef7",
+    tailwind_up: "UP \u987a\u98ce",
+    tailwind_down: "DOWN \u987a\u98ce",
+    tailwind_chase_up: "UP \u9ad8\u4ef7\u987a\u98ce",
+    tailwind_chase_down: "DOWN \u9ad8\u4ef7\u987a\u98ce",
+    reversal_watch: "\u53cd\u8f6c\u89c2\u5bdf"
+  };
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function observationBand(value: unknown) {
+  const map: Record<string, string> = {
+    deep_cheap: "\u6781\u4f4e\u4ef7",
+    cheap: "\u4f4e\u4ef7",
+    balanced: "\u5747\u8861",
+    tailwind_standard: "\u987a\u98ce\u5e38\u89c4",
+    real_max_area: "\u5b9e\u76d8\u4e0a\u9650\u5185",
+    above_real_max: "\u8d85\u5b9e\u76d8\u4e0a\u9650",
+    extreme_chase: "\u6781\u7aef\u8ffd\u9ad8"
+  };
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function shadowParams(row: Row) {
+  return `M${num(row.paramMinBtcMoveBps)}/V${num(row.paramMinBtcVelocityBps)}/T${num(row.paramEntryStartSeconds, 0)}-${num(row.paramEntryEndSeconds, 0)}/Max${num(row.paramMaxEntryPrice, 2)}`;
+}
+
+function action(value: unknown) {
+  const map: Record<string, string> = {
+    idle: "\u542f\u52a8\u4e2d",
+    bot_disabled: "\u7b56\u7565\u6682\u505c",
+    outside_entry_window: "\u7b49\u5f85\u5165\u573a\u7a97\u53e3",
+    waiting_next_market_after_start: "\u5c40\u4e2d\u542f\u52a8\uff0c\u7b49\u4e0b\u4e00\u5c40",
+    no_signal: "\u7b49\u5f85\u4fe1\u53f7",
+    hold: "\u6301\u4ed3\u4e2d",
+    hold_hedged: "\u5df2\u5bf9\u51b2\u6301\u6709",
+    one_trade_per_bucket: "\u672c\u5c40\u5df2\u4ea4\u6613",
+    entry_skipped_no_ask: "\u65e0\u5356\u76d8",
+    entry_skipped_price: "\u4ef7\u683c\u8fc7\u9ad8",
+    entry_skipped_spread: "\u4ef7\u5dee\u8fc7\u5927",
+    entry_skipped_depth: "\u6df1\u5ea6\u4e0d\u8db3",
+    entry_unfilled: "\u5165\u573a\u672a\u6210\u4ea4",
+    panic_hedge_skipped_price: "\u5bf9\u51b2\u4ef7\u683c\u8fc7\u9ad8",
+    panic_hedge_unfilled: "\u5bf9\u51b2\u672a\u6210\u4ea4"
+  };
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function decisionReason(value: unknown) {
+  const map: Record<string, string> = {
+    "\u7b56\u7565\u5df2\u6682\u505c\uff0c\u542f\u52a8\u540e\u624d\u4f1a\u51b3\u7b56": "\u7b56\u7565\u6682\u505c",
+    "\u6b63\u5728\u68c0\u67e5\u5165\u573a\u548c\u6301\u4ed3\u6761\u4ef6": "\u68c0\u67e5\u4e2d",
+    "\u5c40\u4e2d\u542f\u52a8\uff0c\u7b49\u5f85\u4e0b\u4e00\u5c40\u518d\u5165\u573a": "\u5c40\u4e2d\u542f\u52a8\u7b49\u4e0b\u4e00\u5c40",
+    "\u52a8\u91cf\u3001\u901f\u5ea6\u3001\u65f6\u95f4\u7ec4\u5408\u672a\u6ee1\u8db3": "\u4fe1\u53f7\u4e0d\u591f",
+    "\u5f53\u524d 5 \u5206\u949f\u5e02\u573a\u5df2\u4ea4\u6613\uff0c\u7b49\u5f85\u4e0b\u4e00\u5c40": "\u672c\u5c40\u5df2\u4ea4\u6613"
   };
   const text = String(value ?? "-");
   return map[text] ?? text;

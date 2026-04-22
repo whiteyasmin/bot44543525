@@ -7,7 +7,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { Bot } from "./bot.js";
 import { clearLogs, ensureDataDir, fileInfo, paths, readRecentJsonl, readSettings, writeSettings } from "./store.js";
-import { buildMarkdownReport, jsonlToCsv, recordEvent } from "./recorder.js";
+import { buildMarkdownReport, buildShadowMarkdownReport, jsonlToCsv, recordEvent } from "./recorder.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -80,6 +80,7 @@ app.post("/api/bot/stop", async (_req, res) => {
 app.get("/api/logs", async (_req, res) => {
   res.json({
     trades: await fileInfo(paths.trades),
+    shadowSignals: await fileInfo(paths.shadowSignals),
     snapshots: await fileInfo(paths.snapshots),
     events: await fileInfo(paths.events),
     orderbooks: await fileInfo(paths.orderbooks),
@@ -92,6 +93,10 @@ app.get("/api/logs/:name", async (req, res) => {
   if (name === "all.zip") return sendZip(res);
   if (name === "report.md") {
     res.attachment("btc-5m-report.md").type("text/markdown").send(await buildMarkdownReport());
+    return;
+  }
+  if (name === "shadow-report.md") {
+    res.attachment("btc-5m-shadow-report.md").type("text/markdown").send(await buildShadowMarkdownReport());
     return;
   }
   if (name.endsWith(".csv")) {
@@ -122,6 +127,7 @@ function auth(req: express.Request, res: express.Response, next: express.NextFun
 function logPath(name: string) {
   const map: Record<string, string> = {
     "trades.jsonl": paths.trades,
+    "shadow-signals.jsonl": paths.shadowSignals,
     "snapshots.jsonl": paths.snapshots,
     "events.jsonl": paths.events,
     "orderbooks.jsonl": paths.orderbooks,
@@ -135,6 +141,7 @@ async function sendZip(res: express.Response) {
   const zip = new AdmZip();
   for (const [name, file] of Object.entries({
     "trades.jsonl": paths.trades,
+    "shadow-signals.jsonl": paths.shadowSignals,
     "snapshots.jsonl": paths.snapshots,
     "events.jsonl": paths.events,
     "orderbooks.jsonl": paths.orderbooks,
@@ -183,6 +190,8 @@ function appHtml() {
   <section class="logs-panel"><h2>日志</h2><div id="logs" class="logs"></div><button id="clear" class="danger">清空日志</button></section>
 </main>
 <script>
+const byId=(id)=>document.getElementById(id);
+const start=byId('start'), stop=byId('stop'), logout=byId('logout'), statusCard=byId('statusCard'), status=byId('status'), action=byId('action'), btc=byId('btc'), move=byId('move'), market=byId('market'), sec=byId('sec'), bal=byId('bal'), pnl=byId('pnl'), decision=byId('decision'), up=byId('up'), down=byId('down'), pos=byId('pos'), trades=byId('trades'), events=byId('events'), quickSettings=byId('quickSettings'), saveQuick=byId('saveQuick'), baseSettings=byId('baseSettings'), saveBase=byId('saveBase'), trendSettings=byId('trendSettings'), saveTrend=byId('saveTrend'), sizingSettings=byId('sizingSettings'), saveSizing=byId('saveSizing'), hedgeSettings=byId('hedgeSettings'), saveHedge=byId('saveHedge'), advancedSettings=byId('advancedSettings'), saveAdvanced=byId('saveAdvanced'), logs=byId('logs'), clear=byId('clear');
 const labels = {
  autoDiscoverMarket:'自动当前市场', manualMarketUrl:'手动市场 URL', entryStartSeconds:'最早评估秒', entryEndSeconds:'普通截止秒',
  minBtcMoveBps:'BTC 动量 bps', velocityLookbackSeconds:'速度回看秒', minBtcVelocityBps:'BTC 速度 bps',
@@ -246,9 +255,10 @@ function text(map,key){return map[key]||key||'-'}
 function sideText(s){return s==='UP'?'看涨 UP':(s==='DOWN'?'看跌 DOWN':(s||'-'))}
 function shortTime(t){if(!t)return '-';const d=new Date(t);return isNaN(d.getTime())?String(t).slice(11,19):d.toLocaleTimeString('zh-CN',{hour12:false})}
 function fresh(t){if(!t)return '未更新';const ms=Date.now()-new Date(t).getTime();if(!isFinite(ms))return '时间异常';return shortTime(t)+' / 延迟 '+Math.max(0,ms/1000).toFixed(1)+'s'}
-async function loadLogs(){const l=await (await fetch('/api/logs')).json();logs.innerHTML='';const main=[['report.md','完整 MD'],['trades.csv','交易 CSV'],['snapshots.csv','快照 CSV'],['all.zip','全部 ZIP']];for(const [name,text] of main){const a=document.createElement('a');a.href='/api/logs/'+name;a.textContent=text;logs.appendChild(a)}const meta=document.createElement('span');meta.className='logmeta';meta.textContent='交易 '+size(l.trades.size)+' / 快照 '+size(l.snapshots.size)+' / 事件 '+size(l.events.size)+' / 盘口 '+size(l.orderbooks.size);logs.appendChild(meta)}
+async function loadLogs(){const l=await (await fetch('/api/logs')).json();logs.innerHTML='';const main=[['report.md','正常 MD'],['shadow-report.md','影子 MD']];for(const [name,text] of main){const a=document.createElement('a');a.href='/api/logs/'+name;a.textContent=text;logs.appendChild(a)}const meta=document.createElement('span');meta.className='logmeta';meta.textContent='交易 '+size(l.trades.size)+' / 影子 '+size(l.shadowSignals.size)+' / 快照 '+size(l.snapshots.size);logs.appendChild(meta)}
 function size(n){if(!n)return '0';if(n>1048576)return fmt(n/1048576,1)+' MB';if(n>1024)return fmt(n/1024,1)+' KB';return n+' B'}
-start.onclick=async()=>{action.textContent='启动请求已发送';await fetch('/api/bot/start',{method:'POST'});await loadDashboard()};stop.onclick=async()=>{action.textContent='暂停请求已发送';await fetch('/api/bot/stop',{method:'POST'});await loadDashboard()};logout.onclick=()=>fetch('/api/logout',{method:'POST'}).then(()=>location='/login');saveQuick.onclick=()=>saveForm(quickSettings,quickFields);saveBase.onclick=()=>saveForm(baseSettings,baseFields);saveTrend.onclick=()=>saveForm(trendSettings,trendFields);saveSizing.onclick=()=>saveForm(sizingSettings,sizingFields);saveHedge.onclick=()=>saveForm(hedgeSettings,hedgeFields);saveAdvanced.onclick=()=>saveForm(advancedSettings,advancedFields);clear.onclick=()=>fetch('/api/logs/clear',{method:'POST'}).then(()=>{loadLogs();loadDashboard()});
+async function setBotEnabled(enabled){action.textContent=enabled?'启动请求已发送':'暂停请求已发送';const r=await fetch(enabled?'/api/bot/start':'/api/bot/stop',{method:'POST'});if(!r.ok){const text=await r.text();alert(text||'请求失败');return}await loadSettings();await loadDashboard()}
+start.addEventListener('click',()=>setBotEnabled(true));stop.addEventListener('click',()=>setBotEnabled(false));logout.addEventListener('click',()=>fetch('/api/logout',{method:'POST'}).then(()=>location='/login'));saveQuick.addEventListener('click',()=>saveForm(quickSettings,quickFields));saveBase.addEventListener('click',()=>saveForm(baseSettings,baseFields));saveTrend.addEventListener('click',()=>saveForm(trendSettings,trendFields));saveSizing.addEventListener('click',()=>saveForm(sizingSettings,sizingFields));saveHedge.addEventListener('click',()=>saveForm(hedgeSettings,hedgeFields));saveAdvanced.addEventListener('click',()=>saveForm(advancedSettings,advancedFields));clear.addEventListener('click',()=>fetch('/api/logs/clear',{method:'POST'}).then(()=>{loadLogs();loadDashboard()}));
 loadSettings();loadDashboard();loadLogs();setInterval(loadDashboard,1000);setInterval(loadLogs,10000);
 </script></body></html>`;
 }
