@@ -187,7 +187,7 @@ function summaryTable(trades: Row[], actionEvents: Row[], duplicateTrades: numbe
 
 function tradeTable(trades: Row[]) {
   return table(
-    ["#", "\u5165\u573a", "\u65b9\u5411", "\u5165\u573a\u79d2", "\u5269\u4f59\u79d2", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u6307\u6807", "\u4e70\u5165\u4ef7", "\u4efd\u989d", "\u5bf9\u51b2", "\u7ed3\u679c", "PnL"],
+    ["#", "\u5165\u573a", "\u65b9\u5411", "\u5165\u573a\u79d2", "\u5269\u4f59\u79d2", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u538b\u529b", "\u6307\u6807", "\u7b56\u7565", "\u5206\u5c42", "\u4e70\u5165\u4ef7", "\u4efd\u989d", "\u5bf9\u51b2", "\u7ed3\u679c", "PnL"],
     trades.map((t, index) => [
       String(index + 1),
       shortTime(t.entryTime),
@@ -197,7 +197,10 @@ function tradeTable(trades: Row[]) {
       num(t.btcEntry ?? t.btcOpen, 2),
       bps(t.entryMoveBps),
       bps(t.entryVelocityBps),
+      num(t.entryPressureScore, 2),
       regime(t.btcRegimeAtEntry ?? t.trendAtEntry),
+      strategy(t.entryStrategyType),
+      tier(t.entrySignalTier),
       num(t.entryAvgPrice, 3),
       num(t.entryShares, 2),
       hedgeText(t),
@@ -221,7 +224,7 @@ function actionTable(events: Row[]) {
         num(fill.avgPrice, 3),
         num(fill.value, 2),
         num(fill.slippageCents, 2),
-        event.type === "entry_filled" ? sizingText(event.sizing) : "\u89e6\u53d1 panic hedge"
+        event.type === "entry_filled" ? `${strategy((event.entrySignal as Row | undefined)?.strategyType)} / ${tier((event.entrySignal as Row | undefined)?.tier)} / ${sizingText(event.sizing)}` : "\u89e6\u53d1 panic hedge"
       ];
     })
   );
@@ -305,6 +308,33 @@ function regime(value: unknown) {
     const label = String((value as Row).label ?? "-");
     return map[label] ?? label;
   }
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function tier(value: unknown) {
+  const map: Record<string, string> = {
+    cheap_confirmed: "\u4f4e\u4ef7\u786e\u8ba4",
+    cheap_probe: "\u4f4e\u4ef7\u8bd5\u4ed3",
+    cheap_velocity_probe: "\u4f4e\u4ef7\u901f\u5ea6\u8bd5\u4ed3",
+    hard_misprice: "\u786c\u9519\u4ef7",
+    supported_misprice: "\u538b\u529b\u652f\u6301\u9519\u4ef7",
+    standard: "\u6807\u51c6",
+    strong_chase: "\u5f3a\u52bf\u8ffd\u5355",
+    trend_standard: "\u6807\u51c6\u8d8b\u52bf",
+    trend_strong_chase: "\u5f3a\u8d8b\u52bf\u8ffd\u5355",
+    reverse_favorite: "\u53cd\u5411\u7a33\u8fb9"
+  };
+  const text = String(value ?? "-");
+  return map[text] ?? text;
+}
+
+function strategy(value: unknown) {
+  const map: Record<string, string> = {
+    trend_entry: "\u8d8b\u52bf\u5165\u573a",
+    misprice_entry: "\u9519\u4ef7\u5165\u573a",
+    reverse_favorite_entry: "\u53cd\u5411\u8d4c\u8d62"
+  };
   const text = String(value ?? "-");
   return map[text] ?? text;
 }

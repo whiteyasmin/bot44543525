@@ -96,8 +96,10 @@ export interface Position {
   tailwind?: boolean;
   btcRegime?: BtcRegime;
   entryPriceBucket?: string;
+  entryStrategyType?: string;
   entrySignalTier?: string;
   entrySignalMultiplier?: number;
+  entryPressureScore?: number;
   secondsLeftAtEntry?: number;
   kellyPct?: number;
   kellySource?: string;

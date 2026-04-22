@@ -42,8 +42,10 @@ interface EntrySizing {
 
 interface EntrySignal {
   side: Side;
+  strategyType: string;
   tier: string;
   multiplier: number;
+  pressureScore: number;
   reason: string;
 }
 
@@ -269,15 +271,24 @@ export class Bot {
       });
       return;
     }
-    this.decide("signal", entrySignal.side, `出现 ${entrySignal.side} ${entrySignal.tier} 信号，检查盘口和仓位`, { moveBps, velocityBps, btcRegime, entrySignal, upAsk, downAsk });
+    this.decide("signal", entrySignal.side, `出现 ${entrySignal.side} ${entrySignal.strategyType} 信号，检查盘口和仓位`, { moveBps, velocityBps, btcRegime, entrySignal, upAsk, downAsk });
     await this.enter(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, entrySignal, bookForSide(entrySignal.side, upBook, downBook));
   }
 
   private entrySignal(settings: Settings, moveBps: number, velocityBps: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
-    const up = tierForSide(settings, "UP", upAsk, moveBps, velocityBps);
-    const down = tierForSide(settings, "DOWN", downAsk, moveBps, velocityBps);
-    if (up && down) return (upAsk ?? 1) <= (downAsk ?? 1) ? up : down;
-    return up ?? down;
+    const pressure = pressureScore(moveBps, velocityBps);
+    const pressureSide: Side | null = pressure >= settings.minBtcMoveBps ? "UP" : pressure <= -settings.minBtcMoveBps ? "DOWN" : null;
+    const trend = pressureSide ? trendEntryForSide(settings, pressureSide, pressureSide === "UP" ? upAsk : downAsk, pressure) : null;
+    if (trend) return trend;
+
+    const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, pressure);
+    const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, pressure);
+    const misprice = bestSignal(upMisprice, downMisprice);
+    if (misprice) return misprice;
+
+    const reverse = reverseFavoriteEntry(settings, pressure, upAsk, downAsk);
+    if (reverse) return reverse;
+    return null;
   }
 
   private async enter(settings: Settings, market: MarketInfo, btc: BtcTick, moveBps: number, velocityBps: number, btcRegime: BtcRegime, secondInBucket: number, signal: EntrySignal, book: OrderBook) {
@@ -337,8 +348,10 @@ export class Bot {
       tailwind,
       btcRegime,
       entryPriceBucket,
+      entryStrategyType: signal.strategyType,
       entrySignalTier: signal.tier,
       entrySignalMultiplier: signal.multiplier,
+      entryPressureScore: signal.pressureScore,
       secondsLeftAtEntry,
       kellyPct: sizing.kelly.kellyPct,
       kellySource: sizing.kelly.source
@@ -355,13 +368,15 @@ export class Bot {
       tailwind,
       btcRegime,
       entryPriceBucket,
+      entryStrategyType: signal.strategyType,
       entrySignalTier: signal.tier,
       entrySignalMultiplier: signal.multiplier,
+      entryPressureScore: signal.pressureScore,
       secondsLeftAtEntry,
       sizing
     });
     await this.persist();
-    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill, sizing });
+    await recordEvent("entry_filled", { marketSlug: market.slug, side, fill, sizing, entrySignal: signal });
     if (settings.enableOrderbookLogs) await recordOrderbook({ marketSlug: market.slug, token: side, reason: "entry", bids: book.bids, asks: book.asks });
   }
 
@@ -380,9 +395,14 @@ export class Bot {
     const severePanicLoss = profitCents <= -settings.panicLossCents * 1.5;
     const adverseRegime = isAdverseRegime(position.side, btcRegime, profitCents);
     const confirmedAdverseTrend = btcRegime.entrySide === hedgeSide;
-    const hedgeAgeOk = elapsed >= 25;
-    const panicIndicator = panicLoss && confirmedAdverseTrend && hedgeAgeOk;
-    const severePanic = severePanicLoss && adverseRegime && hedgeAgeOk;
+    const currentPressureScore = pressureScore(moveBps, velocityBps);
+    const adversePressure = hedgeSide === "UP" ? currentPressureScore : -currentPressureScore;
+    const strongAdversePressure = adversePressure >= settings.minBtcMoveBps * 2;
+    const secondsLeft = 300 - secondInBucket;
+    const hedgeAgeOk = elapsed >= 60;
+    const hedgeTimeOk = secondsLeft >= 120;
+    const panicIndicator = panicLoss && confirmedAdverseTrend && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
+    const severePanic = severePanicLoss && adverseRegime && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
 
     const shouldHedge = settings.panicHedgeEnabled && !position.hedgeSide && (
       panicIndicator ||
@@ -396,14 +416,19 @@ export class Bot {
         profitCents,
         moveBps,
         velocityBps,
+        pressureScore: currentPressureScore,
+        adversePressure,
         btcRegime,
         secondInBucket,
+        secondsLeft,
         elapsedSeconds: elapsed,
         panicLoss,
         severePanicLoss,
         adverseRegime,
         confirmedAdverseTrend,
+        strongAdversePressure,
         hedgeAgeOk,
+        hedgeTimeOk,
         panicIndicator,
         severePanic
       });
@@ -417,15 +442,20 @@ export class Bot {
       profitCents,
       moveBps,
       velocityBps,
+      pressureScore: currentPressureScore,
+      adversePressure,
       btcRegime,
       secondInBucket,
+      secondsLeft,
       elapsedSeconds: elapsed,
       hedgeSide: position.hedgeSide ?? null,
       panicLoss,
       severePanicLoss,
       adverseRegime,
       confirmedAdverseTrend,
+      strongAdversePressure,
       hedgeAgeOk,
+      hedgeTimeOk,
       panicIndicator,
       severePanic
     });
@@ -546,8 +576,10 @@ export class Bot {
       tailwind: position.tailwind ?? null,
       btcRegimeAtEntry: position.btcRegime ?? null,
       entryPriceBucket: position.entryPriceBucket ?? null,
+      entryStrategyType: position.entryStrategyType ?? null,
       entrySignalTier: position.entrySignalTier ?? null,
       entrySignalMultiplier: position.entrySignalMultiplier ?? null,
+      entryPressureScore: position.entryPressureScore ?? null,
       secondsLeft: position.secondsLeftAtEntry ?? null,
       entryAvgPrice: position.entryAvgPrice,
       entryShares: position.shares,
@@ -619,8 +651,10 @@ export class Bot {
       tailwind: signalSide ? btcRegime.entrySide === signalSide : null,
       secondsLeft: 300 - secondInBucket,
       entryPriceBucket: signalAsk != null ? priceBucket(signalAsk) : null,
+      entryStrategyType: signal?.strategyType ?? null,
       entrySignalTier: signal?.tier ?? null,
       entrySignalMultiplier: signal?.multiplier ?? null,
+      entryPressureScore: signal?.pressureScore ?? null,
       depthQualityTargetUsdc: sizing?.targetUsdc ?? null,
       depthCapUsdc: sizing?.depthCapUsdc ?? null,
       depthToKellyRatio: sizing?.depthToKellyRatio ?? null,
@@ -765,40 +799,61 @@ function priceBucket(price: number) {
   return ">0.80";
 }
 
-function tierForSide(settings: Settings, side: Side, ask: number | null, moveBps: number, velocityBps: number): EntrySignal | null {
+function pressureScore(moveBps: number, velocityBps: number) {
+  return moveBps + velocityBps * 1.5;
+}
+
+function sidePressure(side: Side, pressure: number) {
+  return side === "UP" ? pressure : -pressure;
+}
+
+function signal(side: Side, strategyType: string, tier: string, multiplier: number, pressure: number, reason: string): EntrySignal {
+  return { side, strategyType, tier, multiplier, pressureScore: pressure, reason };
+}
+
+function bestSignal(...signals: Array<EntrySignal | null>) {
+  const valid = signals.filter(Boolean) as EntrySignal[];
+  if (!valid.length) return null;
+  return valid.sort((a, b) => {
+    if (b.multiplier !== a.multiplier) return b.multiplier - a.multiplier;
+    return Math.abs(b.pressureScore) - Math.abs(a.pressureScore);
+  })[0];
+}
+
+function trendEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number): EntrySignal | null {
   if (ask == null || ask > settings.maxEntryPrice) return null;
-  const directionSign = side === "UP" ? 1 : -1;
-  const move = moveBps * directionSign;
-  const velocity = velocityBps * directionSign;
-
-  if (ask <= 0.58 && (move >= 2 || velocity >= settings.minBtcVelocityBps) && move > -1) {
-    const fullSignal = move >= settings.minBtcMoveBps && velocity >= settings.minBtcVelocityBps;
-    return {
-      side,
-      tier: fullSignal ? "cheap_confirmed" : "cheap_probe",
-      multiplier: fullSignal ? 1 : 0.5,
-      reason: fullSignal ? "低价且动量确认" : "低价提前试仓"
-    };
+  const support = sidePressure(side, pressure);
+  if (ask <= 0.68 && support >= settings.minBtcMoveBps) {
+    return signal(side, "trend_entry", "trend_standard", 1, pressure, "趋势顺风入场");
   }
-
-  if (ask <= 0.68 && move >= settings.minBtcMoveBps && velocity >= settings.minBtcVelocityBps) {
-    return {
-      side,
-      tier: "standard",
-      multiplier: 1,
-      reason: "正常顺风入场"
-    };
+  if (ask <= 0.75 && support >= settings.minBtcMoveBps * 2.2) {
+    return signal(side, "trend_entry", "trend_strong_chase", 0.5, pressure, "强趋势追单减仓");
   }
+  return null;
+}
 
-  if (ask <= 0.75 && move >= settings.minBtcMoveBps * 2 && velocity >= settings.minBtcVelocityBps * 2.5) {
-    return {
-      side,
-      tier: "strong_chase",
-      multiplier: 0.5,
-      reason: "强势追单减仓"
-    };
+function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null, pressure: number): EntrySignal | null {
+  if (ask == null || ask > settings.maxEntryPrice) return null;
+  const support = sidePressure(side, pressure);
+  if (ask <= 0.45 && support >= -settings.minBtcMoveBps) {
+    return signal(side, "misprice_entry", "hard_misprice", 0.7, pressure, "硬错价入场");
   }
+  if (ask <= 0.52 && support >= settings.minBtcVelocityBps * 2) {
+    return signal(side, "misprice_entry", "supported_misprice", 0.5, pressure, "压力支持错价");
+  }
+  return null;
+}
 
+function reverseFavoriteEntry(settings: Settings, pressure: number, upAsk: number | null, downAsk: number | null): EntrySignal | null {
+  const pressureSide: Side | null = pressure >= settings.minBtcMoveBps ? "UP" : pressure <= -settings.minBtcMoveBps ? "DOWN" : null;
+  if (!pressureSide) return null;
+  const favoriteAsk = pressureSide === "UP" ? upAsk : downAsk;
+  const weakAsk = pressureSide === "UP" ? downAsk : upAsk;
+  if (favoriteAsk == null || weakAsk == null) return null;
+  const support = Math.abs(pressure);
+  if (weakAsk <= 0.58 && weakAsk > 0.45 && favoriteAsk <= 0.62 && support >= settings.minBtcMoveBps * 1.5) {
+    return signal(pressureSide, "reverse_favorite_entry", "reverse_favorite", 0.6, pressure, "弱错价不接，买压力方向");
+  }
   return null;
 }
 
