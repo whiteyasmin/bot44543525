@@ -78,6 +78,8 @@ export class Bot {
   private priceHistory: BtcTick[] = [];
   private lastSnapshotAt = 0;
   private lastBucketAction: string | null = null;
+  private waitForNextMarketSlug: string | null = null;
+  private lastBotEnabled = false;
   private state: RuntimeState = {
     running: false,
     lastError: null,
@@ -187,6 +189,22 @@ export class Bot {
         lastError: null
       };
 
+      if (settings.botEnabled && !this.lastBotEnabled) {
+        this.waitForNextMarketSlug = market.slug;
+        this.state.lastAction = "waiting_next_market_after_start";
+        this.decide("skip", null, "策略已启动，等待下一局再允许入场", {
+          market: market.slug,
+          secondInBucket,
+          secondsLeft: Math.max(0, 300 - secondInBucket)
+        });
+        await recordEvent("bot_waiting_next_market", { marketSlug: market.slug, secondInBucket });
+      }
+      if (!settings.botEnabled) this.waitForNextMarketSlug = null;
+      this.lastBotEnabled = settings.botEnabled;
+      if (this.waitForNextMarketSlug && this.waitForNextMarketSlug !== market.slug) {
+        this.waitForNextMarketSlug = null;
+      }
+
       if (settings.botEnabled) {
         await this.evaluate(settings, market, btc, moveBps, velocityBps, btcRegime, secondInBucket, upBook, downBook);
       } else {
@@ -269,6 +287,15 @@ export class Bot {
       this.decide("skip", null, "当前 5 分钟市场已交易，等待下一局", { market: market.slug });
       return;
     }
+    if (this.waitForNextMarketSlug === market.slug) {
+      this.state.lastAction = "waiting_next_market_after_start";
+      this.decide("skip", null, "局中启动，等待下一局再入场", {
+        market: market.slug,
+        secondInBucket,
+        secondsLeft: Math.max(0, 300 - secondInBucket)
+      });
+      return;
+    }
     const upAsk = bestAsk(upBook);
     const downAsk = bestAsk(downBook);
     const entrySignal = this.entrySignal(settings, moveBps, velocityBps, secondInBucket, upAsk, downAsk);
@@ -297,8 +324,8 @@ export class Bot {
     if (!timing.allowed) return null;
     const trendSide: Side | null = indicators.trendPressure >= settings.minBtcMoveBps ? "UP" : indicators.trendPressure <= -settings.minBtcMoveBps ? "DOWN" : null;
     const trend = trendSide ? trendEntryForSide(settings, trendSide, trendSide === "UP" ? upAsk : downAsk, indicators, moveBps, velocityBps, timing) : null;
-    const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, indicators, timing);
-    const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, indicators, timing);
+    const upMisprice = mispriceEntryForSide(settings, "UP", upAsk, indicators, moveBps, timing);
+    const downMisprice = mispriceEntryForSide(settings, "DOWN", downAsk, indicators, moveBps, timing);
     const reverse = reverseFavoriteEntry(settings, indicators, upAsk, downAsk, timing);
     return bestSignal(trend, upMisprice, downMisprice, reverse);
   }
@@ -364,6 +391,9 @@ export class Bot {
       entrySignalTier: signal.tier,
       entrySignalMultiplier: signal.multiplier,
       entryPressureScore: signal.pressureScore,
+      entryTrendPressure: signal.trendPressure,
+      entryMispricePressure: signal.mispricePressure,
+      entryReversalRisk: signal.reversalRisk,
       secondsLeftAtEntry,
       kellyPct: sizing.kelly.kellyPct,
       kellySource: sizing.kelly.source
@@ -602,6 +632,9 @@ export class Bot {
       entrySignalTier: position.entrySignalTier ?? null,
       entrySignalMultiplier: position.entrySignalMultiplier ?? null,
       entryPressureScore: position.entryPressureScore ?? null,
+      entryTrendPressure: position.entryTrendPressure ?? null,
+      entryMispricePressure: position.entryMispricePressure ?? null,
+      entryReversalRisk: position.entryReversalRisk ?? null,
       secondsLeft: position.secondsLeftAtEntry ?? null,
       entryAvgPrice: position.entryAvgPrice,
       entryShares: position.shares,
@@ -892,7 +925,7 @@ function trendEntryForSide(settings: Settings, side: Side, ask: number | null, i
   const velocitySupport = side === "UP" ? velocityBps : -velocityBps;
   const trendConfirmed = moveSupport >= settings.minBtcMoveBps * 0.8 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * timing.thresholdMultiplier;
   const strongTrendConfirmed = moveSupport >= settings.minBtcMoveBps * 2 * timing.thresholdMultiplier && velocitySupport >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier;
-  if (ask <= 0.62 - timing.pricePenalty && trendConfirmed && support >= settings.minBtcMoveBps * timing.thresholdMultiplier) {
+  if (timing.phase !== "early_confirm" && ask <= 0.62 - timing.pricePenalty && trendConfirmed && support >= settings.minBtcMoveBps * timing.thresholdMultiplier) {
     return signal(side, "trend_entry", "trend_standard", 1 * timing.sizeMultiplier, ask, indicators.trendPressure, indicators, "趋势顺风入场", timing);
   }
   if (ask <= 0.68 - timing.pricePenalty && strongTrendConfirmed && support >= settings.minBtcMoveBps * 2.2 * timing.thresholdMultiplier) {
@@ -901,9 +934,13 @@ function trendEntryForSide(settings: Settings, side: Side, ask: number | null, i
   return null;
 }
 
-function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null, indicators: EntryIndicators, timing: EntryTiming): EntrySignal | null {
+function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null, indicators: EntryIndicators, moveBps: number, timing: EntryTiming): EntrySignal | null {
   if (ask == null || ask > settings.maxEntryPrice) return null;
   const support = sidePressure(side, indicators.mispricePressure) - indicators.reversalRisk * 0.6;
+  const moveSupport = side === "UP" ? indicators.trendPressure : -indicators.trendPressure;
+  const rawMoveSupport = side === "UP" ? moveBps : -moveBps;
+  const needsMoveSupport = timing.phase !== "normal";
+  if (needsMoveSupport && moveSupport < settings.minBtcMoveBps * 0.5) return null;
   const hardSupport = timing.phase === "normal" ? 0 : settings.minBtcMoveBps * (timing.thresholdMultiplier - 1);
   const confirmedHardSupport = Math.max(hardSupport, settings.minBtcVelocityBps * 2 + indicators.reversalRisk);
   if (ask <= 0.45 - timing.pricePenalty * 0.5 && support >= confirmedHardSupport) {
@@ -912,7 +949,11 @@ function mispriceEntryForSide(settings: Settings, side: Side, ask: number | null
   if (ask <= 0.38 - timing.pricePenalty * 0.5 && support >= hardSupport) {
     return signal(side, "misprice_entry", "cheap_probe", 0.35 * timing.sizeMultiplier, ask, indicators.mispricePressure, indicators, "低价试探错价", timing);
   }
-  if (ask <= 0.52 - timing.pricePenalty && support >= settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier + indicators.reversalRisk * 0.5) {
+  const supportedThreshold = ask >= 0.49
+    ? settings.minBtcMoveBps * 1.2 * timing.thresholdMultiplier
+    : settings.minBtcVelocityBps * 2 * timing.thresholdMultiplier + indicators.reversalRisk * 0.5;
+  const lateNeedsRawMove = timing.phase !== "normal" && rawMoveSupport < settings.minBtcMoveBps * 0.5;
+  if (ask <= 0.52 - timing.pricePenalty && !lateNeedsRawMove && support >= supportedThreshold) {
     return signal(side, "misprice_entry", "supported_misprice", 0.75 * timing.sizeMultiplier, ask, indicators.mispricePressure, indicators, "压力支持错价", timing);
   }
   return null;

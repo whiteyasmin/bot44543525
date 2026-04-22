@@ -100,6 +100,9 @@ export interface Position {
   entrySignalTier?: string;
   entrySignalMultiplier?: number;
   entryPressureScore?: number;
+  entryTrendPressure?: number;
+  entryMispricePressure?: number;
+  entryReversalRisk?: number;
   secondsLeftAtEntry?: number;
   kellyPct?: number;
   kellySource?: string;

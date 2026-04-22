@@ -219,8 +219,8 @@ const sizingFields = [['kellyEnabled','checkbox'],['kellyFraction','number'],['k
 const hedgeFields = [['panicHedgeEnabled','checkbox'],['panicLossCents','number'],['hedgeSizeRatio','number'],['minHedgeImprovementPct','number'],['maxHedgePrice','number'],['maxHedgeSlippageCents','number']];
 const advancedFields = [['maxPositionUsdc','number'],['goodSpreadCents','number'],['okSpreadCents','number'],['minDepthToKellyRatio','number'],['thinDepthMultiplier','number'],['okDepthMultiplier','number'],['repriceIntervalMs','number'],['feeBps','number'],['enableSnapshots','checkbox'],['snapshotIntervalMs','number'],['enableOrderbookLogs','checkbox'],['keepMaxLogMb','number']];
 function fmt(n,d=2){return typeof n==='number'&&isFinite(n)?n.toFixed(d):'-'}
-const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',no_signal:'等待信号',hold:'持仓中',hold_hedged:'已对冲持有',one_trade_per_bucket:'本局已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
-const eventMap={error:'错误',market_discovered:'发现当前市场',entry_filled:'模拟买入成交',panic_hedge_triggered:'触发 panic hedge',settings_updated:'参数已更新',paper_balance_reset:'模拟余额已重置',bot_started:'机器人已启动',logs_cleared:'日志已清空'};
+const actionMap={idle:'启动中',bot_disabled:'策略暂停',outside_entry_window:'等待入场窗口',waiting_next_market_after_start:'局中启动，等下一局',no_signal:'等待信号',hold:'持仓中',hold_hedged:'已对冲持有',one_trade_per_bucket:'本局已交易',entry_skipped_no_ask:'无卖盘',entry_skipped_price:'价格过高',entry_skipped_spread:'价差过大',entry_skipped_depth:'深度不足',entry_unfilled:'入场未成交',hold_no_bid:'无买盘',panic_hedge_skipped_price:'对冲价格过高',panic_hedge_unfilled:'对冲未成交'};
+const eventMap={error:'错误',market_discovered:'发现当前市场',entry_filled:'模拟买入成交',panic_hedge_triggered:'触发 panic hedge',settings_updated:'参数已更新',paper_balance_reset:'模拟余额已重置',bot_started:'机器人已启动',bot_waiting_next_market:'局中启动等待下一局',logs_cleared:'日志已清空'};
 const statusMap={settled:'已结算',closed:'已平仓',open:'持仓中',hedged:'已对冲'};
 const reasonMap={settlement:'到期结算'};
 function actionText(a){return actionMap[a]||a||'-'}

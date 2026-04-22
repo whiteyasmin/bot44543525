@@ -187,7 +187,7 @@ function summaryTable(trades: Row[], actionEvents: Row[], duplicateTrades: numbe
 
 function tradeTable(trades: Row[]) {
   return table(
-    ["#", "\u5165\u573a", "\u65b9\u5411", "\u5165\u573a\u79d2", "\u5269\u4f59\u79d2", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u538b\u529b", "\u6307\u6807", "\u7b56\u7565", "\u5206\u5c42", "\u4e70\u5165\u4ef7", "\u4efd\u989d", "\u5bf9\u51b2", "\u7ed3\u679c", "PnL"],
+    ["#", "\u5165\u573a", "\u65b9\u5411", "\u5165\u573a\u79d2", "\u5269\u4f59\u79d2", "BTC\u5165\u573a", "\u52a8\u91cf", "\u901f\u5ea6", "\u538b\u529b", "\u8d8b\u52bf\u538b\u529b", "\u9519\u4ef7\u538b\u529b", "\u53cd\u8f6c\u98ce\u9669", "\u6307\u6807", "\u7b56\u7565", "\u5206\u5c42", "\u4e70\u5165\u4ef7", "\u4efd\u989d", "\u5bf9\u51b2", "\u7ed3\u679c", "PnL"],
     trades.map((t, index) => [
       String(index + 1),
       shortTime(t.entryTime),
@@ -198,6 +198,9 @@ function tradeTable(trades: Row[]) {
       bps(t.entryMoveBps),
       bps(t.entryVelocityBps),
       num(t.entryPressureScore, 2),
+      num(t.entryTrendPressure, 2),
+      num(t.entryMispricePressure, 2),
+      num(t.entryReversalRisk, 2),
       regime(t.btcRegimeAtEntry ?? t.trendAtEntry),
       strategy(t.entryStrategyType),
       tier(t.entrySignalTier),
