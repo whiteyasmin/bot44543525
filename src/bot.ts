@@ -445,8 +445,8 @@ export class Bot {
     const adversePressure = sidePressure(hedgeSide, currentPressureScore) + Math.max(0, currentIndicators.reversalRisk - 1);
     const strongAdversePressure = adversePressure >= settings.minBtcMoveBps * 2;
     const secondsLeft = 300 - secondInBucket;
-    const hedgeAgeOk = elapsed >= 60;
-    const hedgeTimeOk = secondsLeft >= 120;
+    const hedgeAgeOk = elapsed >= 45;
+    const hedgeTimeOk = secondsLeft >= 75;
     const panicIndicator = panicLoss && confirmedAdverseTrend && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
     const severePanic = severePanicLoss && adverseRegime && strongAdversePressure && hedgeAgeOk && hedgeTimeOk;
 
@@ -485,7 +485,20 @@ export class Bot {
       return;
     }
 
-    this.decide("hold", position.side, position.hedgeSide ? "已对冲，继续持有到结算" : "继续持有到结算，未触发对冲", {
+    const hedgeBlockReason = hedgeReason(settings, {
+      hasHedge: Boolean(position.hedgeSide),
+      panicLoss,
+      severePanicLoss,
+      confirmedAdverseTrend,
+      adverseRegime,
+      strongAdversePressure,
+      hedgeAgeOk,
+      hedgeTimeOk,
+      panicIndicator,
+      severePanic
+    });
+
+    this.decide("hold", position.side, position.hedgeSide ? "已对冲，继续持有到结算" : `继续持有到结算，未触发对冲：${hedgeBlockReason}`, {
       bid,
       entryAvgPrice: position.entryAvgPrice,
       profitCents,
@@ -509,7 +522,8 @@ export class Bot {
       hedgeAgeOk,
       hedgeTimeOk,
       panicIndicator,
-      severePanic
+      severePanic,
+      hedgeBlockReason
     });
     return this.action(position.hedgeSide ? "hold_hedged" : "hold");
 
@@ -1082,6 +1096,28 @@ function dynamicHedgeRatio(baseRatio: number, ask: number) {
   if (ask <= 0.45) return baseRatio;
   if (ask <= 0.55) return baseRatio * 0.75;
   return baseRatio * 0.5;
+}
+
+function hedgeReason(_settings: Settings, state: {
+  hasHedge: boolean;
+  panicLoss: boolean;
+  severePanicLoss: boolean;
+  confirmedAdverseTrend: boolean;
+  adverseRegime: boolean;
+  strongAdversePressure: boolean;
+  hedgeAgeOk: boolean;
+  hedgeTimeOk: boolean;
+  panicIndicator: boolean;
+  severePanic: boolean;
+}) {
+  if (state.hasHedge) return "已经有对冲仓";
+  if (state.panicIndicator || state.severePanic) return "满足对冲条件";
+  if (!state.panicLoss && !state.severePanicLoss) return "浮亏未到 panic 阈值";
+  if (!state.hedgeAgeOk) return "持仓时间不足 45 秒";
+  if (!state.hedgeTimeOk) return "剩余时间不足 75 秒";
+  if (!state.strongAdversePressure) return "反向压力不够";
+  if (!state.confirmedAdverseTrend && !state.adverseRegime) return "反向趋势未确认";
+  return "等待更好的对冲条件";
 }
 
 function hedgeImprovement(settings: Settings, position: Position, hedgeCost: number, hedgeShares: number, hedgeAvgPrice: number) {
